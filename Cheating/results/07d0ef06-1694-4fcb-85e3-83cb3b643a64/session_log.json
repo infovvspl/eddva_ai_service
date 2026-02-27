@@ -1,0 +1,113 @@
+{
+  "job_id": "07d0ef06-1694-4fcb-85e3-83cb3b643a64",
+  "total_frames": 417,
+  "blinks": 0,
+  "cheating_count": 20,
+  "webcam_cheat_count": 13,
+  "tab_switch_count": 7,
+  "cheating_pct": 26.62,
+  "attention_score": 1.3,
+  "screen_monitoring": true,
+  "events": [
+    {
+      "time": "20260219_112946_723145",
+      "reason": "Window switched: 'upload video - cheating' \u2192 'status - cheating'",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_tab_switch_title_20260219_112946_723145.png"
+    },
+    {
+      "time": "20260219_112948_599701",
+      "reason": "Head turned Left P=9 Y=-65 R=167",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_head_pose_20260219_112948_599701.png"
+    },
+    {
+      "time": "20260219_112949_366641",
+      "reason": "Sideways gaze L=Right R=Center",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_gaze_20260219_112949_366641.png"
+    },
+    {
+      "time": "20260219_112955_467461",
+      "reason": "Sideways gaze L=Right R=Center",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_gaze_20260219_112955_467461.png"
+    },
+    {
+      "time": "20260219_112958_509989",
+      "reason": "Window switched: 'status - cheating' \u2192 'results - cheating'",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_tab_switch_title_20260219_112958_509989.png"
+    },
+    {
+      "time": "20260219_113002_022681",
+      "reason": "Window switched: 'results - cheating' \u2192 'status - cheating'",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_tab_switch_title_20260219_113002_022681.png"
+    },
+    {
+      "time": "20260219_113002_870751",
+      "reason": "Sideways gaze L=Right R=Center",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_gaze_20260219_113002_870751.png"
+    },
+    {
+      "time": "20260219_113005_894746",
+      "reason": "Sideways gaze L=Center R=Left",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_gaze_20260219_113005_894746.png"
+    },
+    {
+      "time": "20260219_113006_189475",
+      "reason": "Head turned Right P=12 Y=43 R=0",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_head_pose_20260219_113006_189475.png"
+    },
+    {
+      "time": "20260219_113008_568399",
+      "reason": "Window switched: 'status - cheating' \u2192 'Detecting tab switching as cheating with'",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_tab_switch_title_20260219_113008_568399.png"
+    },
+    {
+      "time": "20260219_113009_995742",
+      "reason": "Mouth open whispering (14.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_mouth_20260219_113009_995742.png"
+    },
+    {
+      "time": "20260219_113011_583083",
+      "reason": "Window switched: 'Detecting tab switching as cheating with' \u2192 'status - cheating'",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_tab_switch_title_20260219_113011_583083.png"
+    },
+    {
+      "time": "20260219_113017_646515",
+      "reason": "Window switched: 'status - cheating' \u2192 'cheating_api.py - Cheating - Visual Stud'",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_tab_switch_title_20260219_113017_646515.png"
+    },
+    {
+      "time": "20260219_113018_730954",
+      "reason": "Mouth open whispering (36.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_mouth_20260219_113018_730954.png"
+    },
+    {
+      "time": "20260219_113020_899530",
+      "reason": "Mouth open whispering (0.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_mouth_20260219_113020_899530.png"
+    },
+    {
+      "time": "20260219_113023_000802",
+      "reason": "Mouth open whispering (14.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_mouth_20260219_113023_000802.png"
+    },
+    {
+      "time": "20260219_113025_161482",
+      "reason": "Mouth open whispering (19.1px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_mouth_20260219_113025_161482.png"
+    },
+    {
+      "time": "20260219_113025_946678",
+      "reason": "Window switched: 'status - cheating' \u2192 'Akankshya Timesheet - VVSPL - Google She'",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_tab_switch_title_20260219_113025_946678.png"
+    },
+    {
+      "time": "20260219_113027_176378",
+      "reason": "Mouth open whispering (0.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_mouth_20260219_113027_176378.png"
+    },
+    {
+      "time": "20260219_113029_282917",
+      "reason": "Mouth open whispering (0.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\07d0ef06-1694-4fcb-85e3-83cb3b643a64\\screenshots\\cheat_mouth_20260219_113029_282917.png"
+    }
+  ]
+}

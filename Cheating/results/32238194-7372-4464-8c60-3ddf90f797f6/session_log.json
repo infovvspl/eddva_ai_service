@@ -1,0 +1,149 @@
+{
+  "job_id": "32238194-7372-4464-8c60-3ddf90f797f6",
+  "total_frames": 417,
+  "blinks": 0,
+  "cheating_count": 25,
+  "cheating_pct": 27.1,
+  "attention_score": 1.3,
+  "tab_switches": 4,
+  "events": [
+    {
+      "time": "20260219_052500_960217",
+      "reason": "Tab switch \u2014 navigated away",
+      "event": "hidden",
+      "severity": "normal"
+    },
+    {
+      "time": "20260219_105501_338530",
+      "reason": "Tab switch detected",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_tab_switch_20260219_105501_338530.png"
+    },
+    {
+      "time": "20260219_105503_824687",
+      "reason": "Head turned Left P=9 Y=-65 R=167",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_head_pose_20260219_105503_824687.png"
+    },
+    {
+      "time": "20260219_105506_155205",
+      "reason": "Sideways gaze L=Right R=Center",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_gaze_20260219_105506_155205.png"
+    },
+    {
+      "time": "20260219_105506_304658",
+      "reason": "Head turned Left P=9 Y=-66 R=167",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_head_pose_20260219_105506_304658.png"
+    },
+    {
+      "time": "20260219_105508_367001",
+      "reason": "Head turned Left P=5 Y=-63 R=170",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_head_pose_20260219_105508_367001.png"
+    },
+    {
+      "time": "20260219_052514_124571",
+      "reason": "Tab switch \u2014 returned after 13.2s",
+      "event": "visible",
+      "severity": "high",
+      "duration_s": 13.16
+    },
+    {
+      "time": "20260219_105514_759933",
+      "reason": "Tab switched away for 13.2s",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_tab_switch_long_20260219_105514_759933.png"
+    },
+    {
+      "time": "20260219_105525_999228",
+      "reason": "Sideways gaze L=Right R=Center",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_gaze_20260219_105525_999228.png"
+    },
+    {
+      "time": "20260219_105547_949982",
+      "reason": "Sideways gaze L=Right R=Center",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_gaze_20260219_105547_949982.png"
+    },
+    {
+      "time": "20260219_105550_075705",
+      "reason": "Sideways gaze L=Right R=Center",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_gaze_20260219_105550_075705.png"
+    },
+    {
+      "time": "20260219_105552_398659",
+      "reason": "Sideways gaze L=Right R=Center",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_gaze_20260219_105552_398659.png"
+    },
+    {
+      "time": "20260219_105556_598357",
+      "reason": "Sideways gaze L=Center R=Left",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_gaze_20260219_105556_598357.png"
+    },
+    {
+      "time": "20260219_105557_228161",
+      "reason": "Head turned Right P=12 Y=43 R=0",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_head_pose_20260219_105557_228161.png"
+    },
+    {
+      "time": "20260219_105558_659902",
+      "reason": "Sideways gaze L=Center R=Left",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_gaze_20260219_105558_659902.png"
+    },
+    {
+      "time": "20260219_105559_442119",
+      "reason": "Head turned Right P=11 Y=44 R=-1",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_head_pose_20260219_105559_442119.png"
+    },
+    {
+      "time": "20260219_105601_482422",
+      "reason": "Head turned Right P=10 Y=34 R=-2",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_head_pose_20260219_105601_482422.png"
+    },
+    {
+      "time": "20260219_105609_929420",
+      "reason": "Mouth open whispering (14.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105609_929420.png"
+    },
+    {
+      "time": "20260219_105628_277637",
+      "reason": "Mouth open whispering (36.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105628_277637.png"
+    },
+    {
+      "time": "20260219_105630_480434",
+      "reason": "Mouth open whispering (21.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105630_480434.png"
+    },
+    {
+      "time": "20260219_105632_552356",
+      "reason": "Mouth open whispering (1.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105632_552356.png"
+    },
+    {
+      "time": "20260219_105634_598601",
+      "reason": "Mouth open whispering (15.5px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105634_598601.png"
+    },
+    {
+      "time": "20260219_105636_638209",
+      "reason": "Mouth open whispering (9.1px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105636_638209.png"
+    },
+    {
+      "time": "20260219_105638_695882",
+      "reason": "Mouth open whispering (15.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105638_695882.png"
+    },
+    {
+      "time": "20260219_105640_849031",
+      "reason": "Mouth open whispering (18.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105640_849031.png"
+    },
+    {
+      "time": "20260219_105642_909710",
+      "reason": "Mouth open whispering (0.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105642_909710.png"
+    },
+    {
+      "time": "20260219_105645_208587",
+      "reason": "Mouth open whispering (0.0px)",
+      "file": "D:\\VVSPL\\AI Study Planner\\Cheating\\results\\32238194-7372-4464-8c60-3ddf90f797f6\\screenshots\\cheat_mouth_20260219_105645_208587.png"
+    }
+  ]
+}
