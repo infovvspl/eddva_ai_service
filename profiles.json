@@ -1,0 +1,7 @@
+{
+  "default": {
+    "avg_sentence_length": 10.0,
+    "sentence_var": 0.0,
+    "type_token_ratio": 1.0
+  }
+}
