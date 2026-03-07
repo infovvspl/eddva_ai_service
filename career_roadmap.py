@@ -101,7 +101,6 @@ async def call_llm(
                 .strip()
             )
 
-            # ✅ HARD SAFETY CHECK
             if not content:
                 raise HTTPException(
                     status_code=502,
@@ -126,35 +125,22 @@ async def call_llm(
 async def extract_json(text: str, retry_fn=None):
     """
     Ultra-robust JSON extractor for LLM outputs.
-
-    Handles:
-    - empty responses
-    - truncated JSON
-    - extra text
-    - partial objects
-    - auto-repair retry
+    Handles empty responses, truncated JSON, extra text, and auto-repair retry.
     """
-
-    import json, re
-
     if not text or not text.strip():
         raise ValueError("LLM returned empty response")
 
-    # remove markdown
+    # Remove markdown fences
     text = re.sub(r"```(?:json)?\s*", "", text)
     text = text.replace("```", "").strip()
 
-    # --------------------------------------------------
-    # 1️⃣ direct parse
-    # --------------------------------------------------
+    # 1. Direct parse
     try:
         return json.loads(text)
     except Exception:
         pass
 
-    # --------------------------------------------------
-    # 2️⃣ balanced JSON search
-    # --------------------------------------------------
+    # 2. Balanced JSON search
     for start_char, end_char in [("{", "}"), ("[", "]")]:
         start = text.find(start_char)
         if start != -1:
@@ -171,9 +157,7 @@ async def extract_json(text: str, retry_fn=None):
                         except Exception:
                             break
 
-    # --------------------------------------------------
-    # 3️⃣ partial object recovery
-    # --------------------------------------------------
+    # 3. Partial object recovery
     objs = []
     depth = 0
     start = None
@@ -183,7 +167,6 @@ async def extract_json(text: str, retry_fn=None):
             if depth == 0:
                 start = i
             depth += 1
-
         elif ch == "}":
             depth -= 1
             if depth == 0 and start is not None:
@@ -196,9 +179,7 @@ async def extract_json(text: str, retry_fn=None):
     if objs:
         return objs
 
-    # --------------------------------------------------
-    # 4️⃣ AUTO JSON REPAIR (CRITICAL ADDITION)
-    # --------------------------------------------------
+    # 4. Auto JSON repair via retry
     if retry_fn:
         repair_prompt = f"""
 Fix this output and return ONLY valid JSON.
@@ -214,7 +195,6 @@ Output:
         except Exception:
             pass
 
-    # --------------------------------------------------
     raise ValueError(
         f"No valid JSON found in LLM output:\n{text[:500]}"
     )
@@ -272,9 +252,7 @@ Generate exactly {top_k} roles related to "{primary_role}".
     raw  = await call_llm(prompt, system, max_tokens=800)
     data = await extract_json(raw, retry_fn=call_llm)
 
-    # ---- normalize possible LLM formats ----
     if isinstance(data, dict):
-        # common LLM mistake: wraps array inside object
         for key in ["related_roles", "roles", "data", "items"]:
             if key in data and isinstance(data[key], list):
                 data = data[key]
@@ -487,6 +465,29 @@ def compute_skill_comparison(
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Advice Cleaner
+# ─────────────────────────────────────────────────────────────────────────────
+def clean_advice(text: str) -> str:
+    """Strip markdown symbols and convert to a clean flat string."""
+    # Remove bold/italic markers (* and **)
+    text = re.sub(r'\*{1,3}', '', text)
+    # Remove heading hashes
+    text = re.sub(r'^\s*#{1,6}\s*', '', text, flags=re.MULTILINE)
+    # Remove horizontal rules
+    text = re.sub(r'^\s*[-_]{3,}\s*$', '', text, flags=re.MULTILINE)
+    # Remove bullet point dashes at the start of lines (e.g. "- item")
+    text = re.sub(r'^\s*-\s+', '', text, flags=re.MULTILINE)
+    # Replace all newlines with a single space
+    text = text.replace('\n', ' ')
+    # Collapse multiple spaces
+    text = re.sub(r' {2,}', ' ', text)
+    return text.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Advice Generator
+# ─────────────────────────────────────────────────────────────────────────────
 async def generate_advice(
     user_input: str,
     primary_role: str,
@@ -497,7 +498,10 @@ async def generate_advice(
 ) -> str:
     system = (
         "You are an expert career counsellor. "
-        "Give structured, motivating, and actionable advice in plain text with numbered sections."
+        "Write in plain text only. "
+        "Do NOT use any markdown formatting: no asterisks, no bold, no bullet dashes, "
+        "no hashtags, no backticks, no underscores for emphasis. "
+        "Use numbered section headings and plain sentences only."
     )
     prompt = f"""
 User's interest: "{user_input}"
@@ -509,14 +513,17 @@ Skills still needed: {', '.join(primary_roadmap['skill_gap'][:15]) or 'None — 
 Common foundation across all roles: {', '.join(skill_comparison['common_foundation_skills'][:12])}
 Skills unique to {primary_role}: {', '.join(skill_comparison['unique_to_primary_role'][:10])}
 
-Write a personalised career report with these 5 sections:
+Write a personalised career report with these 5 sections.
+Use plain text only. Do not use asterisks, hashes, dashes for bullets, or any markdown symbols.
+
 1. ROLE OVERVIEW — What does a {primary_role} actually do day-to-day?
 2. RELATED ROLES — Why each related role was suggested and how it differs
 3. FOUNDATION SKILLS — Which common skills to learn first and why
 4. YOUR STARTING POINT — Based on current skills, where to begin specifically
 5. ACTION PLAN — What to do this week, this month, and this quarter
 """
-    return await call_llm(prompt, system, max_tokens=2000, temperature=0.4)
+    raw = await call_llm(prompt, system, max_tokens=2000, temperature=0.4)
+    return clean_advice(raw)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -537,7 +544,7 @@ async def career_roadmap(req: RoadmapRequest) -> dict:
     - Common vs unique skill comparison across all roles
     - Personalised career advice
 
-    ⏳ Takes 60–180 seconds (multiple LLM calls). Do not cancel the request.
+    Takes 60-180 seconds (multiple LLM calls). Do not cancel the request.
     """
     # Step 1: Extract canonical role
     primary_role = await extract_role(req.interest)

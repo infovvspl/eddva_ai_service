@@ -1,0 +1,427 @@
+{
+  "student_id": "student_001",
+  "pdf_mode": "typed",
+  "total_questions": 3,
+  "total_marks_awarded": 20.99,
+  "total_max_marks": 30.0,
+  "overall_percentage": 69.97,
+  "letter_grade": "C",
+  "pass_fail_status": "PASS",
+  "results": [
+    {
+      "question_number": 1,
+      "question_text": "Explain the process of photosynthesis.",
+      "answer_preview": "Explain the process of photosynthesis.\n[10 marks]\nPhotosynthesis is the biological process by which green plants, algae, and certain bacteria\nconvert light energy — primarily from the sun — into chemical energy stored in glucose.\nThis process takes place mainly in the chloroplasts of plant cells, wh…",
+      "model_answer_used": "Photosynthesis is the process by which green plants and some other organisms use sunlight to synthesize foods with the help of chlorophyll pigment. During this process, light energy is converted into …",
+      "keywords_used": [
+        "sunlight",
+        "chlorophyll",
+        "carbon dioxide",
+        "water",
+        "glucose",
+        "oxygen",
+        "chloroplasts",
+        "light energy"
+      ],
+      "sub_scores": {
+        "correctness": 65.33,
+        "keyword_coverage": 100.0,
+        "writing_quality": {
+          "score": 83.24,
+          "type_token_ratio": 0.566,
+          "avg_sentence_len": 20.6,
+          "sentence_variety": 0.427,
+          "content_density": 0.629
+        },
+        "completeness": 100.0
+      },
+      "integrity": {
+        "plagiarism_score": 41.12,
+        "ai_probability": 0.493,
+        "authorship_shift": 1.972,
+        "matched_sentences": [
+          {
+            "sentence": "[10 marks]\nPhotosynthesis is the biological process by which green plants, algae, and certain bacteria\nconvert light energy — primarily from the sun — into chemical energy stored in glucose.",
+            "similarity": 68.96,
+            "matched_source": "Photosynthesis is the process by which green plants and certain other organisms transform light energy into chemical energy.",
+            "source_title": "Photosynthesis | Definition, Formula, Process, Diagram ...",
+            "source_link": "https://www.britannica.com/science/photosynthesis"
+          },
+          {
+            "sentence": "Explain the process of photosynthesis.",
+            "similarity": 49.47,
+            "matched_source": "Photosynthesis is the process by which plants use sunlight, water, and carbon dioxide to create oxygen and energy in the form of sugar.",
+            "source_title": "Photosynthesis - National Geographic Education",
+            "source_link": "https://education.nationalgeographic.org/resource/photosynthesis/"
+          },
+          {
+            "sentence": "Here, chlorophyll absorbs sunlight and\nuses that energy to split water molecules (photolysis), releasing oxygen as a by-product.",
+            "similarity": 46.18,
+            "matched_source": "Photosynthesis is the process by which plants use sunlight, water, and carbon dioxide to create oxygen and energy in the form of sugar.",
+            "source_title": "Photosynthesis - National Geographic Education",
+            "source_link": "https://education.nationalgeographic.org/resource/photosynthesis/"
+          },
+          {
+            "sentence": "Photosynthesis is fundamental to life on Earth as it forms the base of most food chains,\nproduces the oxygen we breathe, and removes carbon dioxide from the atmosphere,\nplaying a critical role in regulating the global carbon cycle.",
+            "similarity": 45.05,
+            "matched_source": "Photosynthesis is the process by which plants use sunlight, water, and carbon dioxide to create oxygen and energy in the form of sugar.",
+            "source_title": "Photosynthesis - National Geographic Education",
+            "source_link": "https://education.nationalgeographic.org/resource/photosynthesis/"
+          },
+          {
+            "sentence": "The overall chemical equation for photosynthesis is:\n6CO2 + 6H2O + light energy fi C6H12O6 + 6O2\nPhotosynthesis occurs in two main stages.",
+            "similarity": 43.2,
+            "matched_source": "Photosynthesis is the process by which green plants and certain other organisms transform light energy into chemical energy.",
+            "source_title": "Photosynthesis | Definition, Formula, Process, Diagram ...",
+            "source_link": "https://www.britannica.com/science/photosynthesis"
+          },
+          {
+            "sentence": "This process takes place mainly in the chloroplasts of plant cells, which contain the green\npigment chlorophyll responsible for absorbing sunlight.",
+            "similarity": 38.11,
+            "matched_source": "Photosynthesis is the process by which green plants and certain other organisms transform light energy into chemical energy.",
+            "source_title": "Photosynthesis | Definition, Formula, Process, Diagram ...",
+            "source_link": "https://www.britannica.com/science/photosynthesis"
+          },
+          {
+            "sentence": "Using the ATP and NADPH from the first stage, carbon dioxide from the\natmosphere is fixed and converted into glucose through a series of enzyme-catalysed\nreactions.",
+            "similarity": 33.27,
+            "matched_source": "Photosynthesis is the process by which plants use sunlight, water, and carbon dioxide to create oxygen and energy in the form of sugar.",
+            "source_title": "Photosynthesis - National Geographic Education",
+            "source_link": "https://education.nationalgeographic.org/resource/photosynthesis/"
+          },
+          {
+            "sentence": "The second stage, the Calvin Cycle (light-independent reactions), occurs in the stroma of\nthe chloroplast.",
+            "similarity": 29.59,
+            "matched_source": "Photosynthesis is the process by which green plants and certain other organisms transform light energy into chemical energy.",
+            "source_title": "Photosynthesis | Definition, Formula, Process, Diagram ...",
+            "source_link": "https://www.britannica.com/science/photosynthesis"
+          },
+          {
+            "sentence": "This stage also produces ATP and NADPH, which are energy carriers used in the next\nstage.",
+            "similarity": 28.83,
+            "matched_source": "Photosynthesis is a process by which phototrophs convert light energy into chemical energy, which is later used to fuel cellular activities.",
+            "source_title": "Photosynthesis is a process",
+            "source_link": "https://byjus.com/biology/photosynthesis/"
+          },
+          {
+            "sentence": "The first stage, known as the light-dependent\nreactions, takes place in the thylakoid membranes.",
+            "similarity": 28.54,
+            "matched_source": "Photosynthesis is the process by which green plants and certain other organisms transform light energy into chemical energy.",
+            "source_title": "Photosynthesis | Definition, Formula, Process, Diagram ...",
+            "source_link": "https://www.britannica.com/science/photosynthesis"
+          }
+        ]
+      },
+      "grade": {
+        "raw_score": 80.15,
+        "plagiarism_penalty": 12.9,
+        "ai_penalty": 0.0,
+        "penalised_score": 69.81,
+        "marks_awarded": 6.98,
+        "max_marks": 10.0,
+        "verdict": "GOOD | ⚠ MODERATE PLAGIARISM"
+      }
+    },
+    {
+      "question_number": 2,
+      "question_text": "What is Newton's Second Law of Motion?",
+      "answer_preview": "What is Newton's Second Law of Motion?\n[5 marks]\nNewton's Second Law of Motion states that the acceleration of an object is directly\nproportional to the net force applied to it and inversely proportional to its mass. This\nrelationship is expressed by the equation F = ma, where F is the net force (in…",
+      "model_answer_used": "Newton's Second Law of Motion states that the acceleration of an object is directly proportional to the net force acting upon it and inversely proportional to its mass. This relationship is mathematic…",
+      "keywords_used": [
+        "acceleration",
+        "net force",
+        "mass",
+        "directly proportional",
+        "inversely proportional",
+        "F=ma",
+        "vector quantity",
+        "direction"
+      ],
+      "sub_scores": {
+        "correctness": 82.52,
+        "keyword_coverage": 62.5,
+        "writing_quality": {
+          "score": 76.54,
+          "type_token_ratio": 0.492,
+          "avg_sentence_len": 24.2,
+          "sentence_variety": 0.451,
+          "content_density": 0.467
+        },
+        "completeness": 99.99
+      },
+      "integrity": {
+        "plagiarism_score": 48.1,
+        "ai_probability": 0.457,
+        "authorship_shift": 15.131,
+        "matched_sentences": [
+          {
+            "sentence": "[5 marks]\nNewton's Second Law of Motion states that the acceleration of an object is directly\nproportional to the net force applied to it and inversely proportional to its mass.",
+            "similarity": 67.34,
+            "matched_source": "Newton's second law states that the acceleration of an object is directly related to the net force and inversely related to its mass. Acceleration of an object ...",
+            "source_title": "Newton's second law of motion (video)",
+            "source_link": "https://www.khanacademy.org/v/newton-s-second-law-of-motion"
+          },
+          {
+            "sentence": "This\nrelationship is expressed by the equation F = ma, where F is the net force (in Newtons), m\nis the mass of the object (in kilograms), and a is the resulting acceleration (in metres per\nsecond squared).",
+            "similarity": 55.0,
+            "matched_source": "Newton's second law describes the affect of net force and mass upon the acceleration of an object. Often expressed as the equation a = Fnet/m (or rearranged ...",
+            "source_title": "Newton's Second Law of Motion",
+            "source_link": "https://www.physicsclassroom.com/class/newtlaws/lesson-3/newton-s-second-law"
+          },
+          {
+            "sentence": "What is Newton's Second Law of Motion?",
+            "similarity": 46.39,
+            "matched_source": "Newton's second law states that the acceleration of an object depends upon two variables – the net force acting on the object and the mass of the object. The ...",
+            "source_title": "Newtons Second Law Of Motion And Momentum",
+            "source_link": "https://byjus.com/physics/newtons-second-law-of-motion-and-momentum/"
+          },
+          {
+            "sentence": "In practical terms, this means that a larger force produces a greater acceleration for the\nsame mass, while a heavier object requires more force to achieve the same acceleration.",
+            "similarity": 38.94,
+            "matched_source": "Newton's second law states that the acceleration of an object is directly related to the net force and inversely related to its mass. Acceleration of an object ...",
+            "source_title": "Newton's second law of motion (video)",
+            "source_link": "https://www.khanacademy.org/v/newton-s-second-law-of-motion"
+          },
+          {
+            "sentence": "The direction of the acceleration is always the same as the direction of the net applied\nforce.",
+            "similarity": 32.86,
+            "matched_source": "Newton's second law states that the acceleration of an object is directly related to the net force and inversely related to its mass. Acceleration of an object ...",
+            "source_title": "Newton's second law of motion (video)",
+            "source_link": "https://www.khanacademy.org/v/newton-s-second-law-of-motion"
+          }
+        ]
+      },
+      "grade": {
+        "raw_score": 80.24,
+        "plagiarism_penalty": 18.5,
+        "ai_penalty": 0.0,
+        "penalised_score": 65.41,
+        "marks_awarded": 3.27,
+        "max_marks": 5.0,
+        "verdict": "GOOD | ⚠ MODERATE PLAGIARISM"
+      }
+    },
+    {
+      "question_number": 3,
+      "question_text": "Describe the causes of World War I.",
+      "answer_preview": "Describe the causes of World War I.\n[15 marks]\nWorld War I, which began in 1914, was the result of a complex combination of long-term\nstructural tensions and short-term triggers that collectively made a large-scale conflict\nalmost inevitable by the early twentieth century.\nHistorians commonly use th…",
+      "model_answer_used": "World War I was primarily caused by a complex interplay of factors, including aggressive nationalism and the desire for self-determination among various ethnic groups. Imperial rivalries and competiti…",
+      "keywords_used": [
+        "nationalism",
+        "imperialism",
+        "alliance system",
+        "militarism",
+        "Archduke Franz Ferdinand",
+        "assassination",
+        "Triple Entente",
+        "Triple Alliance"
+      ],
+      "sub_scores": {
+        "correctness": 53.88,
+        "keyword_coverage": 100.0,
+        "writing_quality": {
+          "score": 79.86,
+          "type_token_ratio": 0.608,
+          "avg_sentence_len": 22.5,
+          "sentence_variety": 0.4,
+          "content_density": 0.677
+        },
+        "completeness": 100.0
+      },
+      "integrity": {
+        "plagiarism_score": 28.94,
+        "ai_probability": 0.5,
+        "authorship_shift": 13.187,
+        "matched_sentences": [
+          {
+            "sentence": "The immediate trigger was the assassination of Archduke Franz Ferdinand, heir to the\nAustro-Hungarian throne, by Gavrilo Princip — a Bosnian-Serb nationalist — in Sarajevo\non 28 June 1914.",
+            "similarity": 58.11,
+            "matched_source": "World War I began after the assassination of Austrian archduke Franz Ferdinand by South Slav nationalist Gavrilo Princip on June 28, 1914. What ...",
+            "source_title": "World War I | Causes, Years, Combatants, Casualties ...",
+            "source_link": "https://www.britannica.com/event/World-War-I"
+          },
+          {
+            "sentence": "Describe the causes of World War I.",
+            "similarity": 49.81,
+            "matched_source": "World War I, also known as the Great War, started in 1914 after the assassination of Archduke Franz Ferdinand of Austria.",
+            "source_title": "World War I: Summary, Causes & Facts",
+            "source_link": "https://www.history.com/articles/world-war-i-history"
+          },
+          {
+            "sentence": "[15 marks]\nWorld War I, which began in 1914, was the result of a complex combination of long-term\nstructural tensions and short-term triggers that collectively made a large-scale conflict\nalmost inevitable by the early twentieth century.",
+            "similarity": 43.0,
+            "matched_source": "World War I, also known as the Great War, started in 1914 after the assassination of Archduke Franz Ferdinand of Austria.",
+            "source_title": "World War I: Summary, Causes & Facts",
+            "source_link": "https://www.history.com/articles/world-war-i-history"
+          },
+          {
+            "sentence": "In summary, while the assassination served as the spark, the deeper causes — militarism,\nrigid alliances, imperial rivalries, and fervent nationalism — had created the conditions in\nwhich a single event could ignite a world war.",
+            "similarity": 35.06,
+            "matched_source": "1 Immediate causes. 1.1 Assassination of Archduke Franz Ferdinand by Serbian nationalists, 28 June 1914 · 2 Polarization of Europe, 1887–1914. 2.1 German ...",
+            "source_title": "Causes of World War I",
+            "source_link": "https://en.wikipedia.org/wiki/Causes_of_World_War_I"
+          },
+          {
+            "sentence": "Austria-Hungary issued an ultimatum to Serbia, Serbia's partial rejection\nled Austria to declare war, and the alliance system rapidly pulled in Russia, Germany,\nFrance, and Britain within weeks.",
+            "similarity": 30.49,
+            "matched_source": "World War I, also known as the Great War, started in 1914 after the assassination of Archduke Franz Ferdinand of Austria.",
+            "source_title": "World War I: Summary, Causes & Facts",
+            "source_link": "https://www.history.com/articles/world-war-i-history"
+          },
+          {
+            "sentence": "Historians commonly use the acronym MAIN to summarise the underlying causes:\nMilitarism, Alliance systems, Imperialism, and Nationalism.",
+            "similarity": 28.57,
+            "matched_source": "1 Immediate causes. 1.1 Assassination of Archduke Franz Ferdinand by Serbian nationalists, 28 June 1914 · 2 Polarization of Europe, 1887–1914. 2.1 German ...",
+            "source_title": "Causes of World War I",
+            "source_link": "https://en.wikipedia.org/wiki/Causes_of_World_War_I"
+          },
+          {
+            "sentence": "In the Balkans, rising Slavic\nnationalism threatened the multi-ethnic Austro-Hungarian Empire, while Serbian ambitions\nto unite South Slavic peoples clashed directly with Austrian interests.",
+            "similarity": 27.35,
+            "matched_source": "1 Immediate causes. 1.1 Assassination of Archduke Franz Ferdinand by Serbian nationalists, 28 June 1914 · 2 Polarization of Europe, 1887–1914. 2.1 German ...",
+            "source_title": "Causes of World War I",
+            "source_link": "https://en.wikipedia.org/wiki/Causes_of_World_War_I"
+          }
+        ]
+      },
+      "grade": {
+        "raw_score": 73.92,
+        "plagiarism_penalty": 3.2,
+        "ai_penalty": 0.0,
+        "penalised_score": 71.59,
+        "marks_awarded": 10.74,
+        "max_marks": 15.0,
+        "verdict": "GOOD | ⚠ MODERATE PLAGIARISM"
+      }
+    }
+  ],
+  "ai_feedback": [
+    {
+      "question_number": 1,
+      "marking_reason": "The student provided a comprehensive and accurate explanation of photosynthesis, covering all key aspects including the reactants, products, location, stages, and significance. The inclusion of the chemical equation and the detailed breakdown of the light-dependent and light-independent reactions demonstrate a strong understanding of the topic. The marks awarded reflect the high quality of the answer, with minor deductions likely due to the subjective nature of marking or very subtle points that could have been elaborated further.",
+      "strong_parts": [
+        "Accurate definition of photosynthesis.",
+        "Correctly identifies reactants (CO2, H2O) and products (glucose, O2).",
+        "Mentions the role of chlorophyll and sunlight.",
+        "Correctly identifies chloroplasts as the site of photosynthesis.",
+        "Includes the balanced chemical equation for photosynthesis.",
+        "Accurately describes the two main stages: light-dependent reactions and the Calvin Cycle.",
+        "Explains the processes within each stage (photolysis, ATP/NADPH production, CO2 fixation).",
+        "Highlights the significance of photosynthesis for life on Earth."
+      ],
+      "weak_parts": [
+        "While the answer is excellent, a very minor point for improvement could be to briefly mention the specific types of organisms beyond green plants and algae that perform photosynthesis (e.g., cyanobacteria), though the answer does mention 'certain bacteria'."
+      ],
+      "what_to_improve": [
+        "Specificity in organism examples for photosynthesis."
+      ],
+      "how_to_improve": [
+        "When studying biological processes, try to recall or research specific examples of organisms that carry out these processes. For photosynthesis, actively think about or look up examples like cyanobacteria in addition to plants and algae."
+      ],
+      "mistake_patterns": {
+        "conceptual_mistakes": false,
+        "calculation_mistakes": false,
+        "time_management_issues": false,
+        "guessing_behavior": false,
+        "details": "No significant mistakes were detected. The answer is conceptually sound and factually accurate."
+      },
+      "difficulty_analysis": {
+        "ai_assigned_difficulty": "Medium",
+        "student_accuracy_at_level": 95,
+        "reasoning": "Photosynthesis is a core concept in biology that requires understanding multiple interconnected steps and chemical processes. While the fundamental idea is accessible, a detailed explanation involving the two stages, chemical equations, and cellular locations elevates its difficulty. The student's performance indicates a strong grasp of this medium-difficulty topic."
+      },
+      "skill_scores": {
+        "problem_solving": 9,
+        "concept_clarity": 10,
+        "speed": 8,
+        "accuracy": 9,
+        "overall_learning_index": 9.0
+      }
+    },
+    {
+      "question_number": 2,
+      "marking_reason": "The student provided a comprehensive and accurate answer to the question. They correctly stated Newton's Second Law of Motion, included the correct mathematical formula (F=ma), and accurately defined each variable with its units. Furthermore, they provided a clear, practical explanation of the law's implications and correctly stated the direction of acceleration. The answer is very close to the model answer in terms of completeness and correctness, with only minor differences in phrasing and the inclusion of specific units in the definition of the formula.",
+      "strong_parts": [
+        "Correctly stated Newton's Second Law of Motion.",
+        "Included the correct mathematical formula (F=ma).",
+        "Accurately defined the variables F, m, and a, including their respective units (Newtons, kilograms, metres per second squared).",
+        "Provided a clear and accurate practical explanation of the law.",
+        "Correctly stated that the direction of acceleration is the same as the direction of the net force.",
+        "The answer is highly complete and accurate, closely matching the model answer."
+      ],
+      "weak_parts": [
+        "While the student provided units for F, m, and a, the model answer did not explicitly list them within the formula definition, making this a minor point of difference rather than a weakness."
+      ],
+      "what_to_improve": [
+        "While the answer is excellent, for future reference, ensure that if a question asks for a specific formula, the units associated with each variable in that formula are consistently included if they are standard and relevant to the context."
+      ],
+      "how_to_improve": [
+        "When practicing physics problems, pay attention to the units of all quantities involved. This will reinforce the understanding of how different physical quantities relate to each other and ensure accuracy in calculations and explanations."
+      ],
+      "mistake_patterns": {
+        "conceptual_mistakes": false,
+        "calculation_mistakes": false,
+        "time_management_issues": false,
+        "guessing_behavior": false,
+        "details": "No mistakes were detected in the student's answer."
+      },
+      "difficulty_analysis": {
+        "ai_assigned_difficulty": "Easy",
+        "student_accuracy_at_level": 100,
+        "reasoning": "Newton's Second Law of Motion is a fundamental concept in introductory physics. The question asks for a definition and the associated formula, which are typically well-covered in standard curricula. The student's accurate and complete response indicates a strong grasp of this 'Easy' level concept."
+      },
+      "skill_scores": {
+        "problem_solving": 10,
+        "concept_clarity": 10,
+        "speed": 10,
+        "accuracy": 10,
+        "overall_learning_index": 10.0
+      }
+    },
+    {
+      "question_number": 3,
+      "marking_reason": "The student provided a comprehensive and well-structured answer that accurately identified and explained the key causes of World War I. The use of the 'MAIN' acronym demonstrated a good understanding of historical frameworks. The answer effectively distinguished between long-term structural causes and the immediate trigger, providing specific examples for each. The explanation of how the alliance system functioned and the role of nationalism in the Balkans were particularly strong. The marks awarded reflect a high level of understanding and application of historical knowledge.",
+      "strong_parts": [
+        "Excellent use of the 'MAIN' acronym to structure the answer.",
+        "Clear distinction between long-term causes (Militarism, Alliances, Imperialism, Nationalism) and the immediate trigger (assassination).",
+        "Specific examples provided for each cause, such as the Anglo-German naval race for Militarism, the Moroccan Crises for Imperialism, and the Balkan situation for Nationalism.",
+        "Accurate explanation of how the alliance system worked and its role in escalating the conflict.",
+        "Well-written and coherent prose, making the complex topic easy to understand.",
+        "Demonstrated a strong understanding of the interconnectedness of the causes.",
+        "The summary effectively reiterates the main points."
+      ],
+      "weak_parts": [
+        "While the answer is excellent, a slightly deeper dive into the specific nature of 'aggressive nationalism' beyond the Balkans, such as in Germany and France, could have added further nuance.",
+        "Mentioning the specific terms of the alliances (e.g., defensive pacts) could have provided a more detailed explanation of their rigidity."
+      ],
+      "what_to_improve": [
+        "Exploring the nuances of nationalism in different European countries.",
+        "Understanding the specific terms and implications of alliance treaties."
+      ],
+      "how_to_improve": [
+        "For nationalism: Research the specific nationalist movements and ideologies present in major European powers like Germany, France, and Britain in the early 20th century. Look for primary source material or historical analyses that discuss their aims and influence on foreign policy.",
+        "For alliances: Study the specific treaties that formed the Triple Entente and Triple Alliance. Understand whether they were purely defensive, offensive, or had clauses that obligated members to act in certain situations. This will help explain why a localized conflict became a continental war.",
+        "Practice essay writing on similar historical topics, focusing on incorporating specific details and nuanced arguments to support broader claims."
+      ],
+      "mistake_patterns": {
+        "conceptual_mistakes": false,
+        "calculation_mistakes": false,
+        "time_management_issues": false,
+        "guessing_behavior": false,
+        "details": "No significant mistakes were detected. The answer is factually accurate and conceptually sound."
+      },
+      "difficulty_analysis": {
+        "ai_assigned_difficulty": "Medium",
+        "student_accuracy_at_level": 95,
+        "reasoning": "The question requires understanding of multiple interconnected historical factors and their causal relationships. While the core concepts are often taught, synthesizing them into a coherent and detailed explanation, as the student has done, demonstrates a good grasp of the material. The 'Medium' difficulty reflects the need for analytical thinking and recall of specific historical events and concepts."
+      },
+      "skill_scores": {
+        "problem_solving": 9,
+        "concept_clarity": 9,
+        "speed": 8,
+        "accuracy": 9,
+        "overall_learning_index": 8.8
+      }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "student_id": "student_001",
+  "source_report": "student_001_20260307_100135.json",
+  "exams_analysed": 10,
+  "generated_at": "2026-03-07T10:48:03.355163",
+  "study_plan": {
+    "error": "Failed after 3 attempts. Last error: Missing keys: ['focus_areas', 'what_to_study_next', 'study_tips', 'milestone_goals']"
+  }
+}
