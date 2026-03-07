@@ -1,0 +1,196 @@
+{
+  "student_id": "student_001",
+  "source_report": "student_001_20260307_100135.json",
+  "exams_analysed": 10,
+  "generated_at": "2026-03-07T10:15:59.667534",
+  "study_plan": {
+    "weekly_timetable": [
+      {
+        "day": "Monday",
+        "slots": [
+          {
+            "time": "6:00 AM – 7:30 AM",
+            "topic": "Photosynthesis",
+            "activity": "Revision",
+            "priority": "High",
+            "notes": "Review light-dependent reactions and photosynthesis equations"
+          },
+          {
+            "time": "12:00 PM – 1:30 PM",
+            "topic": "Problem Solving",
+            "activity": "Practice Problems",
+            "priority": "Medium",
+            "notes": "Work on problem-solving exercises to improve skills"
+          },
+          {
+            "time": "4:00 PM – 5:30 PM",
+            "topic": "World War I Causes",
+            "activity": "Light Review",
+            "priority": "Low",
+            "notes": "Quickly review causes of World War I to refresh memory"
+          }
+        ]
+      },
+      {
+        "day": "Tuesday",
+        "slots": [
+          {
+            "time": "7:00 AM – 8:30 AM",
+            "topic": "Newton's Laws",
+            "activity": "Revision",
+            "priority": "High",
+            "notes": "Review Newton's Laws and their applications"
+          },
+          {
+            "time": "2:00 PM – 3:30 PM",
+            "topic": "Concept Clarity",
+            "activity": "Concept Mapping",
+            "priority": "Medium",
+            "notes": "Create concept maps to improve understanding of complex topics"
+          }
+        ]
+      },
+      {
+        "day": "Wednesday",
+        "slots": [
+          {
+            "time": "9:00 AM – 10:30 AM",
+            "topic": "Problem Solving",
+            "activity": "Practice Problems",
+            "priority": "Medium",
+            "notes": "Work on problem-solving exercises to improve skills"
+          },
+          {
+            "time": "5:00 PM – 6:00 PM",
+            "topic": "World War I Causes",
+            "activity": "Mock Test",
+            "priority": "High",
+            "notes": "Take a mock test to assess understanding of World War I causes"
+          }
+        ]
+      },
+      {
+        "day": "Thursday",
+        "slots": [
+          {
+            "time": "10:00 AM – 11:30 AM",
+            "topic": "Photosynthesis",
+            "activity": "Revision",
+            "priority": "High",
+            "notes": "Review light-dependent reactions and photosynthesis equations"
+          },
+          {
+            "time": "3:00 PM – 4:00 PM",
+            "topic": "Concept Clarity",
+            "activity": "Concept Mapping",
+            "priority": "Medium",
+            "notes": "Create concept maps to improve understanding of complex topics"
+          }
+        ]
+      },
+      {
+        "day": "Friday",
+        "slots": [
+          {
+            "time": "11:00 AM – 12:30 PM",
+            "topic": "Problem Solving",
+            "activity": "Practice Problems",
+            "priority": "Medium",
+            "notes": "Work on problem-solving exercises to improve skills"
+          },
+          {
+            "time": "6:00 PM – 7:00 PM",
+            "topic": "World War I Causes",
+            "activity": "Light Review",
+            "priority": "Low",
+            "notes": "Quickly review causes of World War I to refresh memory"
+          }
+        ]
+      },
+      {
+        "day": "Saturday",
+        "slots": [
+          {
+            "time": "9:00 AM – 10:30 AM",
+            "topic": "Photosynthesis",
+            "activity": "Mock Test",
+            "priority": "High",
+            "notes": "Take a mock test to assess understanding of photosynthesis"
+          },
+          {
+            "time": "2:00 PM – 3:00 PM",
+            "topic": "Concept Clarity",
+            "activity": "Concept Mapping",
+            "priority": "Medium",
+            "notes": "Create concept maps to improve understanding of complex topics"
+          }
+        ]
+      },
+      {
+        "day": "Sunday",
+        "slots": [
+          {
+            "time": "10:00 AM – 11:30 AM",
+            "topic": "Problem Solving",
+            "activity": "Practice Problems",
+            "priority": "Medium",
+            "notes": "Work on problem-solving exercises to improve skills"
+          },
+          {
+            "time": "4:00 PM – 5:00 PM",
+            "topic": "World War I Causes",
+            "activity": "Light Review",
+            "priority": "Low",
+            "notes": "Quickly review causes of World War I to refresh memory"
+          }
+        ]
+      }
+    ],
+    "focus_areas": [
+      {
+        "topic": "Photosynthesis",
+        "urgency": "Critical",
+        "current_accuracy": 65,
+        "target_accuracy": 80,
+        "recommended_strategy": "Focus on providing detailed explanations of light-dependent reactions and photosynthesis equations"
+      },
+      {
+        "topic": "World War I Causes",
+        "urgency": "Critical",
+        "current_accuracy": 53.9,
+        "target_accuracy": 70,
+        "recommended_strategy": "Review the role of imperialism in the causes of World War I and provide clear explanations"
+      }
+    ],
+    "what_to_study_next": [
+      {
+        "topic": "Cellular Respiration",
+        "reason": "Builds on understanding of photosynthesis and cellular processes",
+        "prerequisites": [
+          "Photosynthesis"
+        ],
+        "estimated_hours": 10
+      }
+    ],
+    "study_tips": [
+      {
+        "tip": "When explaining complex topics like photosynthesis, try to break it down into smaller, more manageable parts and use examples to illustrate key concepts",
+        "applies_to": "Photosynthesis",
+        "based_on": "conceptual: Difficulty in explaining light-dependent reactions"
+      },
+      {
+        "tip": "When working on problem-solving exercises, try to approach problems systematically and use diagrams or charts to visualize the process",
+        "applies_to": "Problem Solving",
+        "based_on": "guessing: Tendency to guess answers"
+      }
+    ],
+    "milestone_goals": {
+      "one_week": [
+        "Score above 80% on a Photosynthesis practice test"
+      ],
+      "one_month": [
+        "Increase overall accuracy by 10% and demonstrate improved understanding of World War I causes"
+      ]
+    }
+  }
+}

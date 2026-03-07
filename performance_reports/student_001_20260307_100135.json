@@ -1,0 +1,95 @@
+{
+  "student_id": "student_001",
+  "exams_analysed": 10,
+  "exam_files": [
+    "student_001_20260306_130852.json",
+    "student_001_20260306_130601.json",
+    "student_001_20260306_124117.json",
+    "student_001_20260306_123655.json",
+    "student_001_20260306_123236.json",
+    "student_001_20260306_121946.json",
+    "student_001_20260306_121416.json",
+    "student_001_20260306_114139.json",
+    "student_001_20260306_113103.json",
+    "student_001_20260305_171004.json"
+  ],
+  "analysis": {
+    "topic_wise_performance": [
+      {
+        "topic": "Photosynthesis",
+        "performance": "Average ⚠️",
+        "accuracy_percent": 65,
+        "questions_attempted": 4,
+        "remarks": "Student struggled to provide detailed explanations of photosynthesis"
+      },
+      {
+        "topic": "Newton's Laws",
+        "performance": "Strong 💪",
+        "accuracy_percent": 82.5,
+        "questions_attempted": 4,
+        "remarks": "Student demonstrated excellent understanding of Newton's Laws"
+      },
+      {
+        "topic": "World War I Causes",
+        "performance": "Weak ❗",
+        "accuracy_percent": 53.9,
+        "questions_attempted": 4,
+        "remarks": "Student struggled to provide a clear and concise explanation of the causes of World War I"
+      }
+    ],
+    "strengths": [
+      "Excellent problem-solving skills",
+      "Strong understanding of scientific concepts",
+      "Ability to provide clear explanations"
+    ],
+    "weaknesses": [
+      "Difficulty in providing detailed explanations of complex topics",
+      "Struggles with critical thinking and analysis",
+      "Need to improve understanding of historical events"
+    ],
+    "mistake_patterns_by_topic": [
+      {
+        "topic": "Photosynthesis",
+        "conceptual_mistakes": "Difficulty in explaining light-dependent reactions",
+        "calculation_mistakes": "None",
+        "time_management_issues": "None",
+        "guessing_behavior": "Tendency to guess answers"
+      },
+      {
+        "topic": "Newton's Laws",
+        "conceptual_mistakes": "None",
+        "calculation_mistakes": "None",
+        "time_management_issues": "None",
+        "guessing_behavior": "None"
+      },
+      {
+        "topic": "World War I Causes",
+        "conceptual_mistakes": "Difficulty in explaining the role of imperialism",
+        "calculation_mistakes": "None",
+        "time_management_issues": "None",
+        "guessing_behavior": "Tendency to guess answers"
+      }
+    ],
+    "difficulty_analysis": {
+      "easy": {
+        "total_questions": 0,
+        "accuracy_percent": 0
+      },
+      "medium": {
+        "total_questions": 12,
+        "accuracy_percent": 72.5
+      },
+      "hard": {
+        "total_questions": 16,
+        "accuracy_percent": 75
+      }
+    },
+    "skill_scores": {
+      "problem_solving": 8,
+      "concept_clarity": 7,
+      "accuracy": 8,
+      "overall_learning_index": 7.7
+    },
+    "overall_summary": "Student demonstrated strengths in problem-solving and scientific concepts, but struggled with critical thinking and historical events. To improve, focus on developing a deeper understanding of complex topics and improving time management skills."
+  }
+}
