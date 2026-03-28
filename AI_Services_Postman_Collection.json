@@ -1,0 +1,1166 @@
+{
+	"info": {
+		"_postman_id": "ai-services-prod-collection",
+		"name": "AI Services - Production API",
+		"description": "Complete Postman collection for AI Study Services API.\n\nIncludes:\n- 8 Health Check endpoints\n- 12 NestJS Bridge endpoints\n- 8 Legacy Django endpoints\n- 3 Admin API endpoints\n- 2 Batch Processing endpoints\n- Auth validation tests\n\nSetup:\n1. Set `base_url` variable (default: http://127.0.0.1:8000)\n2. Set `api_key` variable (your institute API key)\n3. Run 'Health Checks' folder first to verify server is up",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://127.0.0.1:8000",
+			"type": "string"
+		},
+		{
+			"key": "api_key",
+			"value": "ask_test_key_for_development_only_1234",
+			"type": "string"
+		}
+	],
+	"auth": {
+		"type": "apikey",
+		"apikey": [
+			{
+				"key": "key",
+				"value": "X-API-Key",
+				"type": "string"
+			},
+			{
+				"key": "value",
+				"value": "{{api_key}}",
+				"type": "string"
+			},
+			{
+				"key": "in",
+				"value": "header",
+				"type": "string"
+			}
+		]
+	},
+	"item": [
+		{
+			"name": "Health Checks",
+			"description": "Health check endpoints — no auth required",
+			"item": [
+				{
+					"name": "Root - API Info",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/", "host": ["{{base_url}}"], "path": [""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/", "host": ["{{base_url}}"], "path": [""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"message\": \"AI Study API v2.0 — Production Multi-Tenant\",\n  \"services\": [\"/feedback\", \"/notes\", \"/content\", \"/test\", \"/career\", \"/performance\", \"/personalization\", \"/cheating\"],\n  \"auth\": \"Include X-API-Key header with your institute API key\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Health - Feedback",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/feedback/health/", "host": ["{{base_url}}"], "path": ["feedback", "health", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/feedback/health/", "host": ["{{base_url}}"], "path": ["feedback", "health", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"status\": \"ok\",\n  \"service\": \"feedback\",\n  \"model\": \"llama-3.3-70b-versatile\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Health - Content",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/content/health/", "host": ["{{base_url}}"], "path": ["content", "health", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/content/health/", "host": ["{{base_url}}"], "path": ["content", "health", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"status\": \"ok\",\n  \"service\": \"ai_content\",\n  \"model\": \"llama-3.1-8b-instant\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Health - Test",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/test/health/", "host": ["{{base_url}}"], "path": ["test", "health", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/test/health/", "host": ["{{base_url}}"], "path": ["test", "health", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"status\": \"ok\",\n  \"service\": \"ai_test\",\n  \"model\": \"llama-3.3-70b-versatile\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Health - Career",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/career/health/", "host": ["{{base_url}}"], "path": ["career", "health", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/career/health/", "host": ["{{base_url}}"], "path": ["career", "health", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"status\": \"ok\",\n  \"service\": \"career_roadmap\",\n  \"model\": \"llama-3.3-70b-versatile\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Health - Performance",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/performance/health/", "host": ["{{base_url}}"], "path": ["performance", "health", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/performance/health/", "host": ["{{base_url}}"], "path": ["performance", "health", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"status\": \"ok\",\n  \"service\": \"performance_analysis\",\n  \"model\": \"llama-3.3-70b-versatile\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Health - Personalization",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/personalization/health/", "host": ["{{base_url}}"], "path": ["personalization", "health", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/personalization/health/", "host": ["{{base_url}}"], "path": ["personalization", "health", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"status\": \"ok\",\n  \"service\": \"personalization\",\n  \"model\": \"llama-3.3-70b-versatile\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Health - Cheating",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/cheating/health/", "host": ["{{base_url}}"], "path": ["cheating", "health", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/cheating/health/", "host": ["{{base_url}}"], "path": ["cheating", "health", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"status\": \"ok\",\n  \"service\": \"cheating_detection\",\n  \"model\": \"llama-3.1-8b-instant\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Health - Notes",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/notes/health/", "host": ["{{base_url}}"], "path": ["notes", "health", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/notes/health/", "host": ["{{base_url}}"], "path": ["notes", "health", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"status\": \"ok\",\n  \"service\": \"ai_notes\",\n  \"model\": \"llama-3.3-70b-versatile\"\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Auth Tests",
+			"description": "Authentication validation tests",
+			"item": [
+				{
+					"name": "Auth - No Key (Expect 401)",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/content/suggest/?topic=Physics",
+							"host": ["{{base_url}}"],
+							"path": ["content", "suggest", ""],
+							"query": [{ "key": "topic", "value": "Physics" }]
+						}
+					},
+					"response": [
+						{
+							"name": "401 Unauthorized",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/content/suggest/?topic=Physics", "host": ["{{base_url}}"], "path": ["content", "suggest", ""] }
+							},
+							"status": "Unauthorized",
+							"code": 401,
+							"body": "{\n  \"error\": \"Missing API key. Include X-API-Key header or Authorization: Bearer <key>\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Auth - Invalid Key (Expect 401)",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [
+							{ "key": "X-API-Key", "value": "invalid_key_12345" }
+						],
+						"url": {
+							"raw": "{{base_url}}/content/suggest/?topic=Physics",
+							"host": ["{{base_url}}"],
+							"path": ["content", "suggest", ""],
+							"query": [{ "key": "topic", "value": "Physics" }]
+						}
+					},
+					"response": [
+						{
+							"name": "401 Invalid Key",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/content/suggest/?topic=Physics", "host": ["{{base_url}}"], "path": ["content", "suggest", ""] }
+							},
+							"status": "Unauthorized",
+							"code": 401,
+							"body": "{\n  \"error\": \"Invalid API key\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Auth - X-API-Key (Expect 200)",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [
+							{ "key": "X-API-Key", "value": "{{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/content/suggest/?topic=Physics",
+							"host": ["{{base_url}}"],
+							"path": ["content", "suggest", ""],
+							"query": [{ "key": "topic", "value": "Physics" }]
+						}
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/content/suggest/?topic=Physics", "host": ["{{base_url}}"], "path": ["content", "suggest", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"topic\": \"Physics\",\n  \"resources\": [...],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.1-8b-instant\", \"institute\": \"test-institute\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Auth - Bearer Token / NestJS Style (Expect 200)",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/content/suggest/?topic=Thermodynamics",
+							"host": ["{{base_url}}"],
+							"path": ["content", "suggest", ""],
+							"query": [{ "key": "topic", "value": "Thermodynamics" }]
+						}
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/content/suggest/?topic=Thermodynamics", "host": ["{{base_url}}"], "path": ["content", "suggest", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"topic\": \"Thermodynamics\",\n  \"resources\": [...],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.1-8b-instant\", \"institute\": \"test-institute\" }\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "NestJS Bridge Endpoints",
+			"description": "12 AI service endpoints called by apexiq-backend NestJS ai-bridge module",
+			"item": [
+				{
+					"name": "AI #1 - Doubt Resolve",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"questionText\": \"Why does a ball thrown upward come back down?\",\n  \"topicId\": \"gravity-basics\",\n  \"mode\": \"detailed\",\n  \"studentContext\": {\n    \"grade\": 11,\n    \"recentTopics\": [\"kinematics\", \"forces\"]\n  }\n}"
+						},
+						"url": { "raw": "{{base_url}}/doubt/resolve", "host": ["{{base_url}}"], "path": ["doubt", "resolve"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/doubt/resolve", "host": ["{{base_url}}"], "path": ["doubt", "resolve"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"explanation\": \"The ball comes back down due to gravitational force...\",\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\", \"institute\": \"test-institute\" }\n}"
+						},
+						{
+							"name": "400 Missing questionText",
+							"originalRequest": {
+								"method": "POST",
+								"body": { "mode": "raw", "raw": "{}" },
+								"url": { "raw": "{{base_url}}/doubt/resolve", "host": ["{{base_url}}"], "path": ["doubt", "resolve"] }
+							},
+							"status": "Bad Request",
+							"code": 400,
+							"body": "{\n  \"error\": \"Missing questionText\"\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #2a - Tutor Session Start",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"studentId\": \"student_001\",\n  \"topicId\": \"organic-chemistry\",\n  \"context\": \"Student is struggling with reaction mechanisms\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/tutor/session", "host": ["{{base_url}}"], "path": ["tutor", "session"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/tutor/session", "host": ["{{base_url}}"], "path": ["tutor", "session"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"sessionId\": \"...\",\n  \"response\": \"Let's start with reaction mechanisms...\",\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #2b - Tutor Session Continue",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"sessionId\": \"session_abc123\",\n  \"studentMessage\": \"I don't understand the SN1 vs SN2 mechanism difference\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/tutor/continue", "host": ["{{base_url}}"], "path": ["tutor", "continue"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/tutor/continue", "host": ["{{base_url}}"], "path": ["tutor", "continue"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"response\": \"Great question! SN1 and SN2 differ in...\",\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						},
+						{
+							"name": "400 Missing Fields",
+							"originalRequest": {
+								"method": "POST",
+								"body": { "mode": "raw", "raw": "{ \"sessionId\": \"abc\" }" },
+								"url": { "raw": "{{base_url}}/tutor/continue", "host": ["{{base_url}}"], "path": ["tutor", "continue"] }
+							},
+							"status": "Bad Request",
+							"code": 400,
+							"body": "{\n  \"error\": \"Missing sessionId or studentMessage\"\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #3 - Performance Analyze",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"studentId\": \"student_001\",\n  \"testSessionId\": \"test_session_456\",\n  \"examTarget\": \"jee\",\n  \"attempts\": [\n    {\n      \"questionId\": \"q1\",\n      \"topic\": \"Mechanics\",\n      \"correct\": true,\n      \"timeTaken\": 45\n    },\n    {\n      \"questionId\": \"q2\",\n      \"topic\": \"Thermodynamics\",\n      \"correct\": false,\n      \"timeTaken\": 120\n    },\n    {\n      \"questionId\": \"q3\",\n      \"topic\": \"Optics\",\n      \"correct\": false,\n      \"timeTaken\": 90\n    }\n  ]\n}"
+						},
+						"url": { "raw": "{{base_url}}/performance/analyze", "host": ["{{base_url}}"], "path": ["performance", "analyze"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/performance/analyze", "host": ["{{base_url}}"], "path": ["performance", "analyze"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"analysis\": {...},\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #4 - Grade Subjective",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"questionText\": \"Explain the first law of thermodynamics\",\n  \"studentAnswer\": \"Energy cannot be created or destroyed, only transformed from one form to another.\",\n  \"expectedAnswer\": \"The first law states that the total energy of an isolated system is constant. Energy can be transformed but not created or destroyed. dU = Q - W.\",\n  \"maxMarks\": 10\n}"
+						},
+						"url": { "raw": "{{base_url}}/grade/subjective", "host": ["{{base_url}}"], "path": ["grade", "subjective"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/grade/subjective", "host": ["{{base_url}}"], "path": ["grade", "subjective"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"score\": 7,\n  \"feedback\": \"Good understanding of the core concept...\",\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #5 - Engagement Detect",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"studentId\": \"student_001\",\n  \"context\": \"practice\",\n  \"signals\": {\n    \"rewindCount\": 0,\n    \"pauseCount\": 2,\n    \"answersPerMinute\": 1.5,\n    \"accuracy\": 0.65,\n    \"idleSeconds\": 30\n  }\n}"
+						},
+						"url": { "raw": "{{base_url}}/engage/detect", "host": ["{{base_url}}"], "path": ["engage", "detect"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/engage/detect", "host": ["{{base_url}}"], "path": ["engage", "detect"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"state\": \"bored\",\n  \"confidence\": 0.7,\n  \"signals_analysis\": \"Low engagement detected...\",\n  \"recommendedAction\": \"Break task into smaller sections...\",\n  \"urgency\": \"medium\",\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.1-8b-instant\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #6 - Content Recommend",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"studentId\": \"student_001\",\n  \"context\": \"post_test\",\n  \"weakTopics\": [\"Thermodynamics\", \"Organic Chemistry\"],\n  \"recentPerformance\": {\n    \"overallScore\": 72,\n    \"topicScores\": {\n      \"Mechanics\": 85,\n      \"Thermodynamics\": 55,\n      \"Organic Chemistry\": 60\n    }\n  }\n}"
+						},
+						"url": { "raw": "{{base_url}}/recommend/content", "host": ["{{base_url}}"], "path": ["recommend", "content"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/recommend/content", "host": ["{{base_url}}"], "path": ["recommend", "content"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"recommendations\": [\n    {\n      \"type\": \"revision_notes\",\n      \"title\": \"Thermodynamics Revision Notes\",\n      \"priority\": \"high\"\n    }\n  ],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.1-8b-instant\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #7 - STT Notes Generate",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"audioUrl\": \"https://storage.example.com/lectures/physics_101.mp3\",\n  \"topicId\": \"kinematics\",\n  \"language\": \"en\",\n  \"transcript\": \"Today we will study kinematics. Kinematics is the branch of physics that describes the motion of objects without considering the forces that cause the motion. The key quantities are displacement, velocity, and acceleration. Displacement is a vector quantity that represents the change in position...\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/stt/notes", "host": ["{{base_url}}"], "path": ["stt", "notes"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/stt/notes", "host": ["{{base_url}}"], "path": ["stt", "notes"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"notes\": {...},\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #8 - Feedback Generate",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"studentId\": \"student_001\",\n  \"context\": \"post_test\",\n  \"data\": {\n    \"score\": 72,\n    \"total\": 100,\n    \"subject\": \"Physics\",\n    \"weakAreas\": [\"Thermodynamics\", \"Optics\"],\n    \"strongAreas\": [\"Mechanics\"]\n  }\n}"
+						},
+						"url": { "raw": "{{base_url}}/feedback/generate", "host": ["{{base_url}}"], "path": ["feedback", "generate"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/feedback/generate", "host": ["{{base_url}}"], "path": ["feedback", "generate"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"feedbackText\": \"Good effort on your Physics test...\",\n  \"highlights\": [\"Strong mechanics understanding\"],\n  \"improvements\": [\"Focus on Thermodynamics\"],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #9 - Notes Analyze",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"studentId\": \"student_001\",\n  \"topicId\": \"thermodynamics\",\n  \"notesContent\": \"Thermodynamics is about heat and energy. The first law says energy is conserved. The second law says entropy always increases. I'm not sure about the third law. Carnot cycle is the most efficient cycle. PV = nRT is the ideal gas law.\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/notes/analyze", "host": ["{{base_url}}"], "path": ["notes", "analyze"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/notes/analyze", "host": ["{{base_url}}"], "path": ["notes", "analyze"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"weakTopics\": [\"Third law of thermodynamics\"],\n  \"suggestions\": [...],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #10 - Resume Analyze",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"resumeText\": \"John Doe\\nB.Tech Computer Science, IIT Delhi (2024)\\nGPA: 8.5/10\\n\\nExperience:\\n- Intern at Google (Summer 2023) - Worked on ML infrastructure\\n- Research Assistant - NLP Lab (2022-2023)\\n\\nSkills: Python, TensorFlow, PyTorch, SQL, Git\\n\\nProjects:\\n- Sentiment Analysis tool using BERT\\n- Real-time object detection using YOLO\",\n  \"targetRole\": \"Machine Learning Engineer\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/resume/analyze", "host": ["{{base_url}}"], "path": ["resume", "analyze"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/resume/analyze", "host": ["{{base_url}}"], "path": ["resume", "analyze"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"analysis\": {...},\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #11 - Interview Prep Start",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"studentId\": \"student_001\",\n  \"targetCollege\": \"IIT Bombay\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/interview/start", "host": ["{{base_url}}"], "path": ["interview", "start"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/interview/start", "host": ["{{base_url}}"], "path": ["interview", "start"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"questions\": [...],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "AI #12 - Plan Generate",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"studentId\": \"student_001\",\n  \"examTarget\": \"jee\",\n  \"examYear\": \"2027\",\n  \"dailyHours\": 5,\n  \"weakTopics\": [\"Calculus\", \"Optics\", \"Organic Chemistry\"],\n  \"targetCollege\": \"IIT Delhi\",\n  \"academicCalendar\": {\n    \"schoolExams\": \"2027-02-15\",\n    \"jeeMain\": \"2027-04-10\",\n    \"jeeAdvanced\": \"2027-06-01\"\n  }\n}"
+						},
+						"url": { "raw": "{{base_url}}/plan/generate", "host": ["{{base_url}}"], "path": ["plan", "generate"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/plan/generate", "host": ["{{base_url}}"], "path": ["plan", "generate"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"planItems\": [\n    { \"day\": 1, \"subject\": \"Mathematics\", \"topic\": \"Calculus\", \"duration_min\": 120 }\n  ],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Legacy Django Endpoints",
+			"description": "Original Django view endpoints (8 services)",
+			"item": [
+				{
+					"name": "Content - Suggest Resources",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/content/suggest/?topic=Quantum Mechanics",
+							"host": ["{{base_url}}"],
+							"path": ["content", "suggest", ""],
+							"query": [{ "key": "topic", "value": "Quantum Mechanics" }]
+						}
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/content/suggest/?topic=Quantum Mechanics", "host": ["{{base_url}}"], "path": ["content", "suggest", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"topic\": \"Quantum Mechanics\",\n  \"resources\": [...],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.1-8b-instant\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Feedback - Analyze",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subject\": \"Physics\",\n  \"student_answer\": \"Newton's third law states that for every action there is an equal and opposite reaction.\",\n  \"marking_scheme\": \"Must mention action-reaction pairs and equal magnitude forces. Should include examples.\",\n  \"extra_context\": \"Class 11 exam\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/feedback/analyze/", "host": ["{{base_url}}"], "path": ["feedback", "analyze", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/feedback/analyze/", "host": ["{{base_url}}"], "path": ["feedback", "analyze", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"score\": 80,\n  \"feedback\": \"Good understanding of the core concept...\",\n  \"strengths\": [...],\n  \"improvements\": [...],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Test - Generate Practice Test",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"topic\": \"Organic Chemistry - Alkanes\",\n  \"num_questions\": 5,\n  \"difficulty\": \"medium\",\n  \"question_types\": \"mcq, true_false, short_answer\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/test/generate/", "host": ["{{base_url}}"], "path": ["test", "generate", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/test/generate/", "host": ["{{base_url}}"], "path": ["test", "generate", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"topic\": \"Organic Chemistry - Alkanes\",\n  \"difficulty\": \"medium\",\n  \"questions\": [\n    { \"id\": 1, \"question\": \"...\", \"type\": \"mcq\", \"options\": [...], \"answer\": \"...\" }\n  ],\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Test - Batch Generate",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"topics\": [\"Mechanics\", \"Thermodynamics\", \"Optics\"],\n  \"num_questions\": 5,\n  \"difficulty\": \"medium\",\n  \"question_types\": \"mcq, short_answer\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/test/batch/", "host": ["{{base_url}}"], "path": ["test", "batch", ""] }
+					},
+					"response": [
+						{
+							"name": "202 Accepted",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/test/batch/", "host": ["{{base_url}}"], "path": ["test", "batch", ""] }
+							},
+							"status": "Accepted",
+							"code": 202,
+							"body": "{\n  \"job_id\": \"batch_abc123\",\n  \"status\": \"queued\",\n  \"total_items\": 3,\n  \"institute\": \"test-institute\",\n  \"message\": \"Poll /test/batch/status/?job_id=<id> for progress\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Test - Batch Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/test/batch/status/?job_id=YOUR_JOB_ID",
+							"host": ["{{base_url}}"],
+							"path": ["test", "batch", "status", ""],
+							"query": [{ "key": "job_id", "value": "YOUR_JOB_ID", "description": "Replace with job_id from batch generate response" }]
+						}
+					},
+					"response": [
+						{
+							"name": "200 Completed",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/test/batch/status/?job_id=abc", "host": ["{{base_url}}"], "path": ["test", "batch", "status", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"job_id\": \"batch_abc123\",\n  \"status\": \"completed\",\n  \"progress\": { \"total\": 3, \"completed\": 3, \"failed\": 0 },\n  \"results\": [...]\n}"
+						},
+						{
+							"name": "404 Job Not Found",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/test/batch/status/?job_id=invalid", "host": ["{{base_url}}"], "path": ["test", "batch", "status", ""] }
+							},
+							"status": "Not Found",
+							"code": 404,
+							"body": "{\n  \"error\": \"Job not found\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Career - Generate Roadmap",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"goal\": \"IIT Professor in Physics\",\n  \"interests\": [\"Physics\", \"Research\", \"Teaching\"],\n  \"current_skills\": [\"B.Sc Physics\", \"Mathematical Analysis\"],\n  \"timeline_months\": 60\n}"
+						},
+						"url": { "raw": "{{base_url}}/career/generate/", "host": ["{{base_url}}"], "path": ["career", "generate", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/career/generate/", "host": ["{{base_url}}"], "path": ["career", "generate", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"roadmap\": {...},\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Performance - Analyze (Legacy)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"student_id\": \"student_001\",\n  \"subjects_data\": [\n    { \"subject\": \"Physics\", \"score\": 78, \"total\": 100, \"topics\": [\"Mechanics\", \"Thermodynamics\"] },\n    { \"subject\": \"Chemistry\", \"score\": 65, \"total\": 100, \"topics\": [\"Organic\", \"Inorganic\"] },\n    { \"subject\": \"Mathematics\", \"score\": 82, \"total\": 100, \"topics\": [\"Calculus\", \"Algebra\"] }\n  ]\n}"
+						},
+						"url": { "raw": "{{base_url}}/performance/analyze/", "host": ["{{base_url}}"], "path": ["performance", "analyze", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/performance/analyze/", "host": ["{{base_url}}"], "path": ["performance", "analyze", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"analysis\": {...},\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Personalization - Generate Study Plan",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"student_id\": \"student_001\",\n  \"learning_style\": \"visual\",\n  \"subjects_to_focus\": [\"Physics\", \"Chemistry\", \"Mathematics\"],\n  \"available_hours_per_day\": 4\n}"
+						},
+						"url": { "raw": "{{base_url}}/personalization/generate/", "host": ["{{base_url}}"], "path": ["personalization", "generate", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/personalization/generate/", "host": ["{{base_url}}"], "path": ["personalization", "generate", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"studyPlan\": {...},\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Cheating - Analyze Exam Logs",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"studentId\": \"student_001\",\n  \"examId\": \"exam_456\",\n  \"events\": [\n    { \"type\": \"tab_switch\", \"timestamp\": \"2026-03-17T10:05:00Z\", \"details\": \"Switched to Google\" },\n    { \"type\": \"tab_switch\", \"timestamp\": \"2026-03-17T10:05:30Z\", \"details\": \"Returned to exam\" },\n    { \"type\": \"gaze_away\", \"timestamp\": \"2026-03-17T10:10:00Z\", \"duration_seconds\": 15 },\n    { \"type\": \"face_not_detected\", \"timestamp\": \"2026-03-17T10:12:00Z\", \"duration_seconds\": 8 },\n    { \"type\": \"mouth_movement\", \"timestamp\": \"2026-03-17T10:15:00Z\", \"duration_seconds\": 20 }\n  ]\n}"
+						},
+						"url": { "raw": "{{base_url}}/cheating/analyze-logs/", "host": ["{{base_url}}"], "path": ["cheating", "analyze-logs", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/cheating/analyze-logs/", "host": ["{{base_url}}"], "path": ["cheating", "analyze-logs", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"riskLevel\": \"medium\",\n  \"analysis\": \"...\",\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.1-8b-instant\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Notes - Upload and Generate",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{ "key": "file", "type": "file", "src": "", "description": "Audio/video file to transcribe" },
+								{ "key": "student_id", "value": "student_001", "type": "text" },
+								{ "key": "topic", "value": "Kinematics", "type": "text" }
+							]
+						},
+						"url": { "raw": "{{base_url}}/notes/upload/", "host": ["{{base_url}}"], "path": ["notes", "upload", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/notes/upload/", "host": ["{{base_url}}"], "path": ["notes", "upload", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"notes\": {...},\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Notes - List Saved",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/notes/list/?student_id=student_001",
+							"host": ["{{base_url}}"],
+							"path": ["notes", "list", ""],
+							"query": [{ "key": "student_id", "value": "student_001" }]
+						}
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/notes/list/?student_id=student_001", "host": ["{{base_url}}"], "path": ["notes", "list", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"student_id\": \"student_001\",\n  \"notes\": [\"student_001_20260317.json\"]\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Admin API",
+			"description": "Tenant self-service admin endpoints — usage monitoring, cache management, config info",
+			"item": [
+				{
+					"name": "Usage Dashboard",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/admin-api/usage/?days=7",
+							"host": ["{{base_url}}"],
+							"path": ["admin-api", "usage", ""],
+							"query": [{ "key": "days", "value": "7", "description": "Number of days to look back (default: 7)" }]
+						}
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/admin-api/usage/?days=7", "host": ["{{base_url}}"], "path": ["admin-api", "usage", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"institute\": \"test-institute\",\n  \"plan\": \"premium\",\n  \"today\": {\n    \"institute_id\": \"test-institute\",\n    \"date\": \"2026-03-17\",\n    \"tokens_used\": 15000,\n    \"soft_cap\": 500000,\n    \"hard_cap\": 1000000\n  },\n  \"period_days\": 7,\n  \"daily_breakdown\": [...],\n  \"feature_breakdown\": [...],\n  \"total_tokens\": 45000,\n  \"total_calls\": 120\n}"
+						}
+					]
+				},
+				{
+					"name": "Flush Cache",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": { "raw": "{{base_url}}/admin-api/cache/flush/", "host": ["{{base_url}}"], "path": ["admin-api", "cache", "flush", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/admin-api/cache/flush/", "host": ["{{base_url}}"], "path": ["admin-api", "cache", "flush", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"message\": \"Cache flushed for institute: test-institute\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Institute Info",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": { "raw": "{{base_url}}/admin-api/info/", "host": ["{{base_url}}"], "path": ["admin-api", "info", ""] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/admin-api/info/", "host": ["{{base_url}}"], "path": ["admin-api", "info", ""] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"id\": \"uuid-here\",\n  \"name\": \"Test Institute\",\n  \"slug\": \"test-institute\",\n  \"plan\": \"premium\",\n  \"daily_soft_cap\": 500000,\n  \"daily_hard_cap\": 1000000,\n  \"max_concurrent_requests\": 10,\n  \"features_enabled\": [\"doubt_resolve\", \"tutor_session\", \"grade_subjective\", \"test_generate\", \"batch\"]\n}"
+						},
+						{
+							"name": "401 No Institute Context",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": { "raw": "{{base_url}}/admin-api/info/", "host": ["{{base_url}}"], "path": ["admin-api", "info", ""] }
+							},
+							"status": "Unauthorized",
+							"code": 401,
+							"body": "{\n  \"error\": \"No institute context\"\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "NestJS Bridge Auth (X-Tenant-ID)",
+			"description": "Test requests as they come from NestJS backend with X-Tenant-ID header",
+			"item": [
+				{
+					"name": "Bridge via NestJS - Doubt Resolve",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "X-Tenant-ID", "value": "nestjs-tenant-uuid-here", "description": "NestJS tenant UUID — maps to Institute.external_tenant_id" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"questionText\": \"What is the difference between speed and velocity?\",\n  \"topicId\": \"kinematics\",\n  \"mode\": \"simple\"\n}"
+						},
+						"url": { "raw": "{{base_url}}/doubt/resolve", "host": ["{{base_url}}"], "path": ["doubt", "resolve"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/doubt/resolve", "host": ["{{base_url}}"], "path": ["doubt", "resolve"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"explanation\": \"Speed is scalar, velocity is vector...\",\n  \"_meta\": { \"source\": \"llm\", \"institute\": \"tenant-slug\" }\n}"
+						}
+					]
+				},
+				{
+					"name": "Bridge via NestJS - Grade Subjective",
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{api_key}}" },
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "X-Tenant-ID", "value": "nestjs-tenant-uuid-here" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"questionText\": \"Describe the process of photosynthesis\",\n  \"studentAnswer\": \"Plants use sunlight, water, and CO2 to make glucose and oxygen.\",\n  \"expectedAnswer\": \"Photosynthesis is the process by which green plants use sunlight energy to convert CO2 and H2O into glucose (C6H12O6) and O2. It occurs in chloroplasts. Light reactions happen in thylakoids, Calvin cycle in stroma.\",\n  \"maxMarks\": 10\n}"
+						},
+						"url": { "raw": "{{base_url}}/grade/subjective", "host": ["{{base_url}}"], "path": ["grade", "subjective"] }
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "POST",
+								"url": { "raw": "{{base_url}}/grade/subjective", "host": ["{{base_url}}"], "path": ["grade", "subjective"] }
+							},
+							"status": "OK",
+							"code": 200,
+							"body": "{\n  \"score\": 5,\n  \"feedback\": \"Basic understanding shown but missing key details...\",\n  \"_meta\": { \"source\": \"llm\" }\n}"
+						}
+					]
+				}
+			]
+		}
+	]
+}

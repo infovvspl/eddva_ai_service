@@ -1,0 +1,121 @@
+{
+  "student_id": "student_001",
+  "original_file": "Anti-LeetCode_Roadmap_Stop_trying_to_solve_500_problems_144P.mp4",
+  "generated_at": "2026-03-09T11:58:54.168021",
+  "whisper_model": "base",
+  "transcript_length": 9897,
+  "transcript": "Hello friends, very welcome to mysergy.com I am your friend Saurabh Shukla in Sunday Live Today's live session we will talk about Antelate Code Why is Antelate Code called as I will explain All of us have said that we have to do a lot of programming If you want a good job then you have to do a lot of programming That's true But in a wrong way people understand and they mistake that they are doing a lot of programming like lead code or any other coding platform I am not saying that practice is very important but the requirement of a direction and the requirement is how you are doing it It is very important Because if we practice in a wrong way then how we are doing the way we are doing it and we are doing an expo and we want to practice the approach which you will do the most and will be better So if you are correct and you are practicing the right approach then you will do the work If you are practicing the wrong approach then it is not work So today I will tell you that it is not necessary that you will solve 500-600 problems and then you will be able to make your level You can achieve that level and you will be able to achieve the right approach So today I will tell you first of all when we start programming and I want to show you what is the right approach in this path when you start programming then our main focus is that the problem is solved and the problem is solved and the problem is solved and the problem is solved This is the second thing that is the performance of the performance So when I read the language I am sure that you will understand you learn to be a dryer you learn to be a basic and you will not be able to solve any logic because you are able to solve this Then we will read C++ and we will read data structures and for data structure many people ask what data structure we will have to read we want to go to web development we want to go to AI but we want to go to coding in the related field and we also need to learn that without the data structure we cannot learn the coding If you want to do a coding related job then you can not ignore data structure and you can not do it You talk about real world problems when we talk about simple problems we want to check even more simple problems for beginners but the real world problems are the same as we can tell in the competitive programming and actually the programming challenges and when the challenges are very important we need to do the right approach the right approach is the most efficient because of the approach if you are playing all the games then you will have a big own rotation you have to see what is the time complexity of your code and what is the space complexity if you can figure out these two things and how much time it can be how much time complexity will improve how much time it will improve so just solve the problem and think that I solved 500 lead code problem there is no sense because when the interview is done then it will be done from many people but the people who will do the right approach will have a better time complexity and the chances of the selection and that is why we need to practice the right thing in solving problems if you are playing a lot of time like you are playing a few or three hours solving a problem then you should think that you will not get the time in the interview so you can do it but you will have to improve your time that you can solve 4-5 problems in one hour and that is the level and that level can be done from one point it is in data structure it is a pattern in data structures but it is also a pattern of 10-15 which is the favourite of the interview so you can crack 90% of the interview on the same patterns which patterns are you going to know if you want to know the complete list then I have seen the description section in the description section in the description section the link of the advance dsa code is left you can see the entire syllabus and all the patterns are called you will get the name of all the patterns you have to do this you have to understand that the problem of the way if you use the answer then this will be the most efficient solution so you will have to hear two pointers sliding window or on the BFSDFS or on the FETREQ you will have to explore the patterns if you don't see the patterns to explore the patterns you have to learn a basic language and to learn the basic data structure you have to do this and you have to do this what is the stack and why and all this is the problem you have to know and then you can master the pattern and if you do 5-5 questions then you can start on the 5th and 5th then you can start on the 5th and 5th so if you have a very disciplined challenge then you can start and if you have a very good pattern then you can do this and after that you can't do this because you are doing a lead code and other other is doing a competitive coding but you can master this patterns so the page link is provided you can check it the main thing is you have to prepare the patterns so today that we have a total against the Road Force ھاں سے کارس طور پہ بھارت میں کیوں کہ آج چل رہے ھاں مچ اور مچ میں بھارت نے پہلے بیٹین کری ہے ھاں سے کچھ ہی توس جیتا تھا نیوزلینڈنے شاہت اور انہوں نے بولین کو چھونا تھا ابھی آپ دیکھ سکتے ہو کہ انہوں نے کافیچھے بھارت نے رن بنالی ہے ھاں سے کچھ گڑبڑ ہو گئی تھی سولوی اور اس کے بعد پہر آخری میں جاکے بھریہ سے کمبیک کرا اور ایک دیزنٹسکورتک پہنچا دیئے اب دیکھتے ہیں آگے کیا ہوتا ہے تو مجھ لکتا ابھی سبیلوں کا دیان وہاں پر رہے گا تو میں زیادہ آپ لوگہ کا time waste نہیں کرنا چاہتا لیکن پھر بھی اگر آپ کو کچھ دوٹ سا رہے تو پوسلی جیں میں کوشش کروں گا کیوں کو بتاہوں یہاں پہ رہل ماتور نے سپر چاہت دیا ہے Thank you Rahul Mataur, belated happy holy sir happy holy to you Rahul I want to ask you sir market may lovable AI, replate and google integrity tool has come in the past 10-15 minutes for full stack web app so your views so 2 types of people are one of them who efficiently use these tools to make applications and you should come but over the period of time this has also come that the good programmers who were very very very dependent on AI tools, then their skills decreased by 20% so there is a challenge, you need a balance you need to use it as an assistant, you need not be dependent on fully use if you are dependent on fully use then what will you do tomorrow? just use that tool, then you will soon be able to replace that tool you will not be able to replace that tool with that tool so you will have to keep your course skill and also there are many tools which will remain the same, now you will see that there are not many tools so these tools are definitely giving productivity but with this you have to work on your own skill and we are doing a super wise skill that is more than that see if a programmer can understand what is the meaning of performance, what is the code fit in this scenario what is the constraints, all that can be understood so AI can make that solution but to supervise that solution this is the work of a person and to check the capability factor this is the work of a person, so the one that you are getting is not scalable the solution that you are getting is not easy to maintain as a human being, you will have to keep a supervision role if you develop your skill in that role then you will have to use these AI tools to benefit you and if you are using AI tools to reduce the work and your skill will deteriorate what do we have to do, we have to learn AI tools to increase our skills in the relevant market, otherwise we are just degrading ourselves, we should not be that so the time of the person is saving the tools, so you can work on your own in a better role Any other doubt? Rizi is saying that you need to do programming or you need to do it every time you need to solve a new or tough problem I am saying that we have to understand the problem of the pattern that it is the problem of this pattern, we have to master the pattern we have to solve the problems, we can also solve an addiction we do not need to solve it all this is a real idea yes, I have checked many patterns of this video in the video description you will get all the details in the video description I am saying that I am in the second year of BCA, I am learning your UCF 5.0 language but after BCA I am doing a job from NIMSET to MCA NIMSET so that you get a good job, a good package and you will be able to elevate your level so I think NIMSET is better choice but you can do this now, so that you can secure your rank in top 100 and top 50 I am saying that I thought of a DSA like J for 5 company but due to AI some people are saying DSA is over, is it true? can you please guide? see, this confusion is due to AI, I will just tell you you will get a recent interview experience, some fan company, some candidate you will see in the glass door or LinkedIn now for fresher, this data structure is the most important and that is the problem of solving problems in the question of the question so till now this scene is ahead, I do not know but today's scene is this so now you have to do the data structure yes Amit Ramram system design is required for fresher system design should be read, even if it is not a fresher it is not an expectation when you go on SD2 role then you need to design a must skill yes Rajni Shushi, I have created a course for you you will get all the patterns in the link in the description good.verse is saying that I learnt C language from my Surji in 2018 and got the job in 2019, thank you Surji most welcome, and best wishes so you all will watch the match please enjoy the match, support Indian's team let's meet again in the next Sunday there will be no live there will be no live on the next Sunday I am going out in the city so I will not be able to take live on the next Sunday and when live comes I will take some new batch announcement with me so for today, thank you, goodbye",
+  "notes": {
+    "title": "Understanding Antelate Code and Data Structures for Competitive Programming",
+    "summary": "This study notes cover the importance of practicing the right approach, mastering data structures, and using AI tools to augment programming skills.",
+    "key_concepts": [
+      {
+        "concept": "Right Approach in Programming",
+        "explanation": "The right approach in programming involves solving problems with the most efficient code, considering time and space complexity, and mastering patterns to improve skills."
+      },
+      {
+        "concept": "Data Structures in Competitive Programming",
+        "explanation": "Data structures are crucial in competitive programming, and mastering them can help solve a wide range of problems and improve skills."
+      },
+      {
+        "concept": "Balancing AI Tools and Human Skills",
+        "explanation": "AI tools can augment programming skills, but relying solely on them can lead to decreased skills. A balance between using AI tools and developing human skills is necessary."
+      },
+      {
+        "concept": "Importance of Practice and Patterns",
+        "explanation": "Practice and mastering patterns are essential to improve programming skills and solve complex problems."
+      },
+      {
+        "concept": "Scalability and Maintainability",
+        "explanation": "A solution that is scalable and maintainable is essential for long-term success in competitive programming."
+      },
+      {
+        "concept": "Real-World Problems and Applications",
+        "explanation": "Competitive programming problems often mirror real-world problems, making it essential to practice and master data structures and patterns."
+      }
+    ],
+    "detailed_notes": [
+      {
+        "section_heading": "Importance of Practice and Patterns",
+        "points": [
+          "Practice is essential to improve programming skills and solve complex problems.",
+          "Mastering patterns can help solve a wide range of problems and improve skills.",
+          "Patterns are essential to improve skills and solve complex problems in competitive programming.",
+          "Practice and mastering patterns are crucial to improve programming skills and solve complex problems."
+        ]
+      },
+      {
+        "section_heading": "Balancing AI Tools and Human Skills",
+        "points": [
+          "Relying solely on AI tools can lead to decreased skills and a lack of understanding of programming concepts.",
+          "A balance between using AI tools and developing human skills is necessary to achieve long-term success in competitive programming.",
+          "AI tools can augment programming skills, but human skills are essential for solving complex problems and making informed decisions."
+        ]
+      },
+      {
+        "section_heading": "Data Structures in Competitive Programming",
+        "points": [
+          "Data structures are crucial in competitive programming, and mastering them can help solve a wide range of problems.",
+          "Mastering data structures can improve skills and solve complex problems in competitive programming.",
+          "Data structures are essential to improve skills and solve complex problems in competitive programming."
+        ]
+      },
+      {
+        "section_heading": "Right Approach in Programming",
+        "points": [
+          "The right approach in programming involves solving problems with the most efficient code.",
+          "Considering time and space complexity is essential when solving problems in competitive programming.",
+          "Mastering patterns is essential to improve skills and solve complex problems in competitive programming."
+        ]
+      }
+    ],
+    "key_terms": [
+      {
+        "term": "Time Complexity",
+        "definition": "A measure of the amount of time an algorithm takes to complete, usually expressed as a function of the size of the input."
+      },
+      {
+        "term": "Space Complexity",
+        "definition": "A measure of the amount of memory an algorithm uses, usually expressed as a function of the size of the input."
+      },
+      {
+        "term": "Patterns",
+        "definition": "Common solutions to problems in competitive programming, often involving data structures and algorithms."
+      },
+      {
+        "term": "Data Structures",
+        "definition": "Organizations of data in a computer program to improve efficiency and scalability."
+      },
+      {
+        "term": "Scalability",
+        "definition": "The ability of a solution to handle increasing amounts of data or traffic without a decrease in performance."
+      },
+      {
+        "term": "Maintainability",
+        "definition": "The ease with which a solution can be modified, updated, or extended without affecting its overall performance or functionality."
+      }
+    ],
+    "review_questions": [
+      {
+        "question": "What is the most efficient approach to solving problems in competitive programming?",
+        "answer": "Solving problems with the most efficient code, considering time and space complexity."
+      },
+      {
+        "question": "Why is mastering data structures essential in competitive programming?",
+        "answer": "Mastering data structures can help solve a wide range of problems and improve skills."
+      },
+      {
+        "question": "What is the importance of balancing AI tools and human skills in competitive programming?",
+        "answer": "A balance between using AI tools and developing human skills is necessary to achieve long-term success in competitive programming."
+      },
+      {
+        "question": "What is the definition of time complexity in the context of competitive programming?",
+        "answer": "A measure of the amount of time an algorithm takes to complete, usually expressed as a function of the size of the input."
+      },
+      {
+        "question": "What is the definition of space complexity in the context of competitive programming?",
+        "answer": "A measure of the amount of memory an algorithm uses, usually expressed as a function of the size of the input."
+      }
+    ]
+  }
+}

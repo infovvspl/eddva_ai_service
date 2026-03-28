@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/HP/Desktop/VVSPL/AI_Study/ai_services -type f -name *)",
+      "Bash(find /c/Users/HP/Desktop/VVSPL/AI_Study/app -type f -name *.py)",
+      "Bash(mkdir -p \"c:/Users/HP/Desktop/VVSPL/AI_Study/ai_services/core\")",
+      "Bash(mkdir -p \"c:/Users/HP/Desktop/VVSPL/AI_Study/ai_services/management/commands\")",
+      "Bash(xargs grep:*)",
+      "Bash(python3 -c \"import sys; sys.path.insert\\(0, ''/c/Users/HP/Desktop/VVSPL/AI_Study''\\); from ai_services.core.cache import ResponseCache; print\\(''OK''\\)\")",
+      "Bash(python manage.py makemigrations ai_services)",
+      "Bash(ls \"c:/Users/HP/Desktop/VVSPL/AI_Study/\"*.bat \"c:/Users/HP/Desktop/VVSPL/AI_Study/\"venv* \"c:/Users/HP/Desktop/VVSPL/AI_Study/\".venv*)",
+      "Bash(pip --version)",
+      "Bash(python -m pip --version)",
+      "Bash(where python:*)",
+      "Bash(pip install:*)",
+      "Bash(python manage.py migrate)",
+      "Bash(python manage.py check --deploy)",
+      "Bash(python manage.py show_urls)",
+      "Bash(python -c \":*)",
+      "Bash(curl -s http://127.0.0.1:8000/ -o /dev/null -w \"%{http_code}\")",
+      "Bash(python test_ai_services.py)",
+      "Bash(xargs -I {} basename {})",
+      "Bash(find \"c:/Users/HP/Desktop/VVSPL/apexiq-backend/apexiq/src/modules\" -name \"*.service.ts\" -exec wc -l {})",
+      "Bash(npx tsc:*)",
+      "Bash(pushd \"c:\\\\Users\\\\HP\\\\Desktop\\\\VVSPL\\\\apexiq-backend\\\\apexiq\")",
+      "Bash(popd)",
+      "Bash(python3 -c \":*)",
+      "Bash(grep -r \"SUPER_ADMIN\\\\|super_admin\" /c/Users/HP/Desktop/VVSPL/apexiq-backend/apexiq/src --include=*.ts)",
+      "Bash(find /c/Users/HP/Desktop/VVSPL/apexiq-backend/apexiq/src -path *migration* -name *.ts)",
+      "Bash(PGPASSWORD=postgres psql -h localhost -U postgres -d apexiq -c \"SELECT id, phone_number, full_name, role, tenant_id FROM \"\"user\"\" ORDER BY created_at DESC LIMIT 10;\")",
+      "Bash(where psql:*)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Bash(grep -E \"^c:\\\\Users\\\\HP\\\\Desktop\\\\VVSPL\\\\apexiq-backend\\\\apexiq\\\\src\\\\\\\\\\(.*\\\\.module\\\\.ts|app\\\\.module\\\\.ts\\)$\")",
+      "Bash(python -c \"import json; json.load\\(open\\(''/c/Users/HP/Desktop/VVSPL/apexiq-backend/apexiq/postman/APEXIQ_FULL_E2E_FLOW.postman_collection.json'', encoding=''utf-8''\\)\\); print\\(''Valid JSON''\\)\")",
+      "Bash(python -c \"import json; json.load\\(open\\(r''c:\\\\Users\\\\HP\\\\Desktop\\\\VVSPL\\\\apexiq-backend\\\\apexiq\\\\postman\\\\APEXIQ_FULL_E2E_FLOW.postman_collection.json'', encoding=''utf-8''\\)\\); print\\(''Valid JSON''\\)\")"
+    ]
+  }
+}

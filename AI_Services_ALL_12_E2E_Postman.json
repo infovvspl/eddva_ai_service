@@ -1,0 +1,395 @@
+{
+	"info": {
+		"_postman_id": "ai-services-all-12-e2e",
+		"name": "AI Services - ALL 12 E2E via NestJS",
+		"description": "Complete E2E testing of ALL 12 AI services through the NestJS backend.\n\nFlow: Postman → NestJS (:3000, JWT auth) → Django (:8000, AI) → Groq LLM\n\nNew AI endpoints at: /api/v1/ai/*\n\nSetup:\n1. Start Django: cd AI_Study && python manage.py runserver 8000\n2. Start NestJS: cd apexiq-backend/apexiq && npm run start:dev\n3. Run '1. Auth' folder first to get JWT token\n4. Run '2. All 12 AI Services' to test everything\n\nAll tokens auto-save via test scripts — just run in order.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{ "key": "base_url", "value": "http://localhost:3000/api/v1", "type": "string" },
+		{ "key": "django_url", "value": "http://localhost:8000", "type": "string" },
+		{ "key": "phone_number", "value": "+919876543210", "type": "string" },
+		{ "key": "otp_code", "value": "123456", "type": "string" },
+		{ "key": "access_token", "value": "", "type": "string" },
+		{ "key": "refresh_token", "value": "", "type": "string" },
+		{ "key": "user_id", "value": "", "type": "string" },
+		{ "key": "doubt_id", "value": "", "type": "string" },
+		{ "key": "tutor_session_id", "value": "", "type": "string" }
+	],
+	"item": [
+		{
+			"name": "0. Server Health Checks",
+			"item": [
+				{
+					"name": "Django AI Server",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('Django AI running', function() { pm.response.to.have.status(200); });"
+					]}}],
+					"request": { "auth": {"type":"noauth"}, "method": "GET", "url": {"raw": "{{django_url}}/", "host": ["{{django_url}}"], "path": [""]} }
+				},
+				{
+					"name": "Django Feedback Health",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('Feedback OK', function() { pm.response.to.have.status(200); var j=pm.response.json(); pm.expect(j.status).to.eql('ok'); });"
+					]}}],
+					"request": { "auth": {"type":"noauth"}, "method": "GET", "url": {"raw": "{{django_url}}/feedback/health/", "host": ["{{django_url}}"], "path": ["feedback","health",""]} }
+				}
+			]
+		},
+		{
+			"name": "1. Auth - Login (Run First!)",
+			"description": "Run these in order. Token auto-saves for all subsequent requests.",
+			"item": [
+				{
+					"name": "Step 1: Send OTP",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('OTP sent', function() { pm.response.to.have.status(200); });",
+						"console.log('Dev OTP: 123456');"
+					]}}],
+					"request": {
+						"auth": {"type":"noauth"},
+						"method": "POST",
+						"header": [{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"phoneNumber\": \"{{phone_number}}\"\n}"},
+						"url": {"raw": "{{base_url}}/auth/otp/send", "host": ["{{base_url}}"], "path": ["auth","otp","send"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"message\": \"OTP sent successfully\",\n  \"expiresIn\": 300\n}"}]
+				},
+				{
+					"name": "Step 2: Verify OTP → Get JWT",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('Token received', function() {",
+						"    pm.response.to.have.status(200);",
+						"    var j = pm.response.json();",
+						"    pm.collectionVariables.set('access_token', j.accessToken);",
+						"    pm.collectionVariables.set('refresh_token', j.refreshToken);",
+						"    pm.collectionVariables.set('user_id', j.user.id);",
+						"    console.log('JWT saved! User: ' + j.user.id);",
+						"    console.log('New user: ' + j.isNewUser + ', Onboarding: ' + j.onboardingRequired);",
+						"});"
+					]}}],
+					"request": {
+						"auth": {"type":"noauth"},
+						"method": "POST",
+						"header": [{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"phoneNumber\": \"{{phone_number}}\",\n  \"otp\": \"{{otp_code}}\"\n}"},
+						"url": {"raw": "{{base_url}}/auth/otp/verify", "host": ["{{base_url}}"], "path": ["auth","otp","verify"]}
+					},
+					"response": [{"name":"200 Token","status":"OK","code":200,"body":"{\n  \"accessToken\": \"eyJ...\",\n  \"refreshToken\": \"eyJ...\",\n  \"user\": { \"id\": \"uuid\", \"role\": \"student\" },\n  \"isNewUser\": true\n}"}]
+				},
+				{
+					"name": "Step 3: Onboard Student (if new)",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('Onboarded', function() { pm.response.to.have.status(200); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"examTarget\": \"jee\",\n  \"class\": \"12\",\n  \"examYear\": \"2027\",\n  \"targetCollege\": \"IIT Delhi\",\n  \"dailyStudyHours\": 5,\n  \"language\": \"en\"\n}"},
+						"url": {"raw": "{{base_url}}/auth/onboard", "host": ["{{base_url}}"], "path": ["auth","onboard"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"student\": { \"id\": \"uuid\", \"examTarget\": \"jee\" },\n  \"message\": \"Profile created.\"\n}"}]
+				},
+				{
+					"name": "Verify: Get My Profile",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('Profile OK', function() { pm.response.to.have.status(200); var j=pm.response.json(); console.log('Role: '+j.user.role); });"
+					]}}],
+					"request": {
+						"method": "GET",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"}],
+						"url": {"raw": "{{base_url}}/auth/me", "host": ["{{base_url}}"], "path": ["auth","me"]}
+					}
+				}
+			]
+		},
+		{
+			"name": "2. ALL 12 AI Services (E2E Tests)",
+			"description": "Every AI service tested through NestJS.\nAll endpoints: POST /api/v1/ai/*\nRequires JWT from Auth folder.",
+			"item": [
+				{
+					"name": "AI #1 — Doubt Resolution",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #1 Doubt resolved', function() {",
+						"    pm.response.to.have.status(200);",
+						"    var j = pm.response.json();",
+						"    pm.expect(j).to.be.an('object');",
+						"    console.log('Response: ' + JSON.stringify(j).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"questionText\": \"Why does ice float on water? Explain the molecular structure behind it.\",\n  \"topicId\": \"states-of-matter\",\n  \"mode\": \"detailed\"\n}"},
+						"url": {"raw": "{{base_url}}/ai/doubt/resolve", "host": ["{{base_url}}"], "path": ["ai","doubt","resolve"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"explanation\": \"Ice floats because water molecules form a crystalline structure...\",\n  \"_meta\": { \"source\": \"llm\", \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #2a — Tutor Session Start",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #2 Tutor started', function() {",
+						"    pm.response.to.have.status(200);",
+						"    var j = pm.response.json();",
+						"    console.log('Tutor: ' + JSON.stringify(j).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"topicId\": \"organic-chemistry-reactions\",\n  \"context\": \"Student is struggling with reaction mechanisms, specifically nucleophilic substitution\"\n}"},
+						"url": {"raw": "{{base_url}}/ai/tutor/session", "host": ["{{base_url}}"], "path": ["ai","tutor","session"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"response\": \"Let's break down nucleophilic substitution...\",\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #2b — Tutor Session Continue",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #2 Tutor continued', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"sessionId\": \"tutor_session_001\",\n  \"studentMessage\": \"I understand SN1 now, but can you explain when SN2 is preferred over SN1? What factors decide this?\"\n}"},
+						"url": {"raw": "{{base_url}}/ai/tutor/continue", "host": ["{{base_url}}"], "path": ["ai","tutor","continue"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"response\": \"SN2 is preferred when...\",\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #3 — Performance Analysis",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #3 Performance analyzed', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"testSessionId\": \"mock_test_physics_001\",\n  \"examTarget\": \"jee\",\n  \"attempts\": [\n    { \"questionId\": \"q1\", \"topic\": \"Mechanics\", \"correct\": true, \"timeTaken\": 45 },\n    { \"questionId\": \"q2\", \"topic\": \"Thermodynamics\", \"correct\": false, \"timeTaken\": 120 },\n    { \"questionId\": \"q3\", \"topic\": \"Optics\", \"correct\": false, \"timeTaken\": 90 },\n    { \"questionId\": \"q4\", \"topic\": \"Mechanics\", \"correct\": true, \"timeTaken\": 30 },\n    { \"questionId\": \"q5\", \"topic\": \"Electrostatics\", \"correct\": true, \"timeTaken\": 60 },\n    { \"questionId\": \"q6\", \"topic\": \"Thermodynamics\", \"correct\": false, \"timeTaken\": 150 },\n    { \"questionId\": \"q7\", \"topic\": \"Optics\", \"correct\": true, \"timeTaken\": 55 },\n    { \"questionId\": \"q8\", \"topic\": \"Waves\", \"correct\": false, \"timeTaken\": 100 }\n  ]\n}"},
+						"url": {"raw": "{{base_url}}/ai/performance/analyze", "host": ["{{base_url}}"], "path": ["ai","performance","analyze"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"analysis\": { \"overallScore\": 50, \"weakTopics\": [\"Thermodynamics\", \"Optics\"] },\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #4 — Grade Subjective Answer",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #4 Grading done', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"questionText\": \"Explain the process of photosynthesis and its importance for life on Earth.\",\n  \"studentAnswer\": \"Photosynthesis is a process where plants use sunlight to make food. They take in carbon dioxide and water and produce glucose and oxygen. It happens in the leaves using chlorophyll.\",\n  \"expectedAnswer\": \"Photosynthesis is the process by which green plants, algae, and some bacteria convert light energy (usually from the sun) into chemical energy stored in glucose. The overall equation is: 6CO2 + 6H2O + light energy → C6H12O6 + 6O2. It occurs in chloroplasts, specifically in two stages: the light-dependent reactions (in thylakoid membranes) and the Calvin cycle (in the stroma). It is essential for life as it produces oxygen for respiration and forms the base of most food chains.\",\n  \"maxMarks\": 10\n}"},
+						"url": {"raw": "{{base_url}}/ai/grade/subjective", "host": ["{{base_url}}"], "path": ["ai","grade","subjective"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"score\": 5,\n  \"feedback\": \"Good basic understanding, but missing key details about light reactions vs Calvin cycle...\",\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #5 — Engagement Detection",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #5 Engagement detected', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"context\": \"live_lecture\",\n  \"signals\": {\n    \"rewindCount\": 5,\n    \"pauseCount\": 8,\n    \"answersPerMinute\": 0.5,\n    \"accuracy\": 0.40,\n    \"idleSeconds\": 120\n  }\n}"},
+						"url": {"raw": "{{base_url}}/ai/engagement/detect", "host": ["{{base_url}}"], "path": ["ai","engagement","detect"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"state\": \"disengaged\",\n  \"confidence\": 0.85,\n  \"recommendedAction\": \"Send a quick quiz or change activity type\",\n  \"urgency\": \"high\",\n  \"_meta\": { \"model\": \"llama-3.1-8b-instant\" }\n}"}]
+				},
+				{
+					"name": "AI #6 — Content Recommendation",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #6 Recommendations received', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"context\": \"post_test\",\n  \"weakTopics\": [\"Thermodynamics\", \"Organic Chemistry - Alcohols\", \"Integration\"],\n  \"recentPerformance\": {\n    \"overallScore\": 58,\n    \"totalQuestions\": 30,\n    \"topicScores\": {\n      \"Mechanics\": 80,\n      \"Thermodynamics\": 35,\n      \"Organic Chemistry\": 45,\n      \"Integration\": 40\n    }\n  }\n}"},
+						"url": {"raw": "{{base_url}}/ai/content/recommend", "host": ["{{base_url}}"], "path": ["ai","content","recommend"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"recommendations\": [\n    { \"type\": \"revision_notes\", \"title\": \"Thermodynamics Fundamentals\", \"priority\": \"high\" },\n    { \"type\": \"practice_set\", \"title\": \"Organic Chemistry Practice\", \"priority\": \"high\" }\n  ],\n  \"_meta\": { \"model\": \"llama-3.1-8b-instant\" }\n}"}]
+				},
+				{
+					"name": "AI #7 — STT Lecture Notes",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #7 Notes generated', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"audioUrl\": \"https://storage.example.com/lectures/physics_kinematics_01.mp3\",\n  \"topicId\": \"kinematics-basics\",\n  \"language\": \"en\",\n  \"transcript\": \"Today we're going to study kinematics. Kinematics is the branch of mechanics that describes the motion of objects without considering the forces. The key concepts are displacement, velocity, and acceleration. Displacement is a vector quantity that represents the shortest path between two points. Velocity is the rate of change of displacement, while speed is the rate of change of distance. Acceleration is the rate of change of velocity. For uniformly accelerated motion, we use three equations of motion: v = u + at, s = ut + half at squared, and v squared = u squared + 2as.\"\n}"},
+						"url": {"raw": "{{base_url}}/ai/stt/notes", "host": ["{{base_url}}"], "path": ["ai","stt","notes"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"notes\": { \"title\": \"Kinematics\", \"keyPoints\": [...], \"summary\": \"...\" },\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #8 — Student Feedback",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #8 Feedback generated', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"context\": \"post_test\",\n  \"data\": {\n    \"testName\": \"JEE Physics Mock Test #5\",\n    \"score\": 68,\n    \"total\": 100,\n    \"subject\": \"Physics\",\n    \"timeSpent\": 120,\n    \"totalTime\": 180,\n    \"weakAreas\": [\"Thermodynamics\", \"Modern Physics\"],\n    \"strongAreas\": [\"Mechanics\", \"Electrostatics\"],\n    \"previousScore\": 55,\n    \"rank\": 145,\n    \"totalStudents\": 500\n  }\n}"},
+						"url": {"raw": "{{base_url}}/ai/feedback/generate", "host": ["{{base_url}}"], "path": ["ai","feedback","generate"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"feedbackText\": \"Great improvement! You scored 68/100, up from 55...\",\n  \"highlights\": [\"13-point improvement\"],\n  \"improvements\": [\"Focus on Thermodynamics\"],\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #9 — Notes Weak Topic Analysis",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #9 Notes analyzed', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"notesContent\": \"Thermodynamics Notes:\\n- First law: Energy is conserved. dU = Q - W\\n- Second law: Entropy increases. Heat flows from hot to cold.\\n- Carnot cycle is the most efficient heat engine.\\n- PV = nRT is the ideal gas law.\\n- I dont fully understand the third law or what happens at absolute zero.\\n- Not sure about the difference between isothermal and adiabatic processes.\\n- Specific heat capacity formula: Q = mcT\",\n  \"topicId\": \"thermodynamics\"\n}"},
+						"url": {"raw": "{{base_url}}/ai/notes/analyze", "host": ["{{base_url}}"], "path": ["ai","notes","analyze"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"weakTopics\": [\"Third law of thermodynamics\", \"Isothermal vs Adiabatic\"],\n  \"suggestions\": [...],\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #10 — Resume Analyzer",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #10 Resume analyzed', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"resumeText\": \"PRIYA SHARMA\\nB.Tech Computer Science, IIT Delhi (2024)\\nCGPA: 8.7/10\\n\\nEXPERIENCE:\\n- Software Engineering Intern, Google (Summer 2023)\\n  Built ML pipeline for ads ranking, reduced latency by 15%\\n- Research Assistant, NLP Lab IIT Delhi (2022-2023)\\n  Published paper on transformer architectures at ACL 2023\\n\\nPROJECTS:\\n- Real-time Sentiment Analysis Dashboard using BERT + FastAPI\\n- Autonomous Drone Navigation using Computer Vision (OpenCV + ROS)\\n- EdTech Platform Backend (Node.js, PostgreSQL, Redis)\\n\\nSKILLS:\\n- Languages: Python, JavaScript/TypeScript, C++, Java\\n- ML/AI: PyTorch, TensorFlow, Hugging Face, scikit-learn\\n- Backend: Node.js, Django, FastAPI, PostgreSQL, Redis\\n- Tools: Docker, Kubernetes, AWS, Git\\n\\nACHIEVEMENTS:\\n- AIR 156 in JEE Advanced 2020\\n- Gold Medal in Inter-IIT Tech Meet 2023\",\n  \"targetRole\": \"Machine Learning Engineer at a top-tier tech company\"\n}"},
+						"url": {"raw": "{{base_url}}/ai/resume/analyze", "host": ["{{base_url}}"], "path": ["ai","resume","analyze"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"analysis\": { \"score\": 85, \"strengths\": [...], \"improvements\": [...] },\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #11 — Interview Prep",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #11 Interview prep ready', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"targetCollege\": \"IIT Bombay - Computer Science\"\n}"},
+						"url": {"raw": "{{base_url}}/ai/interview/start", "host": ["{{base_url}}"], "path": ["ai","interview","start"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"questions\": [\n    { \"question\": \"Why do you want to pursue CS at IIT Bombay?\", \"tips\": \"...\" }\n  ],\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				},
+				{
+					"name": "AI #12 — Study Plan Generation",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('AI #12 Study plan generated', function() {",
+						"    pm.response.to.have.status(200);",
+						"    console.log('Response: ' + JSON.stringify(pm.response.json()).substring(0, 400));",
+						"});",
+						"pm.test('Under 30s', function() { pm.expect(pm.response.responseTime).to.be.below(30000); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"examTarget\": \"jee\",\n  \"examYear\": \"2027\",\n  \"dailyHours\": 6,\n  \"weakTopics\": [\"Calculus\", \"Organic Chemistry\", \"Optics\", \"Thermodynamics\"],\n  \"targetCollege\": \"IIT Delhi - Computer Science\",\n  \"academicCalendar\": {\n    \"schoolExams\": \"2027-02-15\",\n    \"jeeMain\": \"2027-04-10\",\n    \"jeeAdvanced\": \"2027-06-01\"\n  }\n}"},
+						"url": {"raw": "{{base_url}}/ai/plan/generate", "host": ["{{base_url}}"], "path": ["ai","plan","generate"]}
+					},
+					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"planItems\": [\n    { \"day\": 1, \"subject\": \"Mathematics\", \"topic\": \"Calculus\", \"duration_min\": 120, \"priority\": \"high\" }\n  ],\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
+				}
+			]
+		},
+		{
+			"name": "3. Edge Cases & Error Testing",
+			"description": "Validate error handling works properly",
+			"item": [
+				{
+					"name": "No JWT Token → 401",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('401 without token', function() { pm.response.to.have.status(401); });"
+					]}}],
+					"request": {
+						"auth": {"type":"noauth"},
+						"method": "POST",
+						"header": [{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{ \"questionText\": \"test\" }"},
+						"url": {"raw": "{{base_url}}/ai/doubt/resolve", "host": ["{{base_url}}"], "path": ["ai","doubt","resolve"]}
+					},
+					"response": [{"name":"401 Unauthorized","status":"Unauthorized","code":401,"body":"{\n  \"statusCode\": 401,\n  \"message\": \"Unauthorized\"\n}"}]
+				},
+				{
+					"name": "Invalid JWT → 401",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('401 with bad token', function() { pm.response.to.have.status(401); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer invalid.jwt.token"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{ \"questionText\": \"test\" }"},
+						"url": {"raw": "{{base_url}}/ai/doubt/resolve", "host": ["{{base_url}}"], "path": ["ai","doubt","resolve"]}
+					},
+					"response": [{"name":"401 Unauthorized","status":"Unauthorized","code":401,"body":"{\n  \"statusCode\": 401,\n  \"message\": \"Unauthorized\"\n}"}]
+				},
+				{
+					"name": "Empty Body → 400",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('400 on empty body', function() { pm.response.to.have.status(400); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{}"},
+						"url": {"raw": "{{base_url}}/ai/grade/subjective", "host": ["{{base_url}}"], "path": ["ai","grade","subjective"]}
+					},
+					"response": [{"name":"400 Validation Error","status":"Bad Request","code":400,"body":"{\n  \"statusCode\": 400,\n  \"message\": [\"questionText should not be empty\", \"studentAnswer should not be empty\"]\n}"}]
+				},
+				{
+					"name": "Missing Required Fields → 400",
+					"event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+						"pm.test('400 on missing fields', function() { pm.response.to.have.status(400); });"
+					]}}],
+					"request": {
+						"method": "POST",
+						"header": [{"key":"Authorization","value":"Bearer {{access_token}}"},{"key":"Content-Type","value":"application/json"}],
+						"body": {"mode":"raw","raw":"{\n  \"examTarget\": \"jee\"\n}"},
+						"url": {"raw": "{{base_url}}/ai/plan/generate", "host": ["{{base_url}}"], "path": ["ai","plan","generate"]}
+					},
+					"response": [{"name":"400 Missing Fields","status":"Bad Request","code":400,"body":"{\n  \"statusCode\": 400,\n  \"message\": [\"examYear should not be empty\", \"dailyHours must be a number\"]\n}"}]
+				}
+			]
+		}
+	]
+}
