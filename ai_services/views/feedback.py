@@ -18,6 +18,7 @@ def root(request):
     })
 
 
+
 @api_view(["POST"])
 def analyze_feedback(request):
     data = request.data
