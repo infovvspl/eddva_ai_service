@@ -1,0 +1,17 @@
+ai_study/
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+!.env.example
+db.sqlite3
+data/
+*.log
+test_*.py
+check_health.py
+notes.py
+AI_Services_*.json
+*.postman_collection.json

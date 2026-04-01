@@ -1,0 +1,55 @@
+# ── Web Framework ─────────────────────────────────────────────────────────────
+fastapi==0.129.0
+uvicorn==0.41.0
+python-multipart==0.0.22
+python-dotenv
+httpx
+
+# ── Django + DRF (backing framework) ─────────────────────────────────────────
+django>=4.2
+djangorestframework>=3.14
+
+# ── LLM APIs ──────────────────────────────────────────────────────────────────
+groq
+google-genai
+
+# ── PDF / Image Processing ────────────────────────────────────────────────────
+pdfplumber==0.11.4
+pdf2image==1.17.0
+Pillow==10.4.0
+easyocr
+opencv-python-headless==4.8.1.78
+
+# ── OCR / NLP ─────────────────────────────────────────────────────────────────
+nltk
+rake_nltk
+
+# ── ML (required by easyocr) ──────────────────────────────────────────────────
+torch --extra-index-url https://download.pytorch.org/whl/cpu
+torchvision --extra-index-url https://download.pytorch.org/whl/cpu
+
+# ── Cheating Detection ────────────────────────────────────────────────────────
+mediapipe==0.10.9
+numpy>=1.24.0
+
+# ── Redis caching ─────────────────────────────────────────────────────────────
+redis>=5.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+requests
+scikit-learn
+xgboost
+
+# ── Removed from prod (dev/desktop-only) ─────────────────────────────────────
+# PyAudio        — requires audio hardware, not available in containers
+# ollama         — local LLM runner, replaced by Groq cloud API
+# yt-dlp         — YouTube downloader, dev tool only
+# moviepy        — video editing, not needed for API endpoints
+# openai-whisper — local Whisper model, replaced by cloud transcription
+# transformers   — HuggingFace models not used in prod (using Groq)
+# accelerate     — HuggingFace training utility, not needed
+# safetensors    — model weight format, not needed
+# faiss-cpu      — vector DB, not used in current API endpoints
+# datasketch     — MinHash/LSH, not used in current API endpoints
+# networkx       — graph analysis, not used in current API endpoints
+# spacy          — heavy NLP, not imported in any view

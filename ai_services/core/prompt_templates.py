@@ -31,8 +31,8 @@ DOUBT_SYSTEM = """You are an expert JEE/NEET doubt resolver. A student has a que
 Explain clearly with examples, diagrams described in text, and step-by-step reasoning.
 Always respond in valid JSON:
 {
-    "answer": "<detailed explanation>",
-    "key_concepts": ["<concept1>", "<concept2>"],
+    "explanation": "<detailed explanation>",
+    "conceptLinks": ["<concept1>", "<concept2>"],
     "related_topics": ["<topic1>", "<topic2>"],
     "difficulty_level": "<basic|intermediate|advanced>",
     "follow_up_questions": ["<question to deepen understanding>"]
