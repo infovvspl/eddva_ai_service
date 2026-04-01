@@ -376,15 +376,19 @@ def generate_plan(request):
     ist_offset = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
     today_date = datetime.datetime.now(ist_offset).strftime("%Y-%m-%d")
 
+    academic_calendar = data.get("academicCalendar", {})
+    assigned_subjects = academic_calendar.get("assignedSubjects", [])
+
     template = get_template("plan_generate")
     user_prompt = template.user_template.format(
         student_id=student_id,
         exam_target=data.get("examTarget", "jee"),
         exam_year=data.get("examYear", "2026"),
         daily_hours=data.get("dailyHours", 4),
+        assigned_subjects=", ".join(assigned_subjects) if assigned_subjects else "all subjects",
         weak_topics=json.dumps(data.get("weakTopics", [])),
         target_college=data.get("targetCollege", ""),
         today_date=today_date,
-        academic_calendar=json.dumps(data.get("academicCalendar", {})),
+        academic_calendar=json.dumps(academic_calendar),
     )
     return ai_call(request, feature="plan_generate", user_prompt=user_prompt)
