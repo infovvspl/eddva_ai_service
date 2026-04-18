@@ -152,3 +152,105 @@ FO ai_services.llm: LLM (text) | model=edvav2 latency=1118ms institute=global
 [18/Apr/2026 15:45:11] "POST /career/generate/ HTTP/1.1" 200 787
 [2026-04-18 15:45:13,368] INFO ai_services.llm: LLM (text) | model=edvav2 latency=1933ms institute=global
 [18/Apr/2026 15:45:13] "POST /personalization/generate/ HTTP/1.1" 200 669
+C:\Users\HP\Desktop\VVSPL\AI_Study\ai_services\core\prompt_templates.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+April 18, 2026 - 15:40:09
+Django version 5.2.12, using settings 'ai_study_project.settings'
+Starting development server at http://127.0.0.1:8000/
+Quit the server with CTRL-BREAK.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
+[2026-04-18 16:15:25,717] INFO ai_services.llm: Ollama client ready \u2192 http://213.192.2.90:40077  model=edvav2
+[2026-04-18 16:15:25,717] INFO ai_services: LLM client (Ollama/httpx) singleton initialized
+[2026-04-18 16:15:25,877] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+[2026-04-18 16:15:25,903] INFO ai_services: AI Services ready — cache and rate limiter initialized
+Watching for file changes with StatReloader
+[2026-04-18 16:15:26,043] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+C:\Users\HP\Desktop\VVSPL\AI_Study\ai_services\core\prompt_templates.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+April 18, 2026 - 16:15:26
+Django version 5.2.12, using settings 'ai_study_project.settings'
+Starting development server at http://127.0.0.1:8000/
+Quit the server with CTRL-BREAK.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
+[2026-04-18 16:16:01,735] INFO ai_services.llm: Ollama client ready \u2192 http://213.192.2.90:40077  model=edvav2
+[2026-04-18 16:16:01,736] INFO ai_services: LLM client (Ollama/httpx) singleton initialized
+[2026-04-18 16:16:01,874] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+[2026-04-18 16:16:01,890] INFO ai_services: AI Services ready — cache and rate limiter initialized
+Watching for file changes with StatReloader
+[2026-04-18 16:16:02,030] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+C:\Users\HP\Desktop\VVSPL\AI_Study\ai_services\views\test.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+April 18, 2026 - 16:16:02
+Django version 5.2.12, using settings 'ai_study_project.settings'
+Starting development server at http://127.0.0.1:8000/
+Quit the server with CTRL-BREAK.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
+[2026-04-18 16:16:31,396] INFO ai_services.llm: Ollama client ready \u2192 http://213.192.2.90:40077  model=edvav2
+[2026-04-18 16:16:31,396] INFO ai_services: LLM client (Ollama/httpx) singleton initialized
+[2026-04-18 16:16:31,512] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+[2026-04-18 16:16:31,528] INFO ai_services: AI Services ready — cache and rate limiter initialized
+Watching for file changes with StatReloader
+[2026-04-18 16:16:31,654] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+C:\Users\HP\Desktop\VVSPL\AI_Study\ai_services\core\prompt_templates.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+April 18, 2026 - 16:16:31
+Django version 5.2.12, using settings 'ai_study_project.settings'
+Starting development server at http://127.0.0.1:8000/
+Quit the server with CTRL-BREAK.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
+[2026-04-18 16:25:51,273] INFO ai_services.llm: Ollama client ready \u2192 http://213.192.2.90:40077  model=edvav2
+[2026-04-18 16:25:51,273] INFO ai_services: LLM client (Ollama/httpx) singleton initialized
+[2026-04-18 16:25:51,396] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+[2026-04-18 16:25:51,416] INFO ai_services: AI Services ready — cache and rate limiter initialized
+Watching for file changes with StatReloader
+[2026-04-18 16:25:51,551] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+C:\Users\HP\Desktop\VVSPL\AI_Study\ai_services\views\test.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+April 18, 2026 - 16:25:51
+Django version 5.2.12, using settings 'ai_study_project.settings'
+Starting development server at http://127.0.0.1:8000/
+Quit the server with CTRL-BREAK.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
+[2026-04-18 16:26:09,478] INFO ai_services.llm: Ollama client ready \u2192 http://213.192.2.90:40077  model=edvav2
+[2026-04-18 16:26:09,479] INFO ai_services: LLM client (Ollama/httpx) singleton initialized
+[2026-04-18 16:26:09,592] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+[2026-04-18 16:26:09,597] INFO ai_services: AI Services ready — cache and rate limiter initialized
+Watching for file changes with StatReloader
+[2026-04-18 16:26:09,712] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+C:\Users\HP\Desktop\VVSPL\AI_Study\ai_services\views\test.py changed, reloading.
+Performing system checks...
+
+System check identified no issues (0 silenced).
+April 18, 2026 - 16:26:09
+Django version 5.2.12, using settings 'ai_study_project.settings'
+Starting development server at http://127.0.0.1:8000/
+Quit the server with CTRL-BREAK.
+
+WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
+For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
+[2026-04-18 16:26:24,456] INFO ai_services.llm: Ollama client ready \u2192 http://213.192.2.90:40077  model=edvav2
+[2026-04-18 16:26:24,456] INFO ai_services: LLM client (Ollama/httpx) singleton initialized
+[2026-04-18 16:26:24,578] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
+[2026-04-18 16:26:24,596] INFO ai_services: AI Services ready — cache and rate limiter initialized
+Watching for file changes with StatReloader
+[2026-04-18 16:26:24,736] INFO ai_services.cache: Redis cache connected: redis://localhost:6379/0
