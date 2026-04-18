@@ -3,7 +3,7 @@ from rest_framework.response import Response
 
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
-from .base import ai_call
+from .base import ai_call, ai_call_text
 
 
 @api_view(["POST"])
@@ -21,7 +21,8 @@ def generate_study_plan(request):
         available_hours_per_day=data.get("available_hours_per_day", 2),
     )
 
-    return ai_call(request, feature="study_plan", user_prompt=user_prompt)
+    return ai_call_text(request, "study_plan", user_prompt,
+                        wrap_fn=lambda t: {"daily_schedule": t, "weekly_plan": [], "recommendations": []})
 
 
 @api_view(["GET"])

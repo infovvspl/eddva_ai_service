@@ -1,11 +1,16 @@
 """
-Model tiering — right-size LLM per feature.
+Model tiering — all tiers now resolve to the local edvaqwen model via Ollama.
 
-Tier 1 (FAST):     llama-3.1-8b-instant    — simple tasks, engagement detection
-Tier 2 (BALANCED): llama-3.3-70b-versatile  — tutoring, feedback, study plans
-Tier 3 (POWER):    llama-3.3-70b-versatile  — grading, performance analysis, test generation
+Tiers are kept so the architecture stays the same and the `get_model_for_task`
+call sites in every view continue to work without any change.
+The `model` value returned by each tier is passed to LLMClient.complete(),
+where it is accepted for API compatibility but always overridden to edvaqwen.
 
-Saves 40-60% cost by not using 70B for trivial tasks.
+Removed features (deleted from the platform):
+  - performance_analysis   (POST /performance/analyze)
+  - grade_subjective        (POST /grade/subjective)
+  - engagement_detect       (POST /engage/detect)
+  - cheating_analyze        (POST /cheating/analyze-logs/)
 """
 
 import os
@@ -18,41 +23,38 @@ class ModelTier(str, Enum):
     POWER = "power"
 
 
-# Configurable via env — override in production as needed
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "edvaqwen")
+
+# All tiers map to the same local model
 MODEL_MAP = {
-    ModelTier.FAST: os.getenv("LLM_MODEL_FAST", "llama-3.1-8b-instant"),
-    ModelTier.BALANCED: os.getenv("LLM_MODEL_BALANCED", "llama-3.3-70b-versatile"),
-    ModelTier.POWER: os.getenv("LLM_MODEL_POWER", "llama-3.3-70b-versatile"),
+    ModelTier.FAST:     OLLAMA_MODEL,
+    ModelTier.BALANCED: OLLAMA_MODEL,
+    ModelTier.POWER:    OLLAMA_MODEL,
 }
 
 # Which tier each feature uses
 FEATURE_TIER_MAP = {
     # ── NestJS ai-bridge features ─────────────────────────────────────
-    "doubt_resolve": ModelTier.BALANCED,        # needs good reasoning
-    "tutor_session": ModelTier.BALANCED,         # conversational quality matters
-    "tutor_continue": ModelTier.BALANCED,        # must maintain context
-    "performance_analysis": ModelTier.POWER,     # complex analytics + rank prediction
-    "grade_subjective": ModelTier.POWER,         # grading accuracy is critical
-    "engagement_detect": ModelTier.FAST,         # simple signal analysis
-    "content_recommend": ModelTier.FAST,         # simple recommendation
-    "stt_notes": ModelTier.POWER,                # comprehensive note generation needs full capacity
-    "feedback_generate": ModelTier.BALANCED,     # motivational + analytical
-    "notes_analyze": ModelTier.BALANCED,         # content analysis
-    "resume_analyze": ModelTier.BALANCED,        # structured analysis
-    "interview_prep": ModelTier.BALANCED,        # question generation
-    "plan_generate": ModelTier.POWER,            # complex multi-day planning
-    "quiz_generate": ModelTier.POWER,            # needs careful reasoning about transcript content
+    "doubt_resolve":      ModelTier.BALANCED,   # needs good reasoning
+    "tutor_session":      ModelTier.BALANCED,   # conversational quality matters
+    "tutor_continue":     ModelTier.BALANCED,   # must maintain context
+    "content_recommend":  ModelTier.FAST,       # simple recommendation
+    "stt_notes":          ModelTier.POWER,      # comprehensive note generation
+    "feedback_generate":  ModelTier.BALANCED,   # motivational + analytical
+    "notes_analyze":      ModelTier.BALANCED,   # content analysis
+    "resume_analyze":     ModelTier.BALANCED,   # structured analysis
+    "interview_prep":     ModelTier.BALANCED,   # question generation
+    "plan_generate":      ModelTier.POWER,      # complex multi-day planning
+    "quiz_generate":      ModelTier.POWER,      # careful reasoning on transcript
 
     # ── Legacy Django features ────────────────────────────────────────
-    "health": ModelTier.FAST,
-    "content_suggest": ModelTier.FAST,
-    "cheating_analyze": ModelTier.FAST,
-    "notes_generate": ModelTier.BALANCED,
-    "study_plan": ModelTier.BALANCED,
-    "career_roadmap": ModelTier.BALANCED,
-    "feedback_analyze": ModelTier.POWER,
-    "test_generate": ModelTier.POWER,
-    "performance_analyze": ModelTier.POWER,
+    "health":             ModelTier.FAST,
+    "content_suggest":    ModelTier.FAST,
+    "notes_generate":     ModelTier.BALANCED,
+    "study_plan":         ModelTier.BALANCED,
+    "career_roadmap":     ModelTier.BALANCED,
+    "feedback_analyze":   ModelTier.POWER,
+    "test_generate":      ModelTier.POWER,
 }
 
 

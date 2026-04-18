@@ -5,7 +5,7 @@ Two layers of protection:
   1. Daily token budget — soft cap (warn) + hard cap (block)
      Caps are read from Institute model in DB, not env vars.
   2. Concurrent request limit — prevents one tenant from exhausting
-     Groq's API rate limits for everyone else (noisy neighbor).
+     Ollama's concurrency limits for everyone else (noisy neighbor).
 
 Falls back to in-memory tracking if Redis is unavailable.
 """

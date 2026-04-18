@@ -3,11 +3,11 @@ import json
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel
-from groq import Groq
+import httpx
 
-# Configuration
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Configuration — local Ollama
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "edvaqwen")
 
 router = APIRouter(prefix="/career", tags=["Career Roadmap Builder"])
 
@@ -36,20 +36,15 @@ class CareerPlanResponse(BaseModel):
 
 
 # --- Helpers ---
-def groq_career_plan(request: CareerPlanRequest) -> Dict[str, Any]:
-    if not GROQ_API_KEY:
-        return {"error": "GROQ_API_KEY not set"}
-
-    client = Groq(api_key=GROQ_API_KEY)
-
+def ollama_career_plan(request: CareerPlanRequest) -> Dict[str, Any]:
     prompt = f"""
     You are a career advisor. Create a detailed roadmap for a student.
-    
+
     Interests: {", ".join(request.interests)}
     Current Skills: {", ".join(request.current_skills)}
     Goal: {request.goal}
     Timeline: {request.timeline_months} months
-    
+
     Provide your output in valid JSON format with the following structure:
     {{
         "career_path": "short descriptive title",
@@ -65,16 +60,22 @@ def groq_career_plan(request: CareerPlanRequest) -> Dict[str, Any]:
         "market_demand": "brief outlook",
         "essential_skills": ["skill 1", "skill 2"]
     }}
+    IMPORTANT: Respond with ONLY valid JSON. Start with {{ and end with }}
     """
 
     try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            response_format={"type": "json_object"},
+        resp = httpx.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {"temperature": 0.7},
+            },
+            timeout=120,
         )
-        return json.loads(response.choices[0].message.content)
+        resp.raise_for_status()
+        return json.loads(resp.json()["message"]["content"])
     except Exception as e:
         return {"error": str(e)}
 
@@ -82,7 +83,7 @@ def groq_career_plan(request: CareerPlanRequest) -> Dict[str, Any]:
 # --- Endpoints ---
 @router.post("/generate", response_model=CareerPlanResponse)
 async def generate_career_plan(request: CareerPlanRequest):
-    result = groq_career_plan(request)
+    result = ollama_career_plan(request)
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
     return result
@@ -90,7 +91,7 @@ async def generate_career_plan(request: CareerPlanRequest):
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "service": "career_roadmap", "llm": f"groq/{GROQ_MODEL}"}
+    return {"status": "ok", "service": "career_roadmap", "llm": f"ollama/{OLLAMA_MODEL}"}
 
 
 if __name__ == "__main__":

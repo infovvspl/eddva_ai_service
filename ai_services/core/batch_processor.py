@@ -6,7 +6,7 @@ this queues jobs and processes them in controlled batches instead of
 hammering the LLM API with 50 concurrent requests.
 
 Benefits:
-  - 50% cost savings via Groq batch API pricing
+  - Controlled concurrency prevents Ollama from being overwhelmed
   - Rate-limit friendly
   - Retries failed items without re-running the whole batch
   - Results stored in DB for later retrieval

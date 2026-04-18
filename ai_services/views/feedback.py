@@ -4,7 +4,7 @@ from django.http import JsonResponse
 
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
-from .base import ai_call
+from .base import ai_call, ai_call_text
 
 
 def root(request):
@@ -37,7 +37,8 @@ def analyze_feedback(request):
         extra_context=data.get("extra_context", "N/A"),
     )
 
-    return ai_call(request, feature="feedback_analyze", user_prompt=user_prompt)
+    return ai_call_text(request, "feedback_analyze", user_prompt,
+                        wrap_fn=lambda t: {"score": 0, "feedback": t, "suggestions": []})
 
 
 @api_view(["GET"])

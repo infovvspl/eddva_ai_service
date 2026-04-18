@@ -4,12 +4,12 @@ import re
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from groq import Groq
+import httpx
 from contextlib import asynccontextmanager
 
-# Configuration
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Configuration — local Ollama
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "edvaqwen")
 
 router = APIRouter(prefix="/feedback", tags=["Exam Feedback & Grading"])
 
@@ -40,20 +40,15 @@ class FeedbackResponse(BaseModel):
 
 
 # --- Helpers ---
-def groq_feedback(request: FeedbackRequest) -> Dict[str, Any]:
-    if not GROQ_API_KEY:
-        return {"error": "GROQ_API_KEY not set"}
-
-    client = Groq(api_key=GROQ_API_KEY)
-
+def ollama_feedback(request: FeedbackRequest) -> Dict[str, Any]:
     prompt = f"""
     You are an expert academic evaluator. Analyze the student's answer based on the marking scheme and provide detailed feedback.
-    
+
     Subject: {request.subject}
     Marking Scheme: {request.marking_scheme}
     Student Answer: {request.student_answer}
     Extra Context: {request.extra_context or "N/A"}
-    
+
     Provide your output in valid JSON format with the following structure:
     {{
         "score": (a numeric value out of 100),
@@ -62,16 +57,22 @@ def groq_feedback(request: FeedbackRequest) -> Dict[str, Any]:
         "areas_for_improvement": ["list of areas"],
         "suggested_resources": ["links or names of topics to study"]
     }}
+    IMPORTANT: Respond with ONLY valid JSON. Start with {{ and end with }}
     """
 
     try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            response_format={"type": "json_object"},
+        resp = httpx.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {"temperature": 0.7},
+            },
+            timeout=120,
         )
-        return json.loads(response.choices[0].message.content)
+        resp.raise_for_status()
+        return json.loads(resp.json()["message"]["content"])
     except Exception as e:
         return {"error": str(e)}
 
@@ -79,7 +80,7 @@ def groq_feedback(request: FeedbackRequest) -> Dict[str, Any]:
 # --- Endpoints ---
 @router.post("/analyze", response_model=FeedbackResponse)
 async def analyze_feedback(request: FeedbackRequest):
-    result = groq_feedback(request)
+    result = ollama_feedback(request)
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
     return result
@@ -87,7 +88,7 @@ async def analyze_feedback(request: FeedbackRequest):
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "service": "feedback", "llm": f"groq/{GROQ_MODEL}"}
+    return {"status": "ok", "service": "feedback", "llm": f"ollama/{OLLAMA_MODEL}"}
 
 
 if __name__ == "__main__":

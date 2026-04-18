@@ -1,19 +1,19 @@
 import os
 import json
-from groq import Groq
 import re
 import glob
 from datetime import datetime
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 import requests as http_requests
 
 
-# ── Configuration ────────────────────────────────────────────────────────────
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# ── Configuration — local Ollama ─────────────────────────────────────────────
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "edvaqwen")
 PLANS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "study_plans"
 )
@@ -27,37 +27,34 @@ router = APIRouter(prefix="/content", tags=["AI Content"])
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def groq_generate(prompt: str, system_prompt: str = "") -> str:
-    """
-    Calls Groq to generate suggestions.
-    """
-    if not GROQ_API_KEY:
-        print("[GROO-ERROR] GROQ_API_KEY missing.")
-        return ""
-
-    client = Groq(api_key=GROQ_API_KEY)
+def ollama_generate(prompt: str, system_prompt: str = "") -> str:
+    """Call local Ollama to generate suggestions."""
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
 
     for attempt in range(3):
         try:
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt})
-
-            response = client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=2048,
+            resp = httpx.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {"temperature": 0.7, "num_predict": 2048},
+                },
+                timeout=120,
             )
-            return response.choices[0].message.content.strip()
-
+            resp.raise_for_status()
+            return resp.json()["message"]["content"].strip()
         except Exception as e:
-            print(f"[GROQ-RETRY] Attempt {attempt+1} failed: {e}")
+            print(f"[OLLAMA-RETRY] Attempt {attempt+1} failed: {e}")
             if attempt < 2:
+                import time
                 time.sleep(2)
             else:
-                print("[GROQ-FATAL] All retries failed.")
+                print("[OLLAMA-FATAL] All retries failed.")
                 return ""
     return ""
 
@@ -79,15 +76,15 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start:])
 
 
-def _call_groq_with_retries(prompt: str, required_keys: list[str], label: str) -> dict:
-    """Call Groq, extract JSON, validate required keys, retry up to 3×."""
+def _call_ollama_with_retries(prompt: str, required_keys: list[str], label: str) -> dict:
+    """Call Ollama, extract JSON, validate required keys, retry up to 3×."""
     MAX_RETRIES = 3
     last_error = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             print(f"[CONTENT] {label} — attempt {attempt}/{MAX_RETRIES} ...")
-            raw = groq_generate(prompt)
+            raw = ollama_generate(prompt)
             data = _extract_json(raw)
 
             missing = [k for k in required_keys if k not in data]
@@ -363,13 +360,13 @@ RULES:
 def generate_topic_resources(
     topics: list[str], activity_ctx: str, focus_ctx: str
 ) -> list[dict]:
-    """Generate resources for each unique topic using Groq."""
+    """Generate resources for each unique topic using Ollama."""
     all_topic_resources = []
 
     for topic in topics:
         print(f"[CONTENT] Generating resources for topic: {topic}")
         prompt = _build_topic_resources_prompt(topic, activity_ctx, focus_ctx)
-        result = _call_groq_with_retries(
+        result = _call_ollama_with_retries(
             prompt, ["topic", "resources"], f"Resources({topic})"
         )
         if "error" not in result:
@@ -387,10 +384,10 @@ def generate_topic_resources(
 
 
 def generate_daily_resources(plan: dict) -> dict:
-    """Generate day-by-day resource mapping using Groq."""
+    """Generate day-by-day resource mapping using Ollama."""
     print("[CONTENT] Generating daily resource mapping ...")
     prompt = _build_daily_resources_prompt(plan)
-    result = _call_groq_with_retries(prompt, ["daily_resources"], "DailyResources")
+    result = _call_ollama_with_retries(prompt, ["daily_resources"], "DailyResources")
     return result
 
 
@@ -480,7 +477,7 @@ async def health():
     return {
         "status": "ok",
         "service": "ai_content",
-        "llm": f"groq/{GROQ_MODEL}",
+        "llm": f"ollama/{OLLAMA_MODEL}",
     }
 
 
@@ -489,7 +486,7 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
 
-    print(f"[CONTENT] Using Groq model: {GROQ_MODEL}")
+    print(f"[CONTENT] Using Ollama model: {OLLAMA_MODEL}")
     app = FastAPI(title="AI Content API Standalone")
     app.include_router(router)
     uvicorn.run(app, host="0.0.0.0", port=8000)

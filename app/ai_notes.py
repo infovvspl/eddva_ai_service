@@ -9,12 +9,12 @@ from typing import Optional
 
 from fastapi import APIRouter, FastAPI, UploadFile, File, Form, Query, HTTPException
 from fastapi.responses import JSONResponse
-from groq import Groq
+import httpx
 import requests as http_requests
 
-# ── Configuration ────────────────────────────────────────────────────────────
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# ── Configuration — local Ollama ─────────────────────────────────────────────
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "edvaqwen")
 NOTES_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "video_notes"
 )
@@ -29,29 +29,29 @@ ALLOWED_EXTENSIONS = ALLOWED_VIDEO_EXT | ALLOWED_AUDIO_EXT
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def groq_generate(prompt: str, system_prompt: str = "") -> str:
-    if not GROQ_API_KEY:
-        print("[GROQ-ERROR] GROQ_API_KEY not found in .env")
-        return ""
-    client = Groq(api_key=GROQ_API_KEY)
+def ollama_generate(prompt: str, system_prompt: str = "") -> str:
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
     for attempt in range(3):
         try:
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt})
-            response = client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=4096,
+            resp = httpx.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {"temperature": 0.7, "num_predict": 4096},
+                },
+                timeout=120,
             )
-            return response.choices[0].message.content.strip()
+            resp.raise_for_status()
+            return resp.json()["message"]["content"].strip()
         except Exception as e:
-            print(f"[GROQ-RETRY] Attempt {attempt+1} failed: {e}")
+            print(f"[OLLAMA-RETRY] Attempt {attempt+1} failed: {e}")
             if attempt < 2:
                 import time
-
                 time.sleep(2)
     return ""
 
@@ -72,12 +72,12 @@ def _extract_json(text: str) -> dict:
     return json.loads(text[start:])
 
 
-def _call_groq_with_retries(prompt: str, required_keys: list[str], label: str) -> dict:
+def _call_ollama_with_retries(prompt: str, required_keys: list[str], label: str) -> dict:
     MAX_RETRIES = 3
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            raw = groq_generate(prompt)
+            raw = ollama_generate(prompt)
             data = _extract_json(raw)
             missing = [k for k in required_keys if k not in data]
             if missing:
@@ -179,7 +179,7 @@ def generate_notes_from_transcript(
     ]
     if len(transcript) <= SINGLE_PASS_LIMIT:
         prompt = _build_notes_prompt(transcript, topic)
-        return _call_groq_with_retries(prompt, required_keys, "NotesSummary")
+        return _call_ollama_with_retries(prompt, required_keys, "NotesSummary")
 
     # Simple chunking for brevity in this rewrite
     return {
@@ -276,7 +276,7 @@ async def list_saved_notes(student_id: str = Query(...)):
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "service": "ai_notes", "llm": f"groq/{GROQ_MODEL}"}
+    return {"status": "ok", "service": "ai_notes", "llm": f"ollama/{OLLAMA_MODEL}"}
 
 
 if __name__ == "__main__":

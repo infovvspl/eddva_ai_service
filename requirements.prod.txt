@@ -9,8 +9,9 @@ httpx
 django>=4.2
 djangorestframework>=3.14
 
-# ── LLM APIs ──────────────────────────────────────────────────────────────────
-groq
+# ── LLM / Transcription ───────────────────────────────────────────────────────
+faster-whisper>=1.0.0
+httpx>=0.27.0
 google-genai
 
 # ── PDF / Image Processing ────────────────────────────────────────────────────
@@ -42,11 +43,10 @@ xgboost
 
 # ── Removed from prod (dev/desktop-only) ─────────────────────────────────────
 # PyAudio        — requires audio hardware, not available in containers
-# ollama         — local LLM runner, replaced by Groq cloud API
 # yt-dlp         — YouTube downloader, dev tool only
 # moviepy        — video editing, not needed for API endpoints
-# openai-whisper — local Whisper model, replaced by cloud transcription
-# transformers   — HuggingFace models not used in prod (using Groq)
+# openai-whisper — replaced by faster-whisper (local, CPU, int8 quant)
+# transformers   — HuggingFace models not used in prod
 # accelerate     — HuggingFace training utility, not needed
 # safetensors    — model weight format, not needed
 # faiss-cpu      — vector DB, not used in current API endpoints

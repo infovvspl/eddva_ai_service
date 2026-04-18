@@ -1,0 +1,167 @@
+[
+  {
+    "endpoint": "AI #1  Doubt Clearing",
+    "path": "/doubt/resolve",
+    "status": 200,
+    "latency_ms": 1467,
+    "llm_latency_ms": 1439,
+    "response_bytes": 666,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "AI #2  Tutor Start",
+    "path": "/tutor/session",
+    "status": 200,
+    "latency_ms": 1626,
+    "llm_latency_ms": 1598,
+    "response_bytes": 742,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "AI #2  Tutor Continue",
+    "path": "/tutor/continue",
+    "status": 200,
+    "latency_ms": 1229,
+    "llm_latency_ms": 1216,
+    "response_bytes": 583,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "AI #6  Content Recommendation",
+    "path": "/recommend/content",
+    "status": 200,
+    "latency_ms": 1152,
+    "llm_latency_ms": 1118,
+    "response_bytes": 438,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "AI #8  Feedback Engine",
+    "path": "/feedback/generate",
+    "status": 200,
+    "latency_ms": 1118,
+    "llm_latency_ms": 1093,
+    "response_bytes": 447,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "AI #9  Notes Analyzer",
+    "path": "/notes/analyze",
+    "status": 200,
+    "latency_ms": 1329,
+    "llm_latency_ms": 1307,
+    "response_bytes": 584,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "AI #10 Resume Analyzer",
+    "path": "/resume/analyze",
+    "status": 200,
+    "latency_ms": 3336,
+    "llm_latency_ms": 3318,
+    "response_bytes": 1326,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "AI #11 Interview Prep",
+    "path": "/interview/start",
+    "status": 200,
+    "latency_ms": 1366,
+    "llm_latency_ms": 1352,
+    "response_bytes": 587,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "AI #12 Study Plan",
+    "path": "/plan/generate",
+    "status": 200,
+    "latency_ms": 1225,
+    "llm_latency_ms": 1211,
+    "response_bytes": 812,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "AI #13 Quiz Generator",
+    "path": "/quiz/generate",
+    "status": 200,
+    "latency_ms": 10251,
+    "llm_latency_ms": 10229,
+    "response_bytes": 5094,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "Legacy Feedback Analyze",
+    "path": "/feedback/analyze/",
+    "status": 200,
+    "latency_ms": 1154,
+    "llm_latency_ms": 1122,
+    "response_bytes": 452,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "Legacy Content Suggest",
+    "path": "/content/suggest/",
+    "status": 200,
+    "latency_ms": 659,
+    "llm_latency_ms": 642,
+    "response_bytes": 215,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "Legacy Test Generate",
+    "path": "/test/generate/",
+    "status": 200,
+    "latency_ms": 1352,
+    "llm_latency_ms": 1334,
+    "response_bytes": 494,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "Legacy Career Roadmap",
+    "path": "/career/generate/",
+    "status": 200,
+    "latency_ms": 1124,
+    "llm_latency_ms": 1110,
+    "response_bytes": 787,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  },
+  {
+    "endpoint": "Legacy Study Plan",
+    "path": "/personalization/generate/",
+    "status": 200,
+    "latency_ms": 1958,
+    "llm_latency_ms": 1933,
+    "response_bytes": 669,
+    "passed": true,
+    "error": null,
+    "missing_keys": []
+  }
+]

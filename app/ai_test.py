@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from groq import Groq
 import re
 import time
 import uuid
@@ -17,9 +16,10 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-DEFAULT_MODEL = GROQ_MODEL
+# Configuration — local Ollama
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "edvaqwen")
+DEFAULT_MODEL = OLLAMA_MODEL
 BATCH_SIZE = 5  # questions per LLM call
 
 
@@ -142,24 +142,23 @@ STRICT RULES:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-async def call_groq(prompt: str, model: str = None) -> str:
-    """
-    Calls Groq to generate text.
-    """
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not set.")
-
-    client = Groq(api_key=GROQ_API_KEY)
-
+async def call_ollama(prompt: str, model: str = None) -> str:
+    """Call local Ollama to generate text."""
     try:
-        response = client.chat.completions.create(
-            model=model or GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-        )
-        return response.choices[0].message.content.strip()
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": model or OLLAMA_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": 0.7},
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["message"]["content"].strip()
     except Exception as e:
-        print(f"[GROQ-CALL-ERROR] {e}")
+        print(f"[OLLAMA-CALL-ERROR] {e}")
         return ""
 
 
@@ -256,7 +255,7 @@ def build_questions(
 async def health():
     return {
         "status": "ok",
-        "groq": "online" if GROQ_API_KEY else "offline",
+        "llm": f"ollama/{OLLAMA_MODEL}",
     }
 
 
@@ -300,7 +299,7 @@ async def generate_test(req: GenerateRequest):
             total_batches=total_batches,
         )
 
-        raw_response = await call_groq(prompt, req.model)
+        raw_response = await call_ollama(prompt, req.model)
         data = parse_raw_response(raw_response)
 
         if not data:

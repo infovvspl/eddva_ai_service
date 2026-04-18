@@ -1,12 +1,12 @@
 from django.urls import path
 from .views import (
     feedback, notes, content, test, career,
-    performance, personalization, cheating, admin_api, bridge,
+    personalization, admin_api, bridge,
 )
 
 urlpatterns = [
     # ══════════════════════════════════════════════════════════════════════════
-    #  NestJS ai-bridge endpoints (12 AI services)
+    #  NestJS ai-bridge endpoints
     #  These paths match apexiq-backend/src/modules/ai-bridge/ai-bridge.service.ts
     # ══════════════════════════════════════════════════════════════════════════
 
@@ -16,15 +16,6 @@ urlpatterns = [
     # AI #2 — AI Tutor
     path("tutor/session", bridge.start_tutor_session),
     path("tutor/continue", bridge.continue_tutor_session),
-
-    # AI #3 — Performance Analysis
-    path("performance/analyze", bridge.analyze_performance_v2),
-
-    # AI #4 — Assessment Grading
-    path("grade/subjective", bridge.grade_subjective),
-
-    # AI #5 — Engagement Monitoring
-    path("engage/detect", bridge.detect_engagement),
 
     # AI #6 — Content Recommendation
     path("recommend/content", bridge.recommend_content),
@@ -77,17 +68,9 @@ urlpatterns = [
     path("career/generate/", career.generate_career_plan),
     path("career/health/", career.health),
 
-    # Performance (legacy)
-    path("performance/analyze/", performance.analyze_performance),
-    path("performance/health/", performance.health),
-
     # Personalization
     path("personalization/generate/", personalization.generate_study_plan),
     path("personalization/health/", personalization.health),
-
-    # Cheating
-    path("cheating/analyze-logs/", cheating.analyze_exam_logs),
-    path("cheating/health/", cheating.health),
 
     # Tenant Admin API
     path("admin-api/usage/", admin_api.usage_dashboard),

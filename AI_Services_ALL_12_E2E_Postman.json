@@ -158,6 +158,7 @@
 						"body": {"mode":"raw","raw":"{\n  \"sessionId\": \"tutor_session_001\",\n  \"studentMessage\": \"I understand SN1 now, but can you explain when SN2 is preferred over SN1? What factors decide this?\"\n}"},
 						"url": {"raw": "{{base_url}}/ai/tutor/continue", "host": ["{{base_url}}"], "path": ["ai","tutor","continue"]}
 					},
+					
 					"response": [{"name":"200 OK","status":"OK","code":200,"body":"{\n  \"response\": \"SN2 is preferred when...\",\n  \"_meta\": { \"model\": \"llama-3.3-70b-versatile\" }\n}"}]
 				},
 				{

@@ -3,7 +3,7 @@ from rest_framework.response import Response
 
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
-from .base import ai_call
+from .base import ai_call, ai_call_text
 
 
 @api_view(["GET"])
@@ -15,7 +15,8 @@ def suggest_resources(request):
     template = get_template("content_suggest")
     user_prompt = template.user_template.format(topic=topic)
 
-    return ai_call(request, feature="content_suggest", user_prompt=user_prompt)
+    return ai_call_text(request, "content_suggest", user_prompt,
+                        wrap_fn=lambda t: {"resources": [{"title": "AI Recommendation", "content": t}]})
 
 
 @api_view(["GET"])

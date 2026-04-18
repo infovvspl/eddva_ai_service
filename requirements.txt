@@ -30,7 +30,8 @@ google-genai
 rake_nltk
 moviepy
 openai-whisper
-groq
+faster-whisper>=1.0.0
+httpx>=0.27.0
 requests
 yt-dlp
 
