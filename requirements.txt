@@ -1,5 +1,5 @@
 opencv-python==4.8.1.78
-mediapipe==0.10.9
+mediapipe==0.10.21
 numpy>=1.24.0
 fastapi==0.129.0
 uvicorn==0.41.0
