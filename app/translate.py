@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import os
-import google.generativeai as genai
+from google import genai
 
 router = APIRouter(prefix="/translate", tags=["Translation"])
 
@@ -38,8 +38,7 @@ async def translate_text(req: TranslateRequest):
     lang_name = LANGUAGE_MAP.get(req.targetLanguage, req.targetLanguage)
 
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        client = genai.Client(api_key=api_key)
 
         prompt = (
             f"Translate the following text to {lang_name}. "
@@ -47,7 +46,10 @@ async def translate_text(req: TranslateRequest):
             f"{req.text}"
         )
 
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt,
+        )
         translated = response.text.strip()
         return {"translatedText": translated}
 
