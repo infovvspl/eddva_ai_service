@@ -664,6 +664,53 @@ _CONTENT_TYPE_PROMPTS = {
         "Group items by sub-topic. Use - [ ] for each checkbox item. "
         "Include concepts to understand, formulas to memorise, and types of problems to practice."
     ),
+    # ── same as lesson/summary but with short label aliases ───────────────────
+    "study_guide":         "Generate a crisp, exam-ready summary of this topic in Markdown. Use bullet points and short paragraphs. Cover every exam-important concept.",
+    "key_concepts":        "Generate a structured list of ALL key formulas and must-know concepts for this topic in Markdown. For each: name, definition, units (if applicable), one-line use-case.",
+    "practice_questions":  (
+        "Generate a Daily Practice Problem (DPP) set for this topic in Markdown. "
+        "Include exactly 10 questions with a mix of difficulty (3 easy, 5 medium, 2 hard). "
+        "For each question:\n"
+        "- Number it (Q1, Q2 …)\n"
+        "- Write the question clearly (MCQ with 4 options labelled A–D, or numerical/short-answer)\n"
+        "- After all questions, add a ## Answers section with: answer letter/value and a 2-3 line explanation for each.\n"
+        "Ensure questions test understanding, not just recall."
+    ),
+    # ── DPP ───────────────────────────────────────────────────────────────────
+    "dpp": (
+        "Generate a high-quality Daily Practice Problem (DPP) sheet for this topic in Markdown, "
+        "exactly as a top coaching institute would give students.\n\n"
+        "Format:\n"
+        "# DPP — {topic_name}\n"
+        "**Subject:** {subject_name} | **Chapter:** {chapter_name} | **Date:** ______\n\n"
+        "## Section A — Multiple Choice (1 mark each)\n"
+        "Generate 8 MCQ questions, each with 4 options (A–D). Mix easy and medium difficulty.\n\n"
+        "## Section B — Assertion–Reason (1 mark each)\n"
+        "Generate 3 assertion-reason type questions.\n\n"
+        "## Section C — Numericals / Short Answer (3 marks each)\n"
+        "Generate 4 numerical or short-answer problems.\n\n"
+        "## Answer Key\n"
+        "List all correct answers and brief hints/solutions.\n\n"
+        "Questions must be syllabus-aligned, conceptually varied, and gradually increasing in difficulty."
+    ),
+    # ── PYQ ───────────────────────────────────────────────────────────────────
+    "pyq": (
+        "Generate a Previous Year Question (PYQ) style practice set for this topic in Markdown. "
+        "Simulate the style of JEE Main / NEET questions from 2018–2024.\n\n"
+        "Format:\n"
+        "# PYQ Practice Set — {topic_name}\n"
+        "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
+        "## JEE Main Style Questions\n"
+        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options A–D). "
+        "Note the exam year pattern each question is modelled on (e.g. 'Pattern: JEE Main 2022 Jan').\n\n"
+        "## NEET Style Questions\n"
+        "Generate 5 questions in NEET MCQ style (single correct, 4 options).\n\n"
+        "## Integer Type (JEE Advanced Style)\n"
+        "Generate 3 integer-type questions where the answer is a non-negative integer.\n\n"
+        "## Detailed Solutions\n"
+        "Provide full step-by-step solutions for every question.\n\n"
+        "Questions must be authentic in difficulty and style. Avoid trivial or textbook-definition questions."
+    ),
 }
 
 _DIFFICULTY_DESC = {
@@ -696,7 +743,7 @@ def generate_topic_content(request):
     type_instruction = _CONTENT_TYPE_PROMPTS.get(
         content_type,
         _CONTENT_TYPE_PROMPTS["lesson"],
-    )
+    ).replace("{topic_name}", topic_name).replace("{subject_name}", subject_name).replace("{chapter_name}", chapter_name)
     diff_desc  = _DIFFICULTY_DESC.get(difficulty, _DIFFICULTY_DESC["intermediate"])
     word_limit = _LENGTH_WORDS.get(length, _LENGTH_WORDS["standard"])
 
