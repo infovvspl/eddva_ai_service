@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show *)",
+      "Bash(pip list *)",
+      "Bash(python manage.py check)",
+      "Bash(python manage.py runserver 0.0.0.0:8000)",
+      "Bash(curl -s http://localhost:8000/)",
+      "Bash(python -c ' *)",
+      "Bash(python manage.py runserver 8000)",
+      "Bash(echo \"Server PID: $!\")",
+      "Bash(curl -s -X POST http://localhost:8000/test/generate/ -H 'Content-Type: application/json' -H 'X-API-Key: apexiq-dev-secret-key-2026' -d '{\"topic\": \"Newton Laws of Motion\", \"difficulty\": \"medium\", \"num_questions\": 3}')",
+      "Bash(pkill -f \"manage.py runserver\")",
+      "Bash(python -c \"import sys,json; print\\(json.dumps\\(json.load\\(sys.stdin\\), indent=2\\)\\)\")"
+    ]
+  }
+}

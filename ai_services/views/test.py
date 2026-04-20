@@ -2,13 +2,14 @@ import logging
 import re
 import threading
 
+from django.http import JsonResponse
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
 from ai_services.core.batch_processor import BatchProcessor
-from .base import ai_call
+from .base import ai_call, get_llm
 
 # ── Text cleaning ─────────────────────────────────────────────────────────────
 
@@ -40,6 +41,47 @@ def _question_has_embedded_options(question: str) -> bool:
 logger = logging.getLogger("ai_services.llm")
 
 _VALID_DIFFICULTIES = {"easy", "medium", "hard"}
+
+
+def parse_mcq_text(raw_text, topic, difficulty):
+    questions = []
+    # Split on blank line before each new "Question:" block
+    blocks = re.split(r'\n\n(?=Question\s*\d*\s*:)', raw_text.strip())
+    for i, block in enumerate(blocks):
+        if not block.strip():
+            continue
+        try:
+            q_match = re.search(r'Question\s*\d*\s*:\s*(.+?)(?=\nA\))', block, re.DOTALL)
+            a_match = re.search(r'A\)\s*(.+?)(?=\nB\))', block, re.DOTALL)
+            b_match = re.search(r'B\)\s*(.+?)(?=\nC\))', block, re.DOTALL)
+            c_match = re.search(r'C\)\s*(.+?)(?=\nD\))', block, re.DOTALL)
+            d_match = re.search(r'D\)\s*(.+?)(?=\nCorrect Answer:)', block, re.DOTALL)
+            ans_match = re.search(r'Correct Answer:\s*([ABCD])', block)
+            exp_match = re.search(r'Explanation:\s*(.+?)$', block, re.DOTALL)
+
+            if q_match and ans_match:
+                answer_letter = ans_match.group(1).strip()
+                options = [
+                    a_match.group(1).strip() if a_match else '',
+                    b_match.group(1).strip() if b_match else '',
+                    c_match.group(1).strip() if c_match else '',
+                    d_match.group(1).strip() if d_match else '',
+                ]
+                questions.append({
+                    'id': i + 1,
+                    'question': q_match.group(1).strip(),
+                    'options': options,
+                    'answer': answer_letter,
+                    'explanation': exp_match.group(1).strip() if exp_match else '',
+                })
+        except Exception:
+            continue
+
+    return {
+        'topic': topic,
+        'difficulty': difficulty,
+        'questions': questions,
+    }
 
 
 @api_view(["POST"])
@@ -82,123 +124,53 @@ def generate_practice_test(request):
         difficulty = "medium"
 
     template = get_template("test_generate")
-    user_prompt = template.user_template.format(
-        topic=topic,
-        num_questions=num_questions,
-        difficulty=difficulty,
+    user_prompt = (
+        f"Generate {num_questions} MCQ questions on {topic} for JEE/NEET.\n"
+        f"Difficulty: {difficulty}.\n\n"
+        "For each question write exactly:\n"
+        "Question: [question text]\n"
+        "A) [option 1]\n"
+        "B) [option 2]\n"
+        "C) [option 3]\n"
+        "D) [option 4]\n"
+        "Correct Answer: [A/B/C/D]\n"
+        "Explanation: [one sentence]\n\n"
+        f"Write all {num_questions} questions now."
     )
+
+    institute_id = getattr(request, "institute_id", "default")
 
     logger.info(
         "generate_practice_test | topic=%s | n=%d | difficulty=%s",
         topic, num_questions, difficulty,
     )
 
-    # ai_call uses JSON mode — edvaqwen returns structured JSON
-    response = ai_call(
-        request,
-        feature="test_generate",
-        user_prompt=user_prompt,
-        temperature=0.3,      # low temp = factual, consistent
-        skip_cache=False,
-        max_tokens=2048,
-    )
-
-    # Validate response has the expected questions array
-    if hasattr(response, "data") and isinstance(response.data, dict):
-        questions = response.data.get("questions")
-        if not isinstance(questions, list) or len(questions) == 0:
-            logger.error(
-                "generate_practice_test: LLM returned no questions | topic=%s | raw=%s",
-                topic, str(response.data)[:300],
-            )
-            return Response(
-                {
-                    "error": "ai_no_questions",
-                    "detail": "The AI did not return any questions. Please try again.",
-                    "topic": topic,
-                },
-                status=502,
-            )
-
-        # Validate and sanitize each question
-        sanitized = []
-        for q in questions:
-            if not isinstance(q, dict):
-                continue
-
-            ans = (q.get("answer") or "").strip().upper()
-            # Accept "A", "B", "C", "D" — also handle "A." or "A)"
-            if ans and ans[0] in "ABCD":
-                ans = ans[0]
-            opts = q.get("options") or []
-            question_text = _clean_text(q.get("question") or "")
-
-            # Skip if answer not valid
-            if ans not in ("A", "B", "C", "D"):
-                logger.warning(
-                    "generate_practice_test: skipping — invalid answer=%s id=%s",
-                    q.get("answer"), q.get("id"),
-                )
-                continue
-
-            # Skip if options count is wrong
-            if len(opts) != 4:
-                logger.warning(
-                    "generate_practice_test: skipping — wrong option count=%d id=%s",
-                    len(opts), q.get("id"),
-                )
-                continue
-
-            # Skip if question contains embedded option text (PDF recall artifact)
-            if _question_has_embedded_options(question_text):
-                logger.warning(
-                    "generate_practice_test: skipping — options leaked into question: %s",
-                    question_text[:80],
-                )
-                continue
-
-            # Skip empty question
-            if len(question_text) < 10:
-                logger.warning("generate_practice_test: skipping — question too short id=%s", q.get("id"))
-                continue
-
-            clean_opts = [_clean_text(str(o)) for o in opts]
-
-            # Skip if any option is empty after cleaning
-            if any(len(o) < 2 for o in clean_opts):
-                logger.warning("generate_practice_test: skipping — empty option id=%s", q.get("id"))
-                continue
-
-            sanitized.append({
-                "id": q.get("id"),
-                "question": question_text,
-                "options": clean_opts,
-                "answer": ans,
-                "explanation": _clean_text(q.get("explanation") or ""),
-            })
-
-        if not sanitized:
-            logger.error(
-                "generate_practice_test: all questions failed validation | topic=%s", topic
-            )
-            return Response(
-                {
-                    "error": "ai_validation_failed",
-                    "detail": "All generated questions failed validation. Please try again.",
-                    "topic": topic,
-                },
-                status=502,
-            )
-
-        response.data["questions"] = sanitized
-        response.data["topic"] = topic
-        response.data["difficulty"] = difficulty
-        logger.info(
-            "generate_practice_test: OK | topic=%s | returned=%d/%d questions",
-            topic, len(sanitized), num_questions,
+    try:
+        result = get_llm().complete(
+            system_prompt=template.system,
+            user_prompt=user_prompt,
+            model="groq",
+            temperature=0.3,
+            max_tokens=2048,
+            json_mode=False,
+            institute_id=institute_id,
         )
+    except RuntimeError as e:
+        return JsonResponse({"error": str(e)}, status=502)
 
-    return response
+    parsed = parse_mcq_text(result["content"], topic, difficulty)
+    parsed["_meta"] = {
+        "source": "llm",
+        "model": result["model"],
+        "latency_ms": round(result["latency_ms"]),
+        "institute": institute_id,
+    }
+
+    logger.info(
+        "generate_practice_test: OK | topic=%s | returned=%d questions",
+        topic, len(parsed["questions"]),
+    )
+    return JsonResponse(parsed)
 
 
 @api_view(["POST"])

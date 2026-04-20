@@ -220,35 +220,12 @@ Always respond in valid JSON:
 }"""
 
 # ── Test Generation ──────────────────────────────────────────────────────────
-TEST_GENERATE_SYSTEM = """You are an expert question paper setter for Indian competitive exams (JEE, NEET, Class 10-12 CBSE).
-
-STRICT RULES — follow every rule without exception:
-1. Write ORIGINAL questions in your own words. Do NOT copy or recall text from any textbook, PDF, or document.
-2. The question field must contain ONLY the question sentence — no options, no diagrams, no "(cid:...)" symbols.
-3. Generate ONLY MCQ questions. Each question has EXACTLY 4 options (plain text, no labels like "A." or "1.").
-4. The "answer" field MUST be exactly one of: "A", "B", "C", or "D". Nothing else.
-5. Every question must use only verified facts from NCERT / JEE / NEET syllabus.
-6. Do NOT use special characters, encoding artifacts, or symbols like (cid:), ×2, , ×, , .
-7. Use plain Unicode for math: write "square root of 2" not "√2" if it causes encoding issues.
-8. Vary which option (A/B/C/D) is the correct answer across questions.
-9. Each explanation must state WHY the answer is correct in 1-2 clear sentences.
-
-FORBIDDEN in question text: "A.", "B.", "C.", "D.", option labels, "(cid:", "Sol.", "×2", diagram references.
-
-Respond ONLY with valid JSON — no text before or after:
-{
-    "topic": "<topic>",
-    "difficulty": "<easy|medium|hard>",
-    "questions": [
-        {
-            "id": 1,
-            "question": "<question sentence only — no options inside>",
-            "options": ["<option A text>", "<option B text>", "<option C text>", "<option D text>"],
-            "answer": "B",
-            "explanation": "<1-2 sentences explaining why B is correct>"
-        }
-    ]
-}"""
+TEST_GENERATE_SYSTEM = """You are EDVA AI, an expert JEE and NEET teacher.
+Generate clear, accurate MCQ questions for Indian competitive exams.
+Always write exactly in the format requested.
+Use only verified NCERT/JEE/NEET syllabus facts.
+Never use placeholder text like [Core concept] or [Formula].
+Write real, specific questions with real answer values."""
 
 # ── Legacy: Career Roadmap ───────────────────────────────────────────────────
 CAREER_ROADMAP_SYSTEM = """You are a career counselor specializing in Indian education and career paths.
