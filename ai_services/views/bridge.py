@@ -250,20 +250,29 @@ def start_tutor_session(request):
         return Response({"error": "Missing studentId"}, status=400)
 
     institute_id = getattr(request, "institute_id", "default")
-    template = get_template("tutor_session")
-    user_prompt = template.user_template.format(
-        student_id=student_id,
-        topic_id=data.get("topicId", "general"),
-        context=data.get("context", ""),
-    )
+    context = data.get("context", "")
+
+    # When a rich lesson-generation prompt is provided (long context), use it as the
+    # system prompt directly so the LLM produces clean Markdown — not JSON-wrapped text.
+    if len(context) > 300:
+        system_prompt = context
+        user_prompt = "Generate the complete lesson now. Write everything in full — do not truncate or use placeholders."
+    else:
+        template = get_template("tutor_session")
+        system_prompt = template.system
+        user_prompt = template.user_template.format(
+            student_id=student_id,
+            topic_id=data.get("topicId", "general"),
+            context=context,
+        )
 
     try:
         result = get_llm().complete(
-            system_prompt=template.system,
+            system_prompt=system_prompt,
             user_prompt=user_prompt,
             model=get_model_for_task("tutor_session"),
             temperature=0.3,
-            max_tokens=1024,
+            max_tokens=8192,
             json_mode=False,
             institute_id=institute_id,
         )
