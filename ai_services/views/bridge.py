@@ -14,6 +14,7 @@ Active endpoints:
   POST /interview/start        → AI #11: Interview Prep
   POST /plan/generate          → AI #12: Personalized Learning Plan
   POST /quiz/generate          → AI #13: In-Video Quiz Generator
+  POST /translate              → AI #15: Text Translation
 
 Removed endpoints (deleted from platform):
   POST /performance/analyze    → was AI #3 (performance_analysis)
@@ -590,3 +591,203 @@ def generate_quiz_questions(request):
         wrap_fn=lambda t: {"questions": [{"question": t, "type": "ai_generated"}]},
         skip_cache=True, max_tokens=4096,
     )
+
+
+# ── AI #15 — Text Translation ────────────────────────────────────────────────
+
+@api_view(["POST"])
+def translate_text(request):
+    data = request.data
+    text = data.get("text", "")
+    target_language = data.get("targetLanguage", "en")
+    if not text:
+        return Response({"error": "Missing text"}, status=400)
+
+    lang_name = "English" if target_language == "en" else target_language
+    institute_id = getattr(request, "institute_id", "default")
+
+    system_prompt = (
+        f"You are a professional translator. Translate text accurately to {lang_name}, "
+        "preserving all markdown formatting, headings, bullet points, and structure. "
+        "Return only the translated text with no additional commentary."
+    )
+    user_prompt = (
+        f"Translate the following text to {lang_name}. "
+        "Preserve all markdown formatting exactly:\n\n" + text
+    )
+
+    try:
+        llm_result = get_llm().complete(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model="llama-3.1-8b-instant",
+            temperature=0.3,
+            max_tokens=8192,
+            json_mode=False,
+            institute_id=institute_id,
+        )
+    except RuntimeError as e:
+        return Response({"error": str(e)}, status=502)
+
+    translated = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+    return Response({"translatedText": translated})
+
+
+# ── AI #16 — Topic Content Generator ─────────────────────────────────────────
+
+_CONTENT_TYPE_PROMPTS = {
+    "lesson": (
+        "Generate comprehensive, well-structured lesson notes in Markdown. "
+        "Include: Introduction, Key Concepts (with sub-sections), Important Points, Examples, and Common Mistakes."
+    ),
+    "formula": (
+        "Generate a structured list of ALL key formulas for this topic in Markdown. "
+        "For each formula: write it clearly, name every variable, give a one-line use-case hint. "
+        "Group formulas by sub-topic. Use LaTeX notation where appropriate (e.g. $F = ma$)."
+    ),
+    "summary": (
+        "Generate a crisp, exam-ready summary of this topic in Markdown. "
+        "Use bullet points and short paragraphs. Cover every exam-important concept."
+    ),
+    "mindmap": (
+        "Generate a hierarchical mind-map outline in Markdown. "
+        "Use # for the main topic, ## for main branches, ### for sub-branches, and - for leaf nodes. "
+        "Cover all sub-topics and their key points."
+    ),
+    "flashcard": (
+        "Generate 12–15 flashcard pairs for this topic in Markdown. "
+        "Format each as: **Q:** <question>  **A:** <answer>. "
+        "Cover definitions, formulas, mechanisms, and application questions."
+    ),
+    "checklist": (
+        "Generate a revision checklist for this topic in Markdown. "
+        "Group items by sub-topic. Use - [ ] for each checkbox item. "
+        "Include concepts to understand, formulas to memorise, and types of problems to practice."
+    ),
+    # ── same as lesson/summary but with short label aliases ───────────────────
+    "study_guide":         "Generate a crisp, exam-ready summary of this topic in Markdown. Use bullet points and short paragraphs. Cover every exam-important concept.",
+    "key_concepts":        "Generate a structured list of ALL key formulas and must-know concepts for this topic in Markdown. For each: name, definition, units (if applicable), one-line use-case.",
+    "practice_questions":  (
+        "Generate a Daily Practice Problem (DPP) set for this topic in Markdown. "
+        "Include exactly 10 questions with a mix of difficulty (3 easy, 5 medium, 2 hard). "
+        "For each question:\n"
+        "- Number it (Q1, Q2 …)\n"
+        "- Write the question clearly (MCQ with 4 options labelled A–D, or numerical/short-answer)\n"
+        "- After all questions, add a ## Answers section with: answer letter/value and a 2-3 line explanation for each.\n"
+        "Ensure questions test understanding, not just recall."
+    ),
+    # ── DPP ───────────────────────────────────────────────────────────────────
+    "dpp": (
+        "Generate a high-quality Daily Practice Problem (DPP) sheet for this topic in Markdown, "
+        "exactly as a top coaching institute would give students.\n\n"
+        "Format:\n"
+        "# DPP — {topic_name}\n"
+        "**Subject:** {subject_name} | **Chapter:** {chapter_name} | **Date:** ______\n\n"
+        "## Section A — Multiple Choice (1 mark each)\n"
+        "Generate 8 MCQ questions, each with 4 options (A–D). Mix easy and medium difficulty.\n\n"
+        "## Section B — Assertion–Reason (1 mark each)\n"
+        "Generate 3 assertion-reason type questions.\n\n"
+        "## Section C — Numericals / Short Answer (3 marks each)\n"
+        "Generate 4 numerical or short-answer problems.\n\n"
+        "## Answer Key\n"
+        "List all correct answers and brief hints/solutions.\n\n"
+        "Questions must be syllabus-aligned, conceptually varied, and gradually increasing in difficulty."
+    ),
+    # ── PYQ ───────────────────────────────────────────────────────────────────
+    "pyq": (
+        "Generate a Previous Year Question (PYQ) style practice set for this topic in Markdown. "
+        "Simulate the style of JEE Main / NEET questions from 2018–2024.\n\n"
+        "Format:\n"
+        "# PYQ Practice Set — {topic_name}\n"
+        "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
+        "## JEE Main Style Questions\n"
+        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options A–D). "
+        "Note the exam year pattern each question is modelled on (e.g. 'Pattern: JEE Main 2022 Jan').\n\n"
+        "## NEET Style Questions\n"
+        "Generate 5 questions in NEET MCQ style (single correct, 4 options).\n\n"
+        "## Integer Type (JEE Advanced Style)\n"
+        "Generate 3 integer-type questions where the answer is a non-negative integer.\n\n"
+        "## Detailed Solutions\n"
+        "Provide full step-by-step solutions for every question.\n\n"
+        "Questions must be authentic in difficulty and style. Avoid trivial or textbook-definition questions."
+    ),
+}
+
+_DIFFICULTY_DESC = {
+    "basic":        "introductory level, simple language, suitable for beginners",
+    "intermediate": "standard curriculum depth, JEE/NEET Mains level",
+    "advanced":     "advanced level, JEE Advanced / NEET PG competitive exam depth",
+}
+
+_LENGTH_WORDS = {
+    "brief":    "~300 words",
+    "standard": "~800 words",
+    "detailed": "~1500 words",
+}
+
+
+@api_view(["POST"])
+def generate_topic_content(request):
+    data = request.data
+    topic_name    = data.get("topicName", "").strip()
+    subject_name  = data.get("subjectName", "").strip()
+    chapter_name  = data.get("chapterName", "").strip()
+    content_type  = data.get("contentType", "lesson")
+    difficulty    = data.get("difficulty", "intermediate")
+    length        = data.get("length", "standard")
+    extra_context = data.get("extraContext", "").strip()
+
+    if not topic_name:
+        return Response({"error": "Missing topicName"}, status=400)
+
+    type_instruction = _CONTENT_TYPE_PROMPTS.get(
+        content_type,
+        _CONTENT_TYPE_PROMPTS["lesson"],
+    ).replace("{topic_name}", topic_name).replace("{subject_name}", subject_name).replace("{chapter_name}", chapter_name)
+    diff_desc  = _DIFFICULTY_DESC.get(difficulty, _DIFFICULTY_DESC["intermediate"])
+    word_limit = _LENGTH_WORDS.get(length, _LENGTH_WORDS["standard"])
+
+    system_prompt = (
+        "You are an expert educational content creator specialising in Indian competitive exam preparation "
+        "(JEE, NEET, CBSE, ICSE). You write accurate, engaging, curriculum-aligned educational content in Markdown."
+    )
+
+    user_prompt = (
+        f"Subject: {subject_name}\n"
+        f"Chapter: {chapter_name}\n"
+        f"Topic: {topic_name}\n"
+        f"Content type: {content_type}\n"
+        f"Difficulty: {diff_desc}\n"
+        f"Target length: {word_limit}\n"
+    )
+    if extra_context:
+        user_prompt += f"Additional instructions: {extra_context}\n"
+    user_prompt += (
+        f"\n{type_instruction}\n\n"
+        "Return ONLY the Markdown content — no preamble, no 'Here is your content:' prefix."
+    )
+
+    institute_id = getattr(request, "institute_id", "default")
+    try:
+        llm_result = get_llm().complete(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model="llama-3.1-8b-instant",
+            temperature=0.5,
+            max_tokens=4096,
+            json_mode=False,
+            institute_id=institute_id,
+        )
+    except RuntimeError as e:
+        return Response({"error": str(e)}, status=502)
+
+    content = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+    return Response({
+        "content": content,
+        "contentType": content_type,
+        "topicName": topic_name,
+        "_meta": {
+            "model": llm_result.get("model", ""),
+            "latency_ms": round(llm_result.get("latency_ms", 0)),
+        },
+    })

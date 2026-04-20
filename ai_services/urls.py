@@ -41,6 +41,12 @@ urlpatterns = [
     # AI #13 — In-Video Quiz Generator
     path("quiz/generate", bridge.generate_quiz_questions),
 
+    # AI #15 — Text Translation
+    path("translate", bridge.translate_text),
+
+    # AI #16 — Topic Content Generator
+    path("content/generate", bridge.generate_topic_content),
+
     # ══════════════════════════════════════════════════════════════════════════
     #  Legacy Django endpoints (original ai_services views)
     # ══════════════════════════════════════════════════════════════════════════
