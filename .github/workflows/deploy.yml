@@ -1,0 +1,87 @@
+name: Deploy AI Service
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to AI EC2
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+          ALLOWED_HOSTS: ${{ secrets.AI_ALLOWED_HOSTS }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          WHISPER_MODEL: "base"
+          WHISPER_DEVICE: "cpu"
+          WHISPER_COMPUTE_TYPE: "int8"
+          DJANGO_DEBUG: "false"
+          DB_ENGINE: ${{ secrets.AI_DB_ENGINE }}
+          DB_NAME: ${{ secrets.AI_DB_NAME }}
+          DB_USER: ${{ secrets.AI_DB_USER }}
+          DB_PASSWORD: ${{ secrets.AI_DB_PASSWORD }}
+          DB_HOST: ${{ secrets.AI_DB_HOST }}
+          DB_PORT: ${{ secrets.AI_DB_PORT }}
+        with:
+          host: ${{ secrets.AI_SERVER_HOST }}
+          username: ubuntu
+          key: ${{ secrets.AI_SERVER_SSH_KEY }}
+          command_timeout: 15m
+          envs: GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT
+          script: |
+            set -e
+            AI_DIR=/home/ubuntu/ai-service
+
+            # Write .env
+            cat > $AI_DIR/.env <<EOF
+            GROQ_API_KEY=$GROQ_API_KEY
+            GEMINI_API_KEY=$GEMINI_API_KEY
+            SERPAPI_KEY=$SERPAPI_KEY
+            DJANGO_SECRET_KEY=$DJANGO_SECRET_KEY
+            ALLOWED_HOSTS=$ALLOWED_HOSTS
+            AI_API_KEY=$AI_API_KEY
+            WHISPER_MODEL=$WHISPER_MODEL
+            WHISPER_DEVICE=$WHISPER_DEVICE
+            WHISPER_COMPUTE_TYPE=$WHISPER_COMPUTE_TYPE
+            DJANGO_DEBUG=$DJANGO_DEBUG
+            DB_ENGINE=$DB_ENGINE
+            DB_NAME=$DB_NAME
+            DB_USER=$DB_USER
+            DB_PASSWORD=$DB_PASSWORD
+            DB_HOST=$DB_HOST
+            DB_PORT=$DB_PORT
+            EOF
+
+            # Pull latest code
+            cd $AI_DIR
+            git fetch --all
+            git reset --hard origin/main
+
+            # Install/update dependencies
+            venv/bin/pip install -r requirements.prod.txt --quiet
+
+            # Run Django migrations
+            venv/bin/python manage.py migrate --noinput
+            venv/bin/python manage.py collectstatic --noinput
+
+            # Restart via PM2
+            if pm2 list | grep -q ai-service; then
+              pm2 restart ai-service
+            else
+              pm2 start deploy/ecosystem.config.js
+            fi
+            pm2 save
+
+      - name: Notify success
+        if: success()
+        run: echo "AI Service deployed successfully ✓"
