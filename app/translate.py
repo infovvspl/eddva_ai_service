@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import os
 import httpx
 
-router = APIRouter(prefix="/translate", tags=["Translation"])
+router = APIRouter(prefix="/translate", tags=["Translation"], redirect_slashes=False)
 
 # Sarvam AI language codes
 LANGUAGE_CODE_MAP = {
@@ -30,7 +30,8 @@ class TranslateResponse(BaseModel):
     translatedText: str
 
 
-@router.post("/", response_model=TranslateResponse)
+@router.post("", response_model=TranslateResponse)
+@router.post("/", response_model=TranslateResponse, include_in_schema=False)
 async def translate_text(req: TranslateRequest):
     api_key = os.getenv("SARVAM_API_KEY")
     if not api_key:
