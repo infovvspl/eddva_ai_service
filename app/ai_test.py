@@ -127,12 +127,13 @@ Each element must follow this schema:
   "question": "<question text>",
   "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
   "answer": "<correct answer>",
-  "explanation": "<brief explanation>",
+  "explanation": "<required: 2–4 sentences explaining why the correct answer is right; never leave empty>",
   "difficulty": "{difficulty.value}",
   "topic_tags": ["tag1", "tag2"]
 }}
 
 STRICT RULES:
+- Every question MUST include a non-empty "explanation" string (step-by-step or conceptual reasoning).
 - "options" only for mcq and true_false. Omit for everything else.
 - short_answer: 1-2 sentence answer
 - long_answer: detailed paragraph answer
