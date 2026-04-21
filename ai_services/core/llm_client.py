@@ -18,6 +18,25 @@ logger = logging.getLogger("ai_services.llm")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
+# Models that can be requested by name — anything else falls back to GROQ_MODEL
+_GROQ_ALLOWED_MODELS = {
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "quiz",  # alias → 8b for low-token quiz calls
+}
+_GROQ_MODEL_ALIAS = {
+    "quiz": "llama-3.1-8b-instant",
+}
+
+def _resolve_model(model: str) -> str:
+    """Return the actual Groq model ID to use."""
+    if model in _GROQ_MODEL_ALIAS:
+        return _GROQ_MODEL_ALIAS[model]
+    if model in _GROQ_ALLOWED_MODELS:
+        return model
+    return GROQ_MODEL
+
 # ── Ollama config (kept for future use) ──────────────────────────────────────
 OLLAMA_URL   = os.getenv("OLLAMA_URL",   "http://213.192.2.90:40077")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "edvav2")
@@ -94,10 +113,11 @@ class LLMClient:
         client = _get_groq_client()
         last_error: Optional[str] = None
 
+        effective_model = _resolve_model(model)
         for attempt in range(self.MAX_RETRIES):
             try:
                 kwargs = dict(
-                    model=GROQ_MODEL,
+                    model=effective_model,
                     messages=[
                         {"role": "system", "content": effective_system},
                         {"role": "user",   "content": user_prompt},
@@ -123,12 +143,12 @@ class LLMClient:
                 if not json_mode:
                     logger.info(
                         "LLM (text) | model=%s latency=%.0fms institute=%s",
-                        GROQ_MODEL, latency_ms, institute_id or "global",
+                        effective_model, latency_ms, institute_id or "global",
                     )
                     return {
                         "content":    raw,
                         "usage":      usage,
-                        "model":      GROQ_MODEL,
+                        "model":      effective_model,
                         "latency_ms": latency_ms,
                     }
 
@@ -145,12 +165,12 @@ class LLMClient:
 
                 logger.info(
                     "LLM (json) | model=%s latency=%.0fms institute=%s",
-                    GROQ_MODEL, latency_ms, institute_id or "global",
+                    effective_model, latency_ms, institute_id or "global",
                 )
                 return {
                     "content":    content,
                     "usage":      usage,
-                    "model":      GROQ_MODEL,
+                    "model":      effective_model,
                     "latency_ms": latency_ms,
                 }
 
