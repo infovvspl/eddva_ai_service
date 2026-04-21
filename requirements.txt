@@ -38,6 +38,9 @@ yt-dlp
 # Django + DRF
 django>=4.2
 djangorestframework>=3.14
+django-cors-headers>=4.0
+groq>=1.0
+gunicorn>=21.0
 
 # Redis caching (optional — falls back to in-memory if unavailable)
 redis>=5.0

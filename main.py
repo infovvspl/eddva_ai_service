@@ -17,6 +17,7 @@ from app.performance_analysis import router as performance_router
 from app.personalization import router as personalization_router
 from app.cheating_main import router as cheating_router
 from app.translate import router as translate_router
+from app.doubt_resolve import router as doubt_router
 
 app = FastAPI(
     title="AI Study Unified API",
@@ -44,6 +45,7 @@ app.include_router(performance_router)
 app.include_router(personalization_router)
 app.include_router(cheating_router)
 app.include_router(translate_router)
+app.include_router(doubt_router)
 
 
 @app.get("/", tags=["Root"])
