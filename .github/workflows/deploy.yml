@@ -25,11 +25,16 @@ jobs:
             cd /home/ubuntu/eddva_ai_service
 
             echo "Pulling latest code..."
+            git fetch origin main
+            git checkout -- .
             git pull origin main
 
             echo "Installing Python dependencies..."
             source venv/bin/activate
             pip install -r requirements.txt --quiet
+
+            echo "Running migrations..."
+            python manage.py migrate --noinput
 
             echo "Restarting AI service..."
             sudo systemctl restart eddva-ai

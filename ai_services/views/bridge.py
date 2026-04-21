@@ -571,14 +571,39 @@ def generate_plan(request):
 
 # ── AI #13 — In-Video Quiz Generator ────────────────────────────────────────
 
+def _parse_quiz_json(raw: str) -> dict:
+    """Extract the JSON questions array from a potentially markdown-wrapped LLM response."""
+    stripped = raw.strip()
+    # Strip markdown code fences if present
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        lines = lines[1:] if lines[0].startswith("```") else lines
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict) and "questions" in parsed:
+            return parsed
+        return {"questions": []}
+    except (json.JSONDecodeError, ValueError):
+        return {"questions": []}
+
+
 @api_view(["POST"])
 def generate_quiz_questions(request):
     data = request.data
-    transcript = data.get("transcript")
+    transcript = data.get("transcript", "")
     if not transcript:
         return Response({"error": "Missing transcript"}, status=400)
     if len(transcript.strip()) < 50:
         return Response({"error": "Transcript too short to generate quiz questions"}, status=422)
+
+    # Groq TPM limits — cap transcript at ~8 000 chars (~2 000 tokens) to stay within budget
+    MAX_TRANSCRIPT_CHARS = 8000
+    if len(transcript) > MAX_TRANSCRIPT_CHARS:
+        transcript = transcript[:MAX_TRANSCRIPT_CHARS]
+        logger.info("Quiz transcript truncated to %d chars", MAX_TRANSCRIPT_CHARS)
 
     template = get_template("quiz_generate")
     user_prompt = template.user_template.format(
@@ -586,11 +611,34 @@ def generate_quiz_questions(request):
         topic_id=data.get("topicId", ""),
         transcript=transcript,
     )
-    return ai_call_text(
-        request, "quiz_generate", user_prompt,
-        wrap_fn=lambda t: {"questions": [{"question": t, "type": "ai_generated"}]},
-        skip_cache=True, max_tokens=4096,
-    )
+
+    institute_id = getattr(request, "institute_id", "default")
+    try:
+        result = get_llm().complete(
+            system_prompt=template.system,
+            user_prompt=user_prompt,
+            model="quiz",
+            temperature=0.3,
+            max_tokens=1200,
+            json_mode=False,
+            institute_id=institute_id,
+        )
+    except RuntimeError as e:
+        logger.error("Quiz generation failed (institute=%s): %s", institute_id, e)
+        return Response({"error": str(e)}, status=502)
+
+    raw = result["content"] if isinstance(result["content"], str) else str(result["content"])
+    parsed = _parse_quiz_json(raw)
+
+    return Response({
+        **parsed,
+        "_meta": {
+            "source": "llm",
+            "model": result["model"],
+            "latency_ms": round(result["latency_ms"]),
+            "institute": institute_id,
+        },
+    })
 
 
 # ── AI #15 — Text Translation ────────────────────────────────────────────────
