@@ -7,14 +7,15 @@ Active endpoints:
   POST /tutor/session          → AI #2: AI Tutor Start
   POST /tutor/continue         → AI #2: AI Tutor Continue
   POST /recommend/content      → AI #6: Content Recommendation
-  POST /stt/notes              → AI #7: Speech-to-Text Notes  (faster-whisper)
+  POST /stt/notes              → AI #7: Speech-to-Text Notes  (Whisper → LLM)
+  POST /stt/notes-from-text    → AI #7b: Notes from Transcript (YouTube captions → LLM, no Whisper)
   POST /feedback/generate      → AI #8: Student Feedback
   POST /notes/analyze          → AI #9: Notes Weak Topic Identifier
   POST /resume/analyze         → AI #10: Resume Analyzer
   POST /interview/start        → AI #11: Interview Prep
   POST /plan/generate          → AI #12: Personalized Learning Plan
   POST /quiz/generate          → AI #13: In-Video Quiz Generator
-  POST /translate              → AI #15: Text Translation
+  POST /translate              → AI #15: Text Translation  (Sarvam AI — mayura:v1)
 
 Removed endpoints (deleted from platform):
   POST /performance/analyze    → was AI #3 (performance_analysis)
@@ -641,43 +642,45 @@ def generate_quiz_questions(request):
     })
 
 
-# ── AI #15 — Text Translation ────────────────────────────────────────────────
+# ── AI #15 — Text Translation (Sarvam AI) ────────────────────────────────────
+#
+# Uses Sarvam's mayura:v1 model — purpose-built for Indian language translation.
+# Replaces the previous Groq LLM approach which had poor Indic language quality.
+#
+# Supports: hi, en, bn, te, mr, ta, gu, kn, ml, pa, od
+# Falls back to a 502 with a clear error if SARVAM_API_KEY is not set.
 
 @api_view(["POST"])
 def translate_text(request):
+    import time as _time
+    from ai_services.core.sarvam_client import translate as sarvam_translate
+
     data = request.data
-    text = data.get("text", "")
+    text            = data.get("text", "")
     target_language = data.get("targetLanguage", "en")
+
     if not text:
         return Response({"error": "Missing text"}, status=400)
 
-    lang_name = "English" if target_language == "en" else target_language
     institute_id = getattr(request, "institute_id", "default")
-
-    system_prompt = (
-        f"You are a professional translator. Translate text accurately to {lang_name}, "
-        "preserving all markdown formatting, headings, bullet points, and structure. "
-        "Return only the translated text with no additional commentary."
-    )
-    user_prompt = (
-        f"Translate the following text to {lang_name}. "
-        "Preserve all markdown formatting exactly:\n\n" + text
+    logger.info(
+        "translate_text (Sarvam) | target=%s | chars=%d | institute=%s",
+        target_language, len(text), institute_id,
     )
 
+    _t0 = _time.perf_counter()
     try:
-        llm_result = get_llm().complete(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model="llama-3.1-8b-instant",
-            temperature=0.3,
-            max_tokens=8192,
-            json_mode=False,
-            institute_id=institute_id,
-        )
-    except RuntimeError as e:
-        return Response({"error": str(e)}, status=502)
+        translated = sarvam_translate(text, target_language=target_language)
+    except RuntimeError as exc:
+        logger.error("Sarvam translation failed: %s", exc)
+        return Response({"error": str(exc)}, status=502)
 
-    translated = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+    latency_ms = (_time.perf_counter() - _t0) * 1000
+    logger.info(
+        "Sarvam translation done | %d → %d chars | %.0fms",
+        len(text), len(translated), latency_ms,
+    )
+
     return Response({"translatedText": translated})
 
 
@@ -837,5 +840,101 @@ def generate_topic_content(request):
         "_meta": {
             "model": llm_result.get("model", ""),
             "latency_ms": round(llm_result.get("latency_ms", 0)),
+        },
+    })
+
+
+# ── AI #7b — Notes from pre-existing Transcript (YouTube / manual) ────────────
+#
+# Called by NestJS when the lecture videoUrl is a YouTube link.
+# The NestJS backend fetches the captions via youtube-transcript and sends
+# the plain-text transcript here — we skip Whisper entirely and go straight
+# to LLM summarisation.
+#
+# Body:   { transcript: str, topicId: str, language: str }
+# Returns the same shape as /stt/notes so NestJS needs no extra parsing.
+
+@api_view(["POST"])
+def generate_notes_from_transcript(request):
+    import time as _time
+
+    data = request.data
+    transcript = data.get("transcript", "").strip()
+
+    if not transcript:
+        return Response({"error": "Missing transcript"}, status=400)
+
+    if len(transcript) < 20:
+        return Response(
+            {
+                "error": "transcript_too_short",
+                "detail": "The transcript is too short to generate meaningful notes.",
+            },
+            status=422,
+        )
+
+    language = data.get("language", "en")
+    topic_id = data.get("topicId", "")
+    institute_id = getattr(request, "institute_id", "default")
+
+    logger.info(
+        "generate_notes_from_transcript | topic=%s | lang=%s | chars=%d | institute=%s",
+        topic_id, language, len(transcript), institute_id,
+    )
+
+    # Cap transcript at ~12 000 chars to stay within LLM token budget
+    MAX_TRANSCRIPT_CHARS = 12_000
+    if len(transcript) > MAX_TRANSCRIPT_CHARS:
+        logger.info("Transcript truncated from %d to %d chars", len(transcript), MAX_TRANSCRIPT_CHARS)
+        transcript = transcript[:MAX_TRANSCRIPT_CHARS]
+
+    _t0 = _time.perf_counter()
+
+    # Reuse the same prompt template as /stt/notes — same output shape, same quality
+    template = get_template("stt_notes")
+    user_prompt = template.user_template.format(
+        topic_id=topic_id,
+        language=language,
+        transcript=transcript,
+    )
+
+    try:
+        llm_result = get_llm().complete(
+            system_prompt=template.system,
+            user_prompt=user_prompt,
+            model="edvaqwen",
+            temperature=0.5,
+            max_tokens=1024,
+            json_mode=False,
+            institute_id=institute_id,
+        )
+    except RuntimeError as exc:
+        logger.error("notes_from_transcript LLM failed (institute=%s): %s", institute_id, exc)
+        return Response({"error": str(exc)}, status=502)
+
+    notes_markdown = (
+        llm_result["content"]
+        if isinstance(llm_result["content"], str)
+        else str(llm_result["content"])
+    )
+
+    logger.info(
+        "notes_from_transcript done | %d chars notes | latency=%.0fms",
+        len(notes_markdown), llm_result["latency_ms"],
+    )
+
+    # Return same shape as /stt/notes so NestJS content.service.ts needs zero changes
+    return Response({
+        "notes": notes_markdown,
+        "rawTranscript": transcript,
+        "keyConcepts": [],
+        "formulas": [],
+        "summary": "",
+        "_meta": {
+            "source": "youtube_transcript",
+            "model": llm_result["model"],
+            "latency_ms": round(llm_result["latency_ms"]),
+            "transcript_chars": len(transcript),
+            "institute": institute_id,
         },
     })
