@@ -566,8 +566,7 @@ def generate_plan(request):
         today_date=today_date,
         academic_calendar=json.dumps(academic_calendar),
     )
-    return ai_call_text(request, "plan_generate", user_prompt,
-                        wrap_fn=lambda t: {"planItems": [{"activity": t, "duration": "flexible", "priority": "high"}], "summary": t})
+    return ai_call(request, "plan_generate", user_prompt)
 
 
 # ── AI #13 — In-Video Quiz Generator ────────────────────────────────────────
@@ -582,13 +581,32 @@ def _parse_quiz_json(raw: str) -> dict:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
-    try:
-        parsed = json.loads(stripped)
-        if isinstance(parsed, dict) and "questions" in parsed:
+
+    def _loads(block: str):
+        block = block.strip()
+        if not block:
+            return None
+        try:
+            return json.loads(block)
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+    parsed = _loads(stripped)
+    # LLM often adds preamble; try innermost [...] JSON array
+    if parsed is None and "[" in stripped and "]" in stripped:
+        l = stripped.find("[")
+        r = stripped.rfind("]")
+        if l != -1 and r > l:
+            parsed = _loads(stripped[l : r + 1])
+
+    if isinstance(parsed, list):
+        return {"questions": parsed}
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("questions"), list):
             return parsed
-        return {"questions": []}
-    except (json.JSONDecodeError, ValueError):
-        return {"questions": []}
+        if isinstance(parsed.get("data"), list):
+            return {"questions": parsed["data"]}
+    return {"questions": []}
 
 
 @api_view(["POST"])
