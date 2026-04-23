@@ -1,32 +1,33 @@
-"""
+﻿"""
 Views for NestJS ai-bridge endpoints.
 These endpoints match the paths called by apexiq-backend/src/modules/ai-bridge/ai-bridge.service.ts
 
 Active endpoints:
-  POST /doubt/resolve          → AI #1: Doubt Clearing
-  POST /tutor/session          → AI #2: AI Tutor Start
-  POST /tutor/continue         → AI #2: AI Tutor Continue
-  POST /recommend/content      → AI #6: Content Recommendation
-  POST /stt/notes              → AI #7: Speech-to-Text Notes  (Whisper → LLM)
-  POST /stt/notes-from-text    → AI #7b: Notes from Transcript (YouTube captions → LLM, no Whisper)
-  POST /feedback/generate      → AI #8: Student Feedback
-  POST /notes/analyze          → AI #9: Notes Weak Topic Identifier
-  POST /resume/analyze         → AI #10: Resume Analyzer
-  POST /interview/start        → AI #11: Interview Prep
-  POST /plan/generate          → AI #12: Personalized Learning Plan
-  POST /quiz/generate          → AI #13: In-Video Quiz Generator
-  POST /translate              → AI #15: Text Translation  (Sarvam AI — mayura:v1)
+  POST /doubt/resolve          â†’ AI #1: Doubt Clearing
+  POST /tutor/session          â†’ AI #2: AI Tutor Start
+  POST /tutor/continue         â†’ AI #2: AI Tutor Continue
+  POST /recommend/content      â†’ AI #6: Content Recommendation
+  POST /stt/notes              â†’ AI #7: Speech-to-Text Notes  (Whisper â†’ LLM)
+  POST /stt/notes-from-text    â†’ AI #7b: Notes from Transcript (YouTube captions â†’ LLM, no Whisper)
+  POST /feedback/generate      â†’ AI #8: Student Feedback
+  POST /notes/analyze          â†’ AI #9: Notes Weak Topic Identifier
+  POST /resume/analyze         â†’ AI #10: Resume Analyzer
+  POST /interview/start        â†’ AI #11: Interview Prep
+  POST /plan/generate          â†’ AI #12: Personalized Learning Plan
+  POST /quiz/generate          â†’ AI #13: In-Video Quiz Generator
+  POST /translate              â†’ AI #15: Text Translation  (Sarvam AI â€” mayura:v1)
 
 Removed endpoints (deleted from platform):
-  POST /performance/analyze    → was AI #3 (performance_analysis)
-  POST /grade/subjective       → was AI #4 (grade_subjective)
-  POST /engage/detect          → was AI #5 (engagement_detect)
+  POST /performance/analyze    â†’ was AI #3 (performance_analysis)
+  POST /grade/subjective       â†’ was AI #4 (grade_subjective)
+  POST /engage/detect          â†’ was AI #5 (engagement_detect)
 """
 
 import glob as _glob
 import json
 import logging
 import os
+import re
 import tempfile
 from typing import Optional
 
@@ -47,7 +48,7 @@ from .base import ai_call, ai_call_text, get_llm
 
 logger = logging.getLogger("ai_services.llm")
 
-# ── Groq Whisper API (primary — cloud, fast) ─────────────────────────────────
+# â”€â”€ Groq Whisper API (primary â€” cloud, fast) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
@@ -66,7 +67,7 @@ def _transcribe_with_groq(audio_path: str, language: str) -> str:
     file_size = os.path.getsize(audio_path)
     if file_size > GROQ_MAX_FILE_BYTES:
         raise RuntimeError(
-            f"File too large for Groq ({file_size // 1024 // 1024} MB > 25 MB) — use local Whisper"
+            f"File too large for Groq ({file_size // 1024 // 1024} MB > 25 MB) â€” use local Whisper"
         )
 
     client = Groq(api_key=GROQ_API_KEY)
@@ -82,7 +83,7 @@ def _transcribe_with_groq(audio_path: str, language: str) -> str:
     return result if isinstance(result, str) else result.text
 
 
-# ── faster-whisper singleton (fallback — local, CPU) ─────────────────────────
+# â”€â”€ faster-whisper singleton (fallback â€” local, CPU) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _whisper_model = None
 
@@ -173,23 +174,436 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
         else:
             audio_path = _download_audio(audio_url, tmpdir)
 
-        # ── Primary: Groq ────────────────────────────────────────────────────
+        # â”€â”€ Primary: Groq â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if GROQ_API_KEY:
             try:
-                transcript = _transcribe_with_groq(audio_path, language)
-                logger.info("Groq transcription OK — %d chars", len(transcript))
+                import subprocess
+                # Ensure ffmpeg binary is available via imageio-ffmpeg since it may not be in system PATH
+                try:
+                    import imageio_ffmpeg
+                except ImportError:
+                    import sys
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "imageio-ffmpeg", "--quiet"])
+                    import imageio_ffmpeg
+                
+                ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+                
+                chunk_pattern = os.path.join(tmpdir, "chunk_%03d.mp3")
+                logger.info("Chunking audio with ffmpeg to bypass 25MB Groq limit...")
+                
+                # Split video/audio into 10-minute MP3 chunks at 32k bitrate (mono)
+                # to strictly stay within the 25MB whisper threshold
+                cmd = [
+                    ffmpeg_exe, "-y", "-i", audio_path,
+                    "-f", "segment", "-segment_time", "600",
+                    "-c:a", "libmp3lame", "-ac", "1", "-ar", "16000", "-ab", "32k",
+                    "-vn", chunk_pattern
+                ]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                chunks = sorted(_glob.glob(os.path.join(tmpdir, "chunk_*.mp3")))
+                if not chunks:
+                    raise RuntimeError("FFMpeg generated no audio chunks.")
+                
+                logger.info("Chunking complete: %d segments generated.", len(chunks))
+                
+                full_transcript_parts = []
+                for idx, chunk_file in enumerate(chunks):
+                    logger.info("Sending chunk %d/%d to Groq...", idx + 1, len(chunks))
+                    text = _transcribe_with_groq(chunk_file, language)
+                    if text:
+                        full_transcript_parts.append(text)
+                
+                transcript = " ".join(full_transcript_parts).strip()
+                logger.info("Groq transcription OK â€” %d chars (from %d chunks)", len(transcript), len(chunks))
                 return transcript
             except Exception as exc:
                 logger.warning(
-                    "Groq transcription failed (%s) — falling back to local Whisper", exc
+                    "Groq (chunked) transcription failed (%s) â€” falling back to local Whisper", exc
                 )
 
-        # ── Fallback: local Whisper ──────────────────────────────────────────
+        # â”€â”€ Fallback: local Whisper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         logger.info("Using local Whisper (GROQ_API_KEY not set or Groq failed)")
         return _transcribe_local(audio_path, language)
 
 
-# ── AI #1 — Doubt Clearing ──────────────────────────────────────────────────
+NON_ENGLISH_NOTES_LANGS = {"hi", "hinglish", "hi-in"}
+HINGLISH_HINT_WORDS = {
+    "hai", "haan", "nahi", "nahin", "kya", "kaise", "samjho", "samajh", "kyunki",
+    "agar", "lekin", "wala", "wali", "isko", "usko", "karna", "karte", "hoga",
+    "yahaan", "yahan", "iska", "iski", "iske", "hum", "aap", "thoda",
+}
+
+COMMON_TRANSCRIPT_GARBAGE = [
+    "```",
+    "<noise>",
+    "</noise>",
+    "<music>",
+    "</music>",
+    "[music]",
+    "[applause]",
+    "[laughter]",
+]
+
+
+def _looks_like_hinglish(text: str) -> bool:
+    sample = " ".join(str(text or "").lower().split()[:1200])
+    if not sample:
+        return False
+    devanagari_chars = sum(1 for ch in sample if "\u0900" <= ch <= "\u097f")
+    latin_chars = sum(1 for ch in sample if "a" <= ch <= "z")
+    token_hits = sum(1 for token in HINGLISH_HINT_WORDS if f" {token} " in f" {sample} ")
+    return (devanagari_chars > 0 and latin_chars > 0) or token_hits >= 4
+
+
+def _clean_transcript_text(text: str) -> str:
+    cleaned = str(text or "")
+    if not cleaned.strip():
+        return ""
+
+    for token in COMMON_TRANSCRIPT_GARBAGE:
+        cleaned = cleaned.replace(token, " ")
+
+    replacements = [
+        (r"\\text\s*\{([^}]*)\}", r"\1"),
+        (r"\\gt", ">"),
+        (r"\\lt", "<"),
+        (r"\\geq?", ">="),
+        (r"\\leq?", "<="),
+        (r"\\times", " x "),
+        (r"\\pi", "pi"),
+        (r"\\Delta", "Delta"),
+        (r"(?i)\bXB\s*=\s*1\s+XA\b", "XB = 1 - XA"),
+        (r"(?i)\bXA\s*=\s*NA\s*/\s*\(\s*NA\s*\+\s*NB\s*\)", "XA = NA / (NA + NB)"),
+        (r"(?i)\bXB\s*=\s*NB\s*/\s*\(\s*NA\s*\+\s*NB\s*\)", "XB = NB / (NA + NB)"),
+        (r"(?i)\bpi\s*=\s*cRT\b", "pi = cRT"),
+    ]
+    for pattern, repl in replacements:
+        cleaned = re.sub(pattern, repl, cleaned)
+
+    cleaned = re.sub(r"\$+", " ", cleaned)
+    cleaned = re.sub(r"`{3,}", " ", cleaned)
+    cleaned = re.sub(r"[^\x00-\x7F\u0900-\u097F\u03B1-\u03C9\u0391-\u03A9]+", lambda m: m.group(0) if len(m.group(0).strip()) <= 3 else " ", cleaned)
+    cleaned = re.sub(r"([A-Za-z])([=<>+\-/*()])", r"\1 \2", cleaned)
+    cleaned = re.sub(r"([=<>+\-/*()])([A-Za-z0-9])", r"\1 \2", cleaned)
+    cleaned = re.sub(r"\b([A-Za-z])\s+\+\s+([A-Za-z])\b", r"\1 + \2", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"([.!?])\s*", r"\1\n", cleaned)
+    return cleaned.strip()
+
+
+def _transcript_quality_flags(text: str) -> list[str]:
+    sample = str(text or "")
+    flags: list[str] = []
+    if not sample:
+        return ["empty"]
+
+    if re.search(r"[^\x00-\x7F\u0900-\u097F\u03B1-\u03C9\u0391-\u03A9]{8,}", sample):
+        flags.append("garbled_unicode")
+    if sample.count("```") or sample.count("$") >= 4:
+        flags.append("formatting_artifacts")
+    if re.search(r"(?i)\bXB\s*=\s*1\s+XA\b", sample):
+        flags.append("broken_formula")
+    if re.search(r"(?i)\bpi\s*=\s*[^\n]{0,20}[^\x00-\x7F]{2,}", sample):
+        flags.append("corrupted_equation")
+    if re.search(r"(?i)mole fraction of b is also 0\b", sample):
+        flags.append("contradictory_statement")
+    return flags
+
+
+def _repair_low_quality_transcript(text: str, topic_id: str, language: str, institute_id: str, flags: list[str]) -> str:
+    cleaned = _clean_transcript_text(text)
+    if not flags:
+        return cleaned
+
+    try:
+        llm_result = get_llm().complete(
+            system_prompt=(
+                "You repair noisy educational lecture transcripts. Clean OCR/STT artifacts, remove garbage tokens, "
+                "repair obvious equation formatting, and rewrite broken statements into clear English only when the "
+                "intended meaning is scientifically obvious from context. Do not invent new topics."
+            ),
+            user_prompt=(
+                f"Lecture topic: {topic_id or 'General'}\n"
+                f"Source language: {language}\n"
+                f"Detected issues: {', '.join(flags)}\n\n"
+                "Clean and repair this transcript for note generation. Preserve as much original meaning as possible.\n\n"
+                f"{cleaned}"
+            ),
+            model="edvaqwen",
+            temperature=0.2,
+            max_tokens=4096,
+            json_mode=False,
+            institute_id=institute_id,
+        )
+        candidate = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+        return candidate.strip() or cleaned
+    except Exception as exc:
+        logger.warning("Transcript repair failed (%s)", exc)
+        return cleaned
+
+
+def _normalize_transcript_to_english(transcript: str, language: str, institute_id: str) -> str:
+    normalized_language = str(language or "en").strip().lower()
+    cleaned = str(transcript or "").strip()
+    if not cleaned:
+        return cleaned
+
+    should_normalize = normalized_language in NON_ENGLISH_NOTES_LANGS or _looks_like_hinglish(cleaned)
+    if not should_normalize:
+        return cleaned
+
+    translated = ""
+    try:
+        from ai_services.core.sarvam_client import translate as sarvam_translate
+
+        logger.info(
+            "Normalizing transcript to English via Sarvam | lang=%s | chars=%d",
+            normalized_language,
+            len(cleaned),
+        )
+        translated = sarvam_translate(cleaned, target_language="en", source_language="hi").strip()
+    except Exception as exc:
+        logger.warning("Sarvam normalization failed (%s)", exc)
+
+    if translated and translated.lower() != cleaned.lower():
+        return translated
+
+    try:
+        logger.info(
+            "Falling back to LLM transcript normalization | lang=%s | chars=%d",
+            normalized_language,
+            len(cleaned),
+        )
+        llm_result = get_llm().complete(
+            system_prompt=(
+                "You convert lecture transcripts into faithful, comprehensive English transcripts. "
+                "Preserve meaning, examples, equations, and technical terms. Do not summarize. "
+                "If the input is Hinglish or Hindi mixed with English, rewrite it as clear professional English."
+            ),
+            user_prompt=(
+                f"Source language hint: {normalized_language}\n\n"
+                "Rewrite this transcript into English. Keep the full content and ordering.\n\n"
+                f"{cleaned}"
+            ),
+            model="edvaqwen",
+            temperature=0.2,
+            max_tokens=3072,
+            json_mode=False,
+            institute_id=institute_id,
+        )
+        candidate = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+        candidate = candidate.strip()
+        if candidate:
+            return candidate
+    except Exception as exc:
+        logger.warning("LLM transcript normalization failed (%s)", exc)
+
+    return cleaned
+
+
+def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str, institute_id: str) -> tuple[str, dict]:
+    normalized = _normalize_transcript_to_english(transcript, language, institute_id)
+    cleaned = _clean_transcript_text(normalized)
+    flags = _transcript_quality_flags(cleaned)
+    repaired = _repair_low_quality_transcript(cleaned, topic_id, language, institute_id, flags) if flags else cleaned
+    final_text = _clean_transcript_text(repaired)
+    return final_text, {
+        "quality_flags": flags,
+        "repair_applied": bool(flags),
+    }
+
+
+NOTES_CHUNK_CHAR_LIMIT = 7500
+NOTES_CHUNK_OVERLAP_CHARS = 800
+NOTES_SECTION_MAX_TOKENS = 2600
+NOTES_MERGE_MAX_TOKENS = 4096
+
+
+def _chunk_transcript(text: str, chunk_size: int = NOTES_CHUNK_CHAR_LIMIT, overlap: int = NOTES_CHUNK_OVERLAP_CHARS) -> list[str]:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+    if len(cleaned) <= chunk_size:
+        return [cleaned]
+
+    paragraphs = [p.strip() for p in cleaned.split("\n") if p.strip()]
+    if not paragraphs:
+        paragraphs = [cleaned]
+
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        candidate = paragraph if not current else f"{current}\n{paragraph}"
+        if len(candidate) <= chunk_size:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+            tail = current[-overlap:] if overlap > 0 else ""
+            current = f"{tail}\n{paragraph}".strip() if tail else paragraph
+        else:
+            start = 0
+            while start < len(paragraph):
+                end = min(start + chunk_size, len(paragraph))
+                chunks.append(paragraph[start:end].strip())
+                if end >= len(paragraph):
+                    current = ""
+                    break
+                start = max(end - overlap, start + 1)
+
+        while len(current) > chunk_size:
+            chunks.append(current[:chunk_size].strip())
+            current = current[max(chunk_size - overlap, 1):].strip()
+
+    if current:
+        chunks.append(current)
+
+    return [chunk for chunk in chunks if chunk]
+
+
+def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institute_id: str, chunk_index: int, total_chunks: int) -> str:
+    llm_result = get_llm().complete(
+        system_prompt=(
+            "You are an expert academic note-taker creating textbook-like lecture notes in English. "
+            "Convert this section of a lecture transcript into rich, detailed, classroom-quality Markdown notes. "
+            "Preserve definitions, intuition, examples, formulas, derivations, steps, caveats, comparisons, "
+            "and teacher reasoning. Do not compress aggressively. Cover every important idea in this chunk."
+        ),
+        user_prompt=(
+            f"Lecture topic: {topic_id or 'General'}\n"
+            f"Source language: {language}\n"
+            f"Transcript chunk: {chunk_index} of {total_chunks}\n\n"
+            "Write detailed Markdown notes for this chunk only.\n"
+            "Requirements:\n"
+            "- Explain concepts in a textbook-like way, not just bullets.\n"
+            "- Include short definitions for important terms.\n"
+            "- Include formulas or equations in plain text when relevant.\n"
+            "- Preserve examples, teacher explanations, step-by-step reasoning, and cause-effect relationships.\n"
+            "- Add subheadings where useful.\n"
+            "- If the teacher contrasts two ideas, keep that comparison.\n"
+            "- If the teacher mentions mistakes, traps, exceptions, or exam-important points, preserve them.\n"
+            "- Do not add unrelated content not supported by the transcript.\n\n"
+            f"{chunk_text}"
+        ),
+        model="edvaqwen",
+        temperature=0.4,
+        max_tokens=NOTES_SECTION_MAX_TOKENS,
+        json_mode=False,
+        institute_id=institute_id,
+    )
+    return llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+
+
+def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, institute_id: str) -> str:
+    combined_sections = "\n\n".join(
+        f"--- SECTION {idx + 1} ---\n{section.strip()}"
+        for idx, section in enumerate(chunk_notes)
+        if str(section).strip()
+    ).strip()
+    if not combined_sections:
+        return ""
+
+    llm_result = get_llm().complete(
+        system_prompt=(
+            "You are an expert academic editor creating final textbook-like lecture notes in English. "
+            "Merge multiple chunk-level note sections into one comprehensive, coherent Markdown document. "
+            "Preserve coverage, remove duplication, improve structure, and keep the final notes rich and detailed. "
+            "Do not shorten aggressively or flatten explanations into overly brief bullets."
+        ),
+        user_prompt=(
+            f"Lecture topic: {topic_id or 'General'}\n"
+            f"Source language: {language}\n\n"
+            "Merge these section notes into one coherent Markdown note set.\n"
+            "Requirements:\n"
+            "- Start with a strong title and then organize into logical sections.\n"
+            "- Keep all major concepts, examples, formulas, and explanations.\n"
+            "- Prefer explanatory paragraphs plus bullets where helpful.\n"
+            "- Preserve continuity between chunks so the final notes read like one lecture, not stitched fragments.\n"
+            "- Include key distinctions, common mistakes, and exam-relevant insights when present.\n"
+            "- End with a concise Summary section.\n\n"
+            f"{combined_sections}"
+        ),
+        model="edvaqwen",
+        temperature=0.3,
+        max_tokens=NOTES_MERGE_MAX_TOKENS,
+        json_mode=False,
+        institute_id=institute_id,
+    )
+    return llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+
+
+def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str, institute_id: str) -> tuple[str, dict]:
+    chunks = _chunk_transcript(transcript)
+    if not chunks:
+        return "", {"chunk_count": 0}
+
+    if len(chunks) == 1:
+        notes = _generate_chunk_notes(chunks[0], topic_id, language, institute_id, 1, 1).strip()
+        return notes, {"chunk_count": 1, "merge_applied": False}
+
+    logger.info("Generating chunked notes | chunks=%d | topic=%s | lang=%s", len(chunks), topic_id, language)
+    partial_notes: list[str] = []
+    for idx, chunk in enumerate(chunks):
+        partial_notes.append(_generate_chunk_notes(chunk, topic_id, language, institute_id, idx + 1, len(chunks)).strip())
+
+    merged = _merge_chunk_notes(partial_notes, topic_id, language, institute_id).strip()
+    return merged, {"chunk_count": len(chunks), "merge_applied": True}
+
+
+def _looks_like_unstructured_notes(notes: str) -> bool:
+    text = str(notes or "").strip()
+    if not text:
+        return True
+    first_line = text.splitlines()[0].strip() if text.splitlines() else text
+    has_markdown_headings = bool(re.search(r"(?m)^#{1,4}\s+\S+", text))
+    very_long_first_line = len(first_line) > 120
+    title_runon = bool(re.search(r"(?i)^[A-Z][A-Za-z0-9 ,()'/-]{8,} hello\b", first_line))
+    return (not has_markdown_headings) or very_long_first_line or title_runon
+
+
+def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_id: str) -> tuple[str, bool]:
+    cleaned = str(notes or "").strip()
+    if not cleaned:
+        return cleaned, False
+
+    if not _looks_like_unstructured_notes(cleaned):
+        return cleaned, False
+
+    try:
+        llm_result = get_llm().complete(
+            system_prompt=(
+                "You are an expert academic editor. Rewrite the provided lecture notes into clean, well-structured "
+                "Markdown without changing the academic meaning. Enforce a proper title, section headings, subheadings, "
+                "lists where appropriate, and a final Summary section."
+            ),
+            user_prompt=(
+                f"Lecture topic: {topic_id or 'General'}\n"
+                f"Source language: {language}\n\n"
+                "Rewrite these notes into clean Markdown. Requirements:\n"
+                "- Start with `# Title`\n"
+                "- Use `##` for main sections\n"
+                "- Break long run-on paragraphs into readable sections\n"
+                "- Preserve content, formulas, and examples\n"
+                "- Do not add unrelated information\n\n"
+                f"{cleaned}"
+            ),
+            model="edvaqwen",
+            temperature=0.2,
+            max_tokens=4096,
+            json_mode=False,
+            institute_id=institute_id,
+        )
+        polished = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+        polished = polished.strip()
+        return polished or cleaned, True
+    except Exception as exc:
+        logger.warning("Notes markdown polish failed (%s)", exc)
+        return cleaned, False
+
+
+# â”€â”€ AI #1 â€” Doubt Clearing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def resolve_doubt(request):
@@ -207,7 +621,7 @@ def resolve_doubt(request):
         student_context=json.dumps(data.get("studentContext", {})),
     )
 
-    # Plain text mode — edvaqwen returns high-quality text but not reliable JSON
+    # Plain text mode â€” edvaqwen returns high-quality text but not reliable JSON
     try:
         result = get_llm().complete(
             system_prompt=template.system,
@@ -242,7 +656,7 @@ def resolve_doubt(request):
     })
 
 
-# ── AI #2 — AI Tutor ────────────────────────────────────────────────────────
+# â”€â”€ AI #2 â€” AI Tutor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def start_tutor_session(request):
@@ -255,10 +669,10 @@ def start_tutor_session(request):
     context = data.get("context", "")
 
     # When a rich lesson-generation prompt is provided (long context), use it as the
-    # system prompt directly so the LLM produces clean Markdown — not JSON-wrapped text.
+    # system prompt directly so the LLM produces clean Markdown â€” not JSON-wrapped text.
     if len(context) > 300:
         system_prompt = context
-        user_prompt = "Generate the complete lesson now. Write everything in full — do not truncate or use placeholders."
+        user_prompt = "Generate the complete lesson now. Write everything in full â€” do not truncate or use placeholders."
     else:
         template = get_template("tutor_session")
         system_prompt = template.system
@@ -350,7 +764,7 @@ def continue_tutor_session(request):
     })
 
 
-# ── AI #6 — Content Recommendation ──────────────────────────────────────────
+# â”€â”€ AI #6 â€” Content Recommendation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def recommend_content(request):
@@ -370,7 +784,7 @@ def recommend_content(request):
                         wrap_fn=lambda t: {"recommendations": t, "contentItems": []})
 
 
-# ── AI #7 — Speech-to-Text Notes ────────────────────────────────────────────
+# â”€â”€ AI #7 â€” Speech-to-Text Notes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def generate_stt_notes(request):
@@ -390,7 +804,7 @@ def generate_stt_notes(request):
         try:
             raw_transcript = _transcribe_audio(audio_url, language)
             logger.info(
-                "Transcription done — %d chars | took=%.1fs",
+                "Transcription done â€” %d chars | took=%.1fs",
                 len(raw_transcript), _time.perf_counter() - _t0,
             )
         except Exception as exc:
@@ -418,51 +832,57 @@ def generate_stt_notes(request):
         )
 
     _t1 = _time.perf_counter()
-    logger.info("Sending to LLM — transcript=%d chars | transcription took=%.1fs", len(raw_transcript), _t1 - _t0)
+    logger.info("Sending to LLM â€” transcript=%d chars | transcription took=%.1fs", len(raw_transcript), _t1 - _t0)
 
-    template = get_template("stt_notes")
-    user_prompt = template.user_template.format(
-        topic_id=data.get("topicId", ""),
-        language=language,
-        transcript=raw_transcript,
+    english_transcript, prep_meta = _prepare_transcript_for_notes(
+        raw_transcript,
+        data.get("topicId", ""),
+        language,
+        getattr(request, "institute_id", "default"),
     )
 
     institute_id = getattr(request, "institute_id", "default")
-
-    # Use plain-text mode — edvaqwen generates good markdown notes but fails strict JSON
-    llm_result = get_llm().complete(
-        system_prompt=template.system,
-        user_prompt=user_prompt,
-        model="edvaqwen",
-        temperature=0.5,
-        max_tokens=1024,
-        json_mode=False,
-        institute_id=institute_id,
+    notes_markdown, notes_meta = _generate_comprehensive_notes(
+        english_transcript,
+        data.get("topicId", ""),
+        language,
+        institute_id,
     )
-
-    notes_markdown = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+    notes_markdown, markdown_polished = _polish_notes_markdown(
+        notes_markdown,
+        data.get("topicId", ""),
+        language,
+        institute_id,
+    )
     logger.info(
-        "STT notes generated | %d chars | latency=%.0fms",
-        len(notes_markdown), llm_result["latency_ms"],
+        "STT notes generated | %d chars | chunks=%d",
+        len(notes_markdown),
+        notes_meta.get("chunk_count", 0),
     )
 
     return JsonResponse({
         "notes": notes_markdown,
         "rawTranscript": raw_transcript,
+        "englishTranscript": english_transcript,
         "keyConcepts": [],
         "formulas": [],
         "summary": "",
         "_meta": {
             "source": "llm",
-            "model": llm_result["model"],
-            "latency_ms": round(llm_result["latency_ms"]),
+            "model": "edvaqwen",
+            "latency_ms": 0,
             "tokens": 0,
             "institute": institute_id,
+            "chunk_count": notes_meta.get("chunk_count", 0),
+            "merge_applied": notes_meta.get("merge_applied", False),
+            "markdown_polished": markdown_polished,
+            "quality_flags": prep_meta.get("quality_flags", []),
+            "repair_applied": prep_meta.get("repair_applied", False),
         },
     })
 
 
-# ── AI #8 — Student Feedback Engine ─────────────────────────────────────────
+# â”€â”€ AI #8 â€” Student Feedback Engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def generate_feedback(request):
@@ -481,7 +901,7 @@ def generate_feedback(request):
                         wrap_fn=lambda t: {"feedbackText": t, "actionItems": [], "strengths": []})
 
 
-# ── AI #9 — Notes Weak Topic Identifier ─────────────────────────────────────
+# â”€â”€ AI #9 â€” Notes Weak Topic Identifier â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def analyze_notes(request):
@@ -501,7 +921,7 @@ def analyze_notes(request):
                         wrap_fn=lambda t: {"quality_score": 7, "weak_topics": [], "analysis": t, "suggestions": []})
 
 
-# ── AI #10 — Resume Analyzer ────────────────────────────────────────────────
+# â”€â”€ AI #10 â€” Resume Analyzer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def analyze_resume(request):
@@ -519,7 +939,7 @@ def analyze_resume(request):
                         wrap_fn=lambda t: {"score": 0, "strengths": [], "improvements": [], "feedback": t})
 
 
-# ── AI #11 — Interview Prep ─────────────────────────────────────────────────
+# â”€â”€ AI #11 â€” Interview Prep â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def start_interview_prep(request):
@@ -537,7 +957,7 @@ def start_interview_prep(request):
                         wrap_fn=lambda t: {"questions": [t], "tips": [], "resources": []})
 
 
-# ── AI #12 — Personalized Learning Plan ─────────────────────────────────────
+# â”€â”€ AI #12 â€” Personalized Learning Plan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @api_view(["POST"])
 def generate_plan(request):
@@ -569,7 +989,7 @@ def generate_plan(request):
     return ai_call(request, "plan_generate", user_prompt)
 
 
-# ── AI #13 — In-Video Quiz Generator ────────────────────────────────────────
+# â”€â”€ AI #13 â€” In-Video Quiz Generator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _parse_quiz_json(raw: str) -> dict:
     """Extract the JSON questions array from a potentially markdown-wrapped LLM response."""
@@ -618,7 +1038,7 @@ def generate_quiz_questions(request):
     if len(transcript.strip()) < 50:
         return Response({"error": "Transcript too short to generate quiz questions"}, status=422)
 
-    # Groq TPM limits — cap transcript at ~8 000 chars (~2 000 tokens) to stay within budget
+    # Groq TPM limits â€” cap transcript at ~8 000 chars (~2 000 tokens) to stay within budget
     MAX_TRANSCRIPT_CHARS = 8000
     if len(transcript) > MAX_TRANSCRIPT_CHARS:
         transcript = transcript[:MAX_TRANSCRIPT_CHARS]
@@ -660,9 +1080,9 @@ def generate_quiz_questions(request):
     })
 
 
-# ── AI #15 — Text Translation (Sarvam AI) ────────────────────────────────────
+# â”€â”€ AI #15 â€” Text Translation (Sarvam AI) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
-# Uses Sarvam's mayura:v1 model — purpose-built for Indian language translation.
+# Uses Sarvam's mayura:v1 model â€” purpose-built for Indian language translation.
 # Replaces the previous Groq LLM approach which had poor Indic language quality.
 #
 # Supports: hi, en, bn, te, mr, ta, gu, kn, ml, pa, od
@@ -695,14 +1115,14 @@ def translate_text(request):
 
     latency_ms = (_time.perf_counter() - _t0) * 1000
     logger.info(
-        "Sarvam translation done | %d → %d chars | %.0fms",
+        "Sarvam translation done | %d â†’ %d chars | %.0fms",
         len(text), len(translated), latency_ms,
     )
 
     return Response({"translatedText": translated})
 
 
-# ── AI #16 — Topic Content Generator ─────────────────────────────────────────
+# â”€â”€ AI #16 â€” Topic Content Generator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _CONTENT_TYPE_PROMPTS = {
     "lesson": (
@@ -724,7 +1144,7 @@ _CONTENT_TYPE_PROMPTS = {
         "Cover all sub-topics and their key points."
     ),
     "flashcard": (
-        "Generate 12–15 flashcard pairs for this topic in Markdown. "
+        "Generate 12â€“15 flashcard pairs for this topic in Markdown. "
         "Format each as: **Q:** <question>  **A:** <answer>. "
         "Cover definitions, formulas, mechanisms, and application questions."
     ),
@@ -733,44 +1153,44 @@ _CONTENT_TYPE_PROMPTS = {
         "Group items by sub-topic. Use - [ ] for each checkbox item. "
         "Include concepts to understand, formulas to memorise, and types of problems to practice."
     ),
-    # ── same as lesson/summary but with short label aliases ───────────────────
+    # â”€â”€ same as lesson/summary but with short label aliases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "study_guide":         "Generate a crisp, exam-ready summary of this topic in Markdown. Use bullet points and short paragraphs. Cover every exam-important concept.",
     "key_concepts":        "Generate a structured list of ALL key formulas and must-know concepts for this topic in Markdown. For each: name, definition, units (if applicable), one-line use-case.",
     "practice_questions":  (
         "Generate a Daily Practice Problem (DPP) set for this topic in Markdown. "
         "Include exactly 10 questions with a mix of difficulty (3 easy, 5 medium, 2 hard). "
         "For each question:\n"
-        "- Number it (Q1, Q2 …)\n"
-        "- Write the question clearly (MCQ with 4 options labelled A–D, or numerical/short-answer)\n"
+        "- Number it (Q1, Q2 â€¦)\n"
+        "- Write the question clearly (MCQ with 4 options labelled Aâ€“D, or numerical/short-answer)\n"
         "- After all questions, add a ## Answers section with: answer letter/value and a 2-3 line explanation for each.\n"
         "Ensure questions test understanding, not just recall."
     ),
-    # ── DPP ───────────────────────────────────────────────────────────────────
+    # â”€â”€ DPP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "dpp": (
         "Generate a high-quality Daily Practice Problem (DPP) sheet for this topic in Markdown, "
         "exactly as a top coaching institute would give students.\n\n"
         "Format:\n"
-        "# DPP — {topic_name}\n"
+        "# DPP â€” {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name} | **Date:** ______\n\n"
-        "## Section A — Multiple Choice (1 mark each)\n"
-        "Generate 8 MCQ questions, each with 4 options (A–D). Mix easy and medium difficulty.\n\n"
-        "## Section B — Assertion–Reason (1 mark each)\n"
+        "## Section A â€” Multiple Choice (1 mark each)\n"
+        "Generate 8 MCQ questions, each with 4 options (Aâ€“D). Mix easy and medium difficulty.\n\n"
+        "## Section B â€” Assertionâ€“Reason (1 mark each)\n"
         "Generate 3 assertion-reason type questions.\n\n"
-        "## Section C — Numericals / Short Answer (3 marks each)\n"
+        "## Section C â€” Numericals / Short Answer (3 marks each)\n"
         "Generate 4 numerical or short-answer problems.\n\n"
         "## Answer Key\n"
         "List all correct answers and brief hints/solutions.\n\n"
         "Questions must be syllabus-aligned, conceptually varied, and gradually increasing in difficulty."
     ),
-    # ── PYQ ───────────────────────────────────────────────────────────────────
+    # â”€â”€ PYQ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     "pyq": (
         "Generate a Previous Year Question (PYQ) style practice set for this topic in Markdown. "
-        "Simulate the style of JEE Main / NEET questions from 2018–2024.\n\n"
+        "Simulate the style of JEE Main / NEET questions from 2018â€“2024.\n\n"
         "Format:\n"
-        "# PYQ Practice Set — {topic_name}\n"
+        "# PYQ Practice Set â€” {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
         "## JEE Main Style Questions\n"
-        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options A–D). "
+        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options Aâ€“D). "
         "Note the exam year pattern each question is modelled on (e.g. 'Pattern: JEE Main 2022 Jan').\n\n"
         "## NEET Style Questions\n"
         "Generate 5 questions in NEET MCQ style (single correct, 4 options).\n\n"
@@ -833,7 +1253,7 @@ def generate_topic_content(request):
         user_prompt += f"Additional instructions: {extra_context}\n"
     user_prompt += (
         f"\n{type_instruction}\n\n"
-        "Return ONLY the Markdown content — no preamble, no 'Here is your content:' prefix."
+        "Return ONLY the Markdown content â€” no preamble, no 'Here is your content:' prefix."
     )
 
     institute_id = getattr(request, "institute_id", "default")
@@ -862,11 +1282,11 @@ def generate_topic_content(request):
     })
 
 
-# ── AI #7b — Notes from pre-existing Transcript (YouTube / manual) ────────────
+# â”€â”€ AI #7b â€” Notes from pre-existing Transcript (YouTube / manual) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 #
 # Called by NestJS when the lecture videoUrl is a YouTube link.
 # The NestJS backend fetches the captions via youtube-transcript and sends
-# the plain-text transcript here — we skip Whisper entirely and go straight
+# the plain-text transcript here â€” we skip Whisper entirely and go straight
 # to LLM summarisation.
 #
 # Body:   { transcript: str, topicId: str, language: str }
@@ -900,59 +1320,58 @@ def generate_notes_from_transcript(request):
         topic_id, language, len(transcript), institute_id,
     )
 
-    # Cap transcript at ~12 000 chars to stay within LLM token budget
-    MAX_TRANSCRIPT_CHARS = 12_000
-    if len(transcript) > MAX_TRANSCRIPT_CHARS:
-        logger.info("Transcript truncated from %d to %d chars", len(transcript), MAX_TRANSCRIPT_CHARS)
-        transcript = transcript[:MAX_TRANSCRIPT_CHARS]
-
     _t0 = _time.perf_counter()
 
-    # Reuse the same prompt template as /stt/notes — same output shape, same quality
-    template = get_template("stt_notes")
-    user_prompt = template.user_template.format(
-        topic_id=topic_id,
-        language=language,
-        transcript=transcript,
+    english_transcript, prep_meta = _prepare_transcript_for_notes(
+        transcript,
+        topic_id,
+        language,
+        institute_id,
     )
 
     try:
-        llm_result = get_llm().complete(
-            system_prompt=template.system,
-            user_prompt=user_prompt,
-            model="edvaqwen",
-            temperature=0.5,
-            max_tokens=1024,
-            json_mode=False,
-            institute_id=institute_id,
+        notes_markdown, notes_meta = _generate_comprehensive_notes(
+            english_transcript,
+            topic_id,
+            language,
+            institute_id,
+        )
+        notes_markdown, markdown_polished = _polish_notes_markdown(
+            notes_markdown,
+            topic_id,
+            language,
+            institute_id,
         )
     except RuntimeError as exc:
         logger.error("notes_from_transcript LLM failed (institute=%s): %s", institute_id, exc)
         return Response({"error": str(exc)}, status=502)
 
-    notes_markdown = (
-        llm_result["content"]
-        if isinstance(llm_result["content"], str)
-        else str(llm_result["content"])
-    )
-
     logger.info(
-        "notes_from_transcript done | %d chars notes | latency=%.0fms",
-        len(notes_markdown), llm_result["latency_ms"],
+        "notes_from_transcript done | %d chars notes | chunks=%d | took=%.1fs",
+        len(notes_markdown),
+        notes_meta.get("chunk_count", 0),
+        _time.perf_counter() - _t0,
     )
 
     # Return same shape as /stt/notes so NestJS content.service.ts needs zero changes
     return Response({
         "notes": notes_markdown,
         "rawTranscript": transcript,
+        "englishTranscript": english_transcript,
         "keyConcepts": [],
         "formulas": [],
         "summary": "",
         "_meta": {
             "source": "youtube_transcript",
-            "model": llm_result["model"],
-            "latency_ms": round(llm_result["latency_ms"]),
+            "model": "edvaqwen",
+            "latency_ms": 0,
             "transcript_chars": len(transcript),
             "institute": institute_id,
+            "chunk_count": notes_meta.get("chunk_count", 0),
+            "merge_applied": notes_meta.get("merge_applied", False),
+            "markdown_polished": markdown_polished,
+            "quality_flags": prep_meta.get("quality_flags", []),
+            "repair_applied": prep_meta.get("repair_applied", False),
         },
     })
+
