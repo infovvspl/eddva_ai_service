@@ -40,6 +40,7 @@ urlpatterns = [
 
     # AI #12 — Personalized Learning Plan
     path("plan/generate", bridge.generate_plan),
+    path("syllabus/generate", bridge.generate_syllabus),
 
     # AI #13 — In-Video Quiz Generator
     path("quiz/generate", bridge.generate_quiz_questions),
