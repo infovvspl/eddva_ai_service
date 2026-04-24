@@ -791,7 +791,6 @@ def resolve_doubt(request):
     })
 
 
-<<<<<<< HEAD
 _DOUBT_VISION_PROMPT = (
     "A student has uploaded this image as their doubt/question in an educational app. "
     "Extract and describe ALL content from the image completely: "
@@ -814,12 +813,10 @@ _GRADING_VISION_PROMPT = (
 
 def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
     """Groq Llama 4 Scout vision: shared helper for doubt vs grading prompts."""
-=======
 _groq_vision_clients: dict = {}
 
 def _describe_image_with_vision(image_url: str) -> str:
     """Use Groq vision model to extract content from an image."""
->>>>>>> d7bdc312c9076cbf92a7df5ed868163c3b3824c1
     try:
         from groq import Groq
     except ImportError:
@@ -840,9 +837,7 @@ def _describe_image_with_vision(image_url: str) -> str:
                     {
                         "role": "user",
                         "content": [
-<<<<<<< HEAD
                             {"type": "text", "text": user_prompt},
-=======
                             {
                                 "type": "text",
                                 "text": (
@@ -851,7 +846,6 @@ def _describe_image_with_vision(image_url: str) -> str:
                                     "diagrams, and numerical problems. Be concise and precise."
                                 ),
                             },
->>>>>>> d7bdc312c9076cbf92a7df5ed868163c3b3824c1
                             {
                                 "type": "image_url",
                                 "image_url": {"url": image_url},
