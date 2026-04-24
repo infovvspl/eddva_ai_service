@@ -45,6 +45,7 @@ FEATURE_TIER_MAP = {
     "resume_analyze":     ModelTier.BALANCED,   # structured analysis
     "interview_prep":     ModelTier.BALANCED,   # question generation
     "plan_generate":      ModelTier.POWER,      # complex multi-day planning
+    "syllabus_generate":  ModelTier.POWER,      # structured curriculum generation
     "quiz_generate":      ModelTier.POWER,      # careful reasoning on transcript
 
     # ── Legacy Django features ────────────────────────────────────────

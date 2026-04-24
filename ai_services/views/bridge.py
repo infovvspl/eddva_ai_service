@@ -989,6 +989,23 @@ def generate_plan(request):
     return ai_call(request, "plan_generate", user_prompt)
 
 
+@api_view(["POST"])
+def generate_syllabus(request):
+    data = request.data
+    subjects = data.get("subjects", [])
+    if not isinstance(subjects, list) or not any(str(subject).strip() for subject in subjects):
+        return Response({"error": "Missing subjects"}, status=400)
+
+    cleaned_subjects = [str(subject).strip() for subject in subjects if str(subject).strip()]
+    template = get_template("syllabus_generate")
+    user_prompt = template.user_template.format(
+        exam_target=data.get("examTarget", "jee"),
+        exam_year=data.get("examYear", "2026"),
+        subjects=", ".join(cleaned_subjects),
+    )
+    return ai_call(request, "syllabus_generate", user_prompt, temperature=0.3, max_tokens=4096)
+
+
 # â”€â”€ AI #13 â€” In-Video Quiz Generator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _parse_quiz_json(raw: str) -> dict:
@@ -1374,4 +1391,3 @@ def generate_notes_from_transcript(request):
             "repair_applied": prep_meta.get("repair_applied", False),
         },
     })
-

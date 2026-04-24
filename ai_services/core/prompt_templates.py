@@ -218,6 +218,28 @@ Always respond in valid JSON:
     "revision_strategy": "<how to revise effectively>"
 }"""
 
+SYLLABUS_GENERATE_SYSTEM = """You are an expert academic curriculum designer for Indian competitive exams.
+STRICT: Generate all content in English.
+STRICT: Only include the subjects explicitly listed in the request. Do not add any extra subjects.
+Generate a clean, exam-oriented syllabus outline with realistic chapter groupings and chapter-wise topics.
+Avoid duplicates, filler text, commentary, markdown, and explanations.
+Always respond in valid JSON using exactly this shape:
+{
+    "subjects": [
+        {
+            "subjectName": "<subject name from the request>",
+            "chapters": [
+                {
+                    "chapterName": "<chapter name>",
+                    "topics": [
+                        {"topicName": "<topic name>"}
+                    ]
+                }
+            ]
+        }
+    ]
+}"""
+
 # â”€â”€ Legacy: Feedback Analysis (grading from marking scheme) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 FEEDBACK_ANALYZE_SYSTEM = """You are an expert academic evaluator for Indian competitive exam preparation (JEE, NEET, UPSC, etc.).
 Your job is to grade student answers against a marking scheme and provide actionable feedback.
@@ -459,4 +481,3 @@ def get_template(feature: str) -> PromptTemplate:
     if feature not in TEMPLATES:
         raise ValueError(f"Unknown feature: {feature}. Available: {list(TEMPLATES.keys())}")
     return TEMPLATES[feature]
-
