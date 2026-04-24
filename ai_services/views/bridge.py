@@ -1,4 +1,4 @@
-﻿"""
+"""
 Views for NestJS ai-bridge endpoints.
 These endpoints match the paths called by apexiq-backend/src/modules/ai-bridge/ai-bridge.service.ts
 
@@ -48,42 +48,95 @@ from .base import ai_call, ai_call_text, get_llm
 
 logger = logging.getLogger("ai_services.llm")
 
-# â”€â”€ Groq Whisper API (primary â€” cloud, fast) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- Groq Whisper API (primary -- cloud, fast; multi-key rotation) ---------------
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+_GROQ_KEYS_RAW = [
+    os.getenv("GROQ_API_KEY", ""),
+    os.getenv("GROQ_API_KEY_1", ""),
+    os.getenv("GROQ_API_KEY_2", ""),
+    os.getenv("GROQ_API_KEY_3", ""),
+    os.getenv("GROQ_API_KEY_4", ""),
+    os.getenv("GROQ_API_KEY_5", ""),
+    os.getenv("GROQ_API_KEY_6", ""),
+    os.getenv("GROQ_API_KEY_7", ""),
+]
+GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
+GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 GROQ_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB Groq limit
 
 
-def _transcribe_with_groq(audio_path: str, language: str) -> str:
-    """Transcribe a local audio file via Groq Whisper API. Returns transcript text."""
+def _parse_groq_retry_after(error_msg: str, default: float = 65.0) -> float:
+    """Parse 'Please try again in 1m46.5s' from a Groq rate-limit error. Returns seconds."""
+    m = re.search(r"(\d+)m(\d+\.?\d*)s", error_msg)
+    if m:
+        return min(int(m.group(1)) * 60 + float(m.group(2)) + 2, 360.0)
+    m = re.search(r"(\d+\.?\d*)s", error_msg)
+    if m:
+        return min(float(m.group(1)) + 2, 360.0)
+    return default
+
+
+def _transcribe_with_groq(audio_path: str, language: str, prev_context: str = "") -> str:
+    """Transcribe via Groq Whisper, rotating through all API keys on rate-limit (429)."""
     try:
-        from groq import Groq
+        from groq import Groq, RateLimitError as GroqRateLimitError
     except ImportError:
         import subprocess, sys
         subprocess.check_call([sys.executable, "-m", "pip", "install", "groq", "--quiet"])
-        from groq import Groq
+        from groq import Groq, RateLimitError as GroqRateLimitError
+
+    if not GROQ_API_KEYS:
+        raise RuntimeError("No GROQ_API_KEY configured -- set at least one in .env")
 
     file_size = os.path.getsize(audio_path)
     if file_size > GROQ_MAX_FILE_BYTES:
-        raise RuntimeError(
-            f"File too large for Groq ({file_size // 1024 // 1024} MB > 25 MB) â€” use local Whisper"
-        )
+        raise RuntimeError(f"File too large for Groq ({file_size // 1024 // 1024} MB > 25 MB)")
 
-    client = Groq(api_key=GROQ_API_KEY)
+    groq_language: str | None = None if language in ("hinglish", "auto") else language
     filename = os.path.basename(audio_path)
+
     with open(audio_path, "rb") as f:
-        result = client.audio.transcriptions.create(
-            file=(filename, f.read()),
-            model=GROQ_WHISPER_MODEL,
-            language=language,
-            response_format="text",
-        )
-    # Groq returns a plain string when response_format="text"
-    return result if isinstance(result, str) else result.text
+        file_bytes = f.read()
 
+    kwargs: dict = dict(
+        file=(filename, file_bytes),
+        model=GROQ_WHISPER_MODEL,
+        response_format="text",
+    )
+    if groq_language:
+        kwargs["language"] = groq_language
+    if prev_context:
+        # Groq measures prompt in UTF-8 bytes (limit 896); Devanagari = 3 bytes/char.
+        raw = prev_context.encode("utf-8")[-880:]
+        kwargs["prompt"] = raw.decode("utf-8", errors="ignore")
 
-# â”€â”€ faster-whisper singleton (fallback â€” local, CPU) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    last_exc: Exception | None = None
+    for round_num in range(2):  # try all keys twice before giving up
+        for key_idx, api_key in enumerate(GROQ_API_KEYS):
+            try:
+                logger.info(
+                    "Groq Whisper | key=%d/%d lang=%s",
+                    key_idx + 1, len(GROQ_API_KEYS), groq_language or language,
+                )
+                result = Groq(api_key=api_key).audio.transcriptions.create(**kwargs)
+                return result if isinstance(result, str) else result.text
+            except GroqRateLimitError as exc:
+                last_exc = exc
+                logger.info("Groq key %d/%d rate-limited -- rotating to next key", key_idx + 1, len(GROQ_API_KEYS))
+        # All keys exhausted for this round -- wait before round 2
+        if round_num == 0 and last_exc is not None:
+            wait = _parse_groq_retry_after(str(last_exc))
+            logger.warning(
+                "All %d Groq keys rate-limited -- waiting %.0fs before retry",
+                len(GROQ_API_KEYS), wait,
+            )
+            import time as _time
+            _time.sleep(wait)
+
+    raise RuntimeError(f"All {len(GROQ_API_KEYS)} Groq keys exhausted: {last_exc}") from last_exc
+
+# â"€â"€ faster-whisper singleton (fallback â€" local, CPU) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 _whisper_model = None
 
@@ -196,7 +249,7 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                 cmd = [
                     ffmpeg_exe, "-y", "-i", audio_path,
                     "-f", "segment", "-segment_time", "600",
-                    "-c:a", "libmp3lame", "-ac", "1", "-ar", "16000", "-ab", "32k",
+                    "-c:a", "libmp3lame", "-ac", "1", "-ar", "16000", "-ab", "64k",
                     "-vn", chunk_pattern
                 ]
                 subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -208,23 +261,28 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                 logger.info("Chunking complete: %d segments generated.", len(chunks))
                 
                 full_transcript_parts = []
+                prev_context = ""
                 for idx, chunk_file in enumerate(chunks):
                     logger.info("Sending chunk %d/%d to Groq...", idx + 1, len(chunks))
-                    text = _transcribe_with_groq(chunk_file, language)
+                    try:
+                        text = _transcribe_with_groq(chunk_file, language, prev_context=prev_context)
+                    except Exception as exc:
+                        logger.warning(
+                            "Groq chunk %d/%d failed with context prompt (%s) — retrying without prompt",
+                            idx + 1, len(chunks), exc,
+                        )
+                        text = _transcribe_with_groq(chunk_file, language, prev_context="")
                     if text:
                         full_transcript_parts.append(text)
-                
+                        prev_context = text
+
                 transcript = " ".join(full_transcript_parts).strip()
-                logger.info("Groq transcription OK â€” %d chars (from %d chunks)", len(transcript), len(chunks))
+                logger.info("Groq transcription OK — %d chars (from %d chunks)", len(transcript), len(chunks))
                 return transcript
             except Exception as exc:
-                logger.warning(
-                    "Groq (chunked) transcription failed (%s) â€” falling back to local Whisper", exc
-                )
+                raise RuntimeError(f"Groq transcription failed: {exc}") from exc
 
-        # â”€â”€ Fallback: local Whisper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        logger.info("Using local Whisper (GROQ_API_KEY not set or Groq failed)")
-        return _transcribe_local(audio_path, language)
+        raise RuntimeError("GROQ_API_KEY is not configured — set it in .env to enable transcription")
 
 
 NON_ENGLISH_NOTES_LANGS = {"hi", "hinglish", "hi-in"}
@@ -292,6 +350,36 @@ def _clean_transcript_text(text: str) -> str:
     return cleaned.strip()
 
 
+
+def _strip_lecture_framing(text: str) -> str:
+    """Remove teacher intro/outro, repeated greetings, and Whisper hallucinations."""
+    if not text:
+        return text
+
+    text = re.sub(r"\?{2,}", "", text)
+    text = re.sub(r"\[inaudible\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\(inaudible\)", "", text, flags=re.IGNORECASE)
+
+    text = re.sub(
+        r"(?i)(hello|hi|hey)[,\s]+(students?|everyone|all|class|friends?|guys?)[^.!?]{0,80}[.!?]?",
+        "", text,
+    )
+
+    intro, rest = text[:800], text[800:]
+    intro = re.sub(
+        r"(?i)^(hello|hi|good\s+(morning|afternoon|evening|day))[^.!?]{0,200}[.!?]",
+        "", intro.lstrip(),
+    )
+    intro = re.sub(
+        r"(?im)^(my name is|i am|i'm)\s+[\w\s]+[,.][^\n]*",
+        "", intro,
+    )
+    text = (intro + rest).strip()
+
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
 def _transcript_quality_flags(text: str) -> list[str]:
     sample = str(text or "")
     flags: list[str] = []
@@ -344,67 +432,16 @@ def _repair_low_quality_transcript(text: str, topic_id: str, language: str, inst
 
 
 def _normalize_transcript_to_english(transcript: str, language: str, institute_id: str) -> str:
-    normalized_language = str(language or "en").strip().lower()
-    cleaned = str(transcript or "").strip()
-    if not cleaned:
-        return cleaned
-
-    should_normalize = normalized_language in NON_ENGLISH_NOTES_LANGS or _looks_like_hinglish(cleaned)
-    if not should_normalize:
-        return cleaned
-
-    translated = ""
-    try:
-        from ai_services.core.sarvam_client import translate as sarvam_translate
-
-        logger.info(
-            "Normalizing transcript to English via Sarvam | lang=%s | chars=%d",
-            normalized_language,
-            len(cleaned),
-        )
-        translated = sarvam_translate(cleaned, target_language="en", source_language="hi").strip()
-    except Exception as exc:
-        logger.warning("Sarvam normalization failed (%s)", exc)
-
-    if translated and translated.lower() != cleaned.lower():
-        return translated
-
-    try:
-        logger.info(
-            "Falling back to LLM transcript normalization | lang=%s | chars=%d",
-            normalized_language,
-            len(cleaned),
-        )
-        llm_result = get_llm().complete(
-            system_prompt=(
-                "You convert lecture transcripts into faithful, comprehensive English transcripts. "
-                "Preserve meaning, examples, equations, and technical terms. Do not summarize. "
-                "If the input is Hinglish or Hindi mixed with English, rewrite it as clear professional English."
-            ),
-            user_prompt=(
-                f"Source language hint: {normalized_language}\n\n"
-                "Rewrite this transcript into English. Keep the full content and ordering.\n\n"
-                f"{cleaned}"
-            ),
-            model="edvaqwen",
-            temperature=0.2,
-            max_tokens=3072,
-            json_mode=False,
-            institute_id=institute_id,
-        )
-        candidate = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
-        candidate = candidate.strip()
-        if candidate:
-            return candidate
-    except Exception as exc:
-        logger.warning("LLM transcript normalization failed (%s)", exc)
-
-    return cleaned
+    # Skip Sarvam translation entirely — the LLM (llama-3.3-70b) reads Hindi/Hinglish natively
+    # and translates in full chunk context during note generation, which is far more accurate than
+    # Sarvam's blind 900-char batches that mangle technical terms and lose sentence context.
+    return str(transcript or "").strip()
 
 
 def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str, institute_id: str) -> tuple[str, dict]:
     normalized = _normalize_transcript_to_english(transcript, language, institute_id)
     cleaned = _clean_transcript_text(normalized)
+    cleaned = _strip_lecture_framing(cleaned)
     flags = _transcript_quality_flags(cleaned)
     repaired = _repair_low_quality_transcript(cleaned, topic_id, language, institute_id, flags) if flags else cleaned
     final_text = _clean_transcript_text(repaired)
@@ -464,10 +501,23 @@ def _chunk_transcript(text: str, chunk_size: int = NOTES_CHUNK_CHAR_LIMIT, overl
 
 
 def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institute_id: str, chunk_index: int, total_chunks: int) -> str:
+    is_hindi = str(language or "").lower() in ("hi", "hinglish", "hi-in")
+    lang_instruction = (
+        "The transcript is in Hindi or Hinglish (Hindi+English mix). "
+        "READ the Hindi/Hinglish content, understand it fully, and write the notes in clear English. "
+        "Translate technical terms accurately (e.g. रासायनिक बंध = chemical bond, "
+        "आयनिक यौगिक = ionic compound, कक्षक = orbital). "
+        "Do NOT transliterate — write proper English notes from the Hindi content.\n"
+    ) if is_hindi else ""
+
     llm_result = get_llm().complete(
         system_prompt=(
             "You are an expert academic note-taker creating textbook-like lecture notes in English. "
             "Convert this section of a lecture transcript into rich, detailed, classroom-quality Markdown notes. "
+            + lang_instruction +
+            "SKIP any teacher introductions, greetings, self-introductions, roll calls, or administrative "
+            "announcements (e.g. 'Hello students', 'Mere pyare bacchon', 'My name is...', 'Exams are near...'). "
+            "Focus ONLY on academic and educational content: concepts, theory, formulas, examples. "
             "Preserve definitions, intuition, examples, formulas, derivations, steps, caveats, comparisons, "
             "and teacher reasoning. Do not compress aggressively. Cover every important idea in this chunk."
         ),
@@ -509,6 +559,7 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
         system_prompt=(
             "You are an expert academic editor creating final textbook-like lecture notes in English. "
             "Merge multiple chunk-level note sections into one comprehensive, coherent Markdown document. "
+            "Remove any remaining teacher greetings, introductions, or non-academic content if present. "
             "Preserve coverage, remove duplication, improve structure, and keep the final notes rich and detailed. "
             "Do not shorten aggressively or flatten explanations into overly brief bullets."
         ),
