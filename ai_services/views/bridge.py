@@ -44,18 +44,18 @@ from rest_framework.response import Response
 
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
+from ai_services.core.groq_keys import get_rotated_groq_keys, is_key_exhausted_error
 from .base import ai_call, ai_call_text, get_llm
 
 logger = logging.getLogger("ai_services.llm")
 
 # â”€â”€ Groq Whisper API (primary â€” cloud, fast) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 GROQ_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB Groq limit
 
 
-def _transcribe_with_groq(audio_path: str, language: str) -> str:
+def _transcribe_with_groq(audio_path: str, language: str, api_key: str) -> str:
     """Transcribe a local audio file via Groq Whisper API. Returns transcript text."""
     try:
         from groq import Groq
@@ -70,7 +70,7 @@ def _transcribe_with_groq(audio_path: str, language: str) -> str:
             f"File too large for Groq ({file_size // 1024 // 1024} MB > 25 MB) â€” use local Whisper"
         )
 
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(api_key=api_key)
     filename = os.path.basename(audio_path)
     with open(audio_path, "rb") as f:
         result = client.audio.transcriptions.create(
@@ -142,7 +142,7 @@ def _download_audio(audio_url: str, tmpdir: str) -> str:
 
 def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
     """
-    Primary:  Groq Whisper API  (~2-3 sec, requires GROQ_API_KEY, 25 MB limit)
+    Primary:  Groq Whisper API  (~2-3 sec, requires GROQ_API_KEY(_N), 25 MB limit)
     Fallback: local faster-whisper  (slow on CPU, no size limit)
     Supports YouTube URLs via yt-dlp.
     """
@@ -175,7 +175,8 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
             audio_path = _download_audio(audio_url, tmpdir)
 
         # â”€â”€ Primary: Groq â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if GROQ_API_KEY:
+        groq_keys = get_rotated_groq_keys()
+        if groq_keys:
             try:
                 import subprocess
                 # Ensure ffmpeg binary is available via imageio-ffmpeg since it may not be in system PATH
@@ -210,7 +211,23 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                 full_transcript_parts = []
                 for idx, chunk_file in enumerate(chunks):
                     logger.info("Sending chunk %d/%d to Groq...", idx + 1, len(chunks))
-                    text = _transcribe_with_groq(chunk_file, language)
+                    text = None
+                    last_chunk_error = None
+                    for key_idx, api_key in enumerate(groq_keys):
+                        try:
+                            text = _transcribe_with_groq(chunk_file, language, api_key)
+                            break
+                        except Exception as k_exc:
+                            last_chunk_error = k_exc
+                            if is_key_exhausted_error(k_exc) and key_idx < len(groq_keys) - 1:
+                                logger.warning(
+                                    "Groq key exhausted/limited for chunk %d (%d/%d) — rotating",
+                                    idx + 1, key_idx + 1, len(groq_keys),
+                                )
+                                continue
+                            raise
+                    if text is None and last_chunk_error:
+                        raise last_chunk_error
                     if text:
                         full_transcript_parts.append(text)
                 
@@ -223,7 +240,7 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                 )
 
         # â”€â”€ Fallback: local Whisper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        logger.info("Using local Whisper (GROQ_API_KEY not set or Groq failed)")
+        logger.info("Using local Whisper (Groq keys not set or Groq failed)")
         return _transcribe_local(audio_path, language)
 
 
@@ -608,14 +625,20 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
 @api_view(["POST"])
 def resolve_doubt(request):
     data = request.data
-    question_text = data.get("questionText")
+    question_text = (data.get("questionText") or "").strip()
+    question_image_url = (data.get("questionImageUrl") or "").strip()
+    ocr_text = ""
+    if question_image_url:
+        ocr_text = _extract_text_from_image_url(question_image_url)
+    if not question_text and ocr_text:
+        question_text = ocr_text
     if not question_text:
-        return Response({"error": "Missing questionText"}, status=400)
+        return Response({"error": "Missing questionText or readable questionImageUrl"}, status=400)
 
     institute_id = getattr(request, "institute_id", "default")
     template = get_template("doubt_resolve")
     user_prompt = template.user_template.format(
-        question_text=question_text,
+        question_text=f"{question_text}\n\n[OCR from image]\n{ocr_text}" if ocr_text else question_text,
         topic_id=data.get("topicId", "general"),
         mode=data.get("mode", "detailed"),
         student_context=json.dumps(data.get("studentContext", {})),
@@ -654,6 +677,52 @@ def resolve_doubt(request):
             "institute": institute_id,
         },
     })
+
+
+def _extract_text_from_image_url(image_url: str) -> str:
+    try:
+        import numpy as _np
+        from PIL import Image as _Image
+        import easyocr as _easyocr
+        from io import BytesIO as _BytesIO
+    except Exception:
+        return ""
+
+    try:
+        resp = _requests.get(image_url, timeout=20)
+        if resp.status_code != 200:
+            return ""
+        img = _Image.open(_BytesIO(resp.content)).convert("RGB")
+        arr = _np.array(img)
+        gray = _np.dot(arr[..., :3], [0.299, 0.587, 0.114]).astype(_np.uint8)
+        bw = _np.where(gray > 165, 255, 0).astype(_np.uint8)
+        p5, p95 = _np.percentile(gray, (5, 95))
+        if p95 > p5:
+            stretch = _np.clip((gray - p5) * (255.0 / (p95 - p5)), 0, 255).astype(_np.uint8)
+        else:
+            stretch = gray
+        reader = _easyocr.Reader(["en", "hi"], gpu=False)
+        best = ""
+        for v in [arr, gray, stretch, bw]:
+            try:
+                parts = reader.readtext(v, detail=0, paragraph=True)
+                text = " ".join([str(x).strip() for x in parts if str(x).strip()]).strip()
+                if len(text) > len(best):
+                    best = text
+            except Exception:
+                continue
+        return best
+    except Exception:
+        return ""
+
+
+@api_view(["POST"])
+def ocr_doubt_image(request):
+    image_url = (request.data.get("imageUrl") or "").strip()
+    if not image_url:
+        return Response({"error": "Missing imageUrl"}, status=400)
+    text = _extract_text_from_image_url(image_url)
+    return JsonResponse({"text": text or ""})
 
 
 # â”€â”€ AI #2 â€” AI Tutor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

@@ -12,6 +12,7 @@ urlpatterns = [
 
     # AI #1 — Doubt Clearing
     path("doubt/resolve", bridge.resolve_doubt),
+    path("doubt/ocr-image", bridge.ocr_doubt_image),
 
     # AI #2 — AI Tutor
     path("tutor/session", bridge.start_tutor_session),

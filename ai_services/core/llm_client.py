@@ -12,10 +12,14 @@ import os
 import time
 from typing import Optional
 
+from ai_services.core.groq_keys import (
+    get_rotated_groq_keys,
+    is_key_exhausted_error,
+)
+
 logger = logging.getLogger("ai_services.llm")
 
 # ── Groq config ───────────────────────────────────────────────────────────────
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # Models that can be requested by name — anything else falls back to GROQ_MODEL
@@ -53,17 +57,16 @@ _JSON_MODE_SUFFIX = (
     "\n\nRespond with ONLY a JSON object. No markdown. No code fences. No explanation."
 )
 
-# ── Singleton Groq client ─────────────────────────────────────────────────────
-_groq_client = None
+# ── Per-key Groq client cache ─────────────────────────────────────────────────
+_groq_clients = {}
 
 
-def _get_groq_client():
-    global _groq_client
-    if _groq_client is None:
+def _get_groq_client(api_key: str):
+    if api_key not in _groq_clients:
         from groq import Groq
-        _groq_client = Groq(api_key=GROQ_API_KEY)
+        _groq_clients[api_key] = Groq(api_key=api_key)
         logger.info("Groq client ready → model=%s", GROQ_MODEL)
-    return _groq_client
+    return _groq_clients[api_key]
 
 
 def _extract_json(raw: str) -> str:
@@ -110,69 +113,84 @@ class LLMClient:
         if json_mode:
             effective_system += _JSON_MODE_SUFFIX
 
-        client = _get_groq_client()
         last_error: Optional[str] = None
 
         effective_model = _resolve_model(model)
         for attempt in range(self.MAX_RETRIES):
+            key_candidates = get_rotated_groq_keys()
+            if not key_candidates:
+                raise RuntimeError("No GROQ API key configured. Set GROQ_API_KEY or GROQ_API_KEY_1..N")
             try:
-                kwargs = dict(
-                    model=effective_model,
-                    messages=[
-                        {"role": "system", "content": effective_system},
-                        {"role": "user",   "content": user_prompt},
-                    ],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                if json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
+                for key_idx, key in enumerate(key_candidates):
+                    client = _get_groq_client(key)
+                    kwargs = dict(
+                        model=effective_model,
+                        messages=[
+                            {"role": "system", "content": effective_system},
+                            {"role": "user",   "content": user_prompt},
+                        ],
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    if json_mode:
+                        kwargs["response_format"] = {"type": "json_object"}
 
-                start = time.perf_counter()
-                resp  = client.chat.completions.create(**kwargs)
-                latency_ms = (time.perf_counter() - start) * 1000
+                    start = time.perf_counter()
+                    try:
+                        resp = client.chat.completions.create(**kwargs)
+                    except Exception as key_err:
+                        if is_key_exhausted_error(key_err) and key_idx < len(key_candidates) - 1:
+                            last_error = str(key_err)
+                            logger.warning(
+                                "Groq key exhausted/limited (attempt %d key %d/%d) — rotating key",
+                                attempt + 1, key_idx + 1, len(key_candidates),
+                            )
+                            continue
+                        raise
 
-                raw: str = resp.choices[0].message.content or ""
-                usage = {
-                    "prompt_tokens":     resp.usage.prompt_tokens     if resp.usage else 0,
-                    "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
-                    "total_tokens":      resp.usage.total_tokens      if resp.usage else 0,
-                }
+                    latency_ms = (time.perf_counter() - start) * 1000
 
-                # ── Plain-text mode ───────────────────────────────────────────
-                if not json_mode:
+                    raw: str = resp.choices[0].message.content or ""
+                    usage = {
+                        "prompt_tokens":     resp.usage.prompt_tokens     if resp.usage else 0,
+                        "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
+                        "total_tokens":      resp.usage.total_tokens      if resp.usage else 0,
+                    }
+
+                    # ── Plain-text mode ───────────────────────────────────────────
+                    if not json_mode:
+                        logger.info(
+                            "LLM (text) | model=%s latency=%.0fms institute=%s",
+                            effective_model, latency_ms, institute_id or "global",
+                        )
+                        return {
+                            "content":    raw,
+                            "usage":      usage,
+                            "model":      effective_model,
+                            "latency_ms": latency_ms,
+                        }
+
+                    # ── JSON mode ─────────────────────────────────────────────────
+                    try:
+                        content = json.loads(_extract_json(raw))
+                    except json.JSONDecodeError:
+                        if attempt < self.MAX_RETRIES - 1:
+                            last_error = "JSON parse failure"
+                            logger.warning("JSON parse failure attempt %d — retrying", attempt + 1)
+                            break
+                        logger.warning("JSON parse failed on all attempts — returning raw fallback")
+                        content = {"raw": raw, "parse_error": True}
+
                     logger.info(
-                        "LLM (text) | model=%s latency=%.0fms institute=%s",
+                        "LLM (json) | model=%s latency=%.0fms institute=%s",
                         effective_model, latency_ms, institute_id or "global",
                     )
                     return {
-                        "content":    raw,
+                        "content":    content,
                         "usage":      usage,
                         "model":      effective_model,
                         "latency_ms": latency_ms,
                     }
-
-                # ── JSON mode ─────────────────────────────────────────────────
-                try:
-                    content = json.loads(_extract_json(raw))
-                except json.JSONDecodeError:
-                    if attempt < self.MAX_RETRIES - 1:
-                        last_error = "JSON parse failure"
-                        logger.warning("JSON parse failure attempt %d — retrying", attempt + 1)
-                        continue
-                    logger.warning("JSON parse failed on all attempts — returning raw fallback")
-                    content = {"raw": raw, "parse_error": True}
-
-                logger.info(
-                    "LLM (json) | model=%s latency=%.0fms institute=%s",
-                    effective_model, latency_ms, institute_id or "global",
-                )
-                return {
-                    "content":    content,
-                    "usage":      usage,
-                    "model":      effective_model,
-                    "latency_ms": latency_ms,
-                }
 
             except Exception as e:
                 last_error = str(e)
