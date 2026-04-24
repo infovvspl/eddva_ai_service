@@ -791,23 +791,51 @@ def resolve_doubt(request):
     })
 
 
+_DOUBT_VISION_PROMPT = (
+    "A student has uploaded this image as their doubt/question in an educational app. "
+    "Extract and describe ALL content from the image completely: "
+    "any text, questions, mathematical equations, chemical formulas, diagrams, "
+    "graphs, figures, or numerical problems. "
+    "Be thorough and precise. Write equations in readable plain text (e.g. x^2 + 3x = 0)."
+)
+
+_GRADING_VISION_PROMPT = (
+    "The image is a student's handwritten or photographed answer for an exam or mock test. "
+    "Transcribe ONLY the answer they wrote — definitions, steps, equations, and labels. "
+    "Output plain text only, with line breaks only where the student's answer has separate lines. "
+    "Do NOT describe the photograph, the page, notebook, desk, or background. "
+    "Do NOT mention ink color, paper, margins, or whether something is 'lined paper'. "
+    "Ignore date headers, calendar widgets, week numbers, and other UI unless they are clearly part of the student's written answer. "
+    "Do NOT use phrases like 'The image shows', 'The note is written', or 'There are no equations'. "
+    "If a word is unclear, use [illegible] for that part. If there is no readable answer, output exactly: (no readable answer) "
+    "If the student wrote in English, transcribe in English only using Latin characters (A–Z, 0–9, usual math symbols). "
+    "Do not output random Devanagari or other scripts unless the student clearly wrote in that language."
+)
+
+# Reused Groq client instances (keyed by API key) for vision
 _groq_vision_clients: dict = {}
 
-def _describe_image_with_vision(image_url: str) -> str:
-    """Use Groq vision model to extract content from an image."""
+
+def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
+    """Groq Llama 4 Scout vision — shared for doubt and grading. Returns '' on failure (caller may OCR-fallback)."""
     try:
         from groq import Groq
     except ImportError:
+        logger.warning("groq package not installed; vision OCR unavailable")
+        return ""
+
+    if not (image_url or "").strip():
         return ""
 
     keys = get_rotated_groq_keys()
     if not keys:
+        logger.warning("No GROQ API keys in rotation; vision OCR skipped")
         return ""
 
     for api_key in keys:
         try:
             if api_key not in _groq_vision_clients:
-                _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=25.0)
+                _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=45.0)
             client = _groq_vision_clients[api_key]
             response = client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
@@ -815,14 +843,7 @@ def _describe_image_with_vision(image_url: str) -> str:
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    "Extract all content from this educational image: "
-                                    "text, questions, equations (plain text, e.g. x^2+3x=0), "
-                                    "diagrams, and numerical problems. Be concise and precise."
-                                ),
-                            },
+                            {"type": "text", "text": user_prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": image_url},
@@ -830,19 +851,35 @@ def _describe_image_with_vision(image_url: str) -> str:
                         ],
                     }
                 ],
-                max_tokens=512,
-                temperature=0.1,
+                max_tokens=1024,
+                temperature=0.0,
             )
-            return (response.choices[0].message.content or "").strip()
+            out = (response.choices[0].message.content or "").strip()
+            if out:
+                return out
         except Exception as exc:
-            logger.warning("Vision API key failed for doubt image: %s", exc)
+            logger.warning("Vision (Groq) failed for image OCR: %s", exc)
             continue
 
     return ""
 
 
-def _extract_text_from_image_url(image_url: str) -> str:
-    """EasyOCR fallback — used only when vision API is unavailable."""
+def _describe_image_with_vision(image_url: str) -> str:
+    """Doubt / general: extract and describe full content (equations, diagrams, etc.)."""
+    return _vision_text_from_image(image_url, _DOUBT_VISION_PROMPT)
+
+
+def _transcribe_exam_answer_with_vision(image_url: str) -> str:
+    """Mock test / grading: answer text only, no photo narration."""
+    return _vision_text_from_image(image_url, _GRADING_VISION_PROMPT)
+
+
+def _extract_text_from_image_url(
+    image_url: str, languages: Optional[list] = None
+) -> str:
+    """EasyOCR fallback when Groq vision is empty or errored.
+    ``languages`` default ``["en", "hi"]`` for doubt flow; use ``["en"]`` for grading
+    to avoid Hindi script false positives on English handwriting."""
     try:
         import numpy as _np
         from PIL import Image as _Image
@@ -850,6 +887,8 @@ def _extract_text_from_image_url(image_url: str) -> str:
         from io import BytesIO as _BytesIO
     except Exception:
         return ""
+
+    lang_list = list(languages) if languages is not None else ["en", "hi"]
 
     try:
         resp = _requests.get(image_url, timeout=20)
@@ -864,7 +903,7 @@ def _extract_text_from_image_url(image_url: str) -> str:
             stretch = _np.clip((gray - p5) * (255.0 / (p95 - p5)), 0, 255).astype(_np.uint8)
         else:
             stretch = gray
-        reader = _easyocr.Reader(["en", "hi"], gpu=False)
+        reader = _easyocr.Reader(lang_list, gpu=False)
         best = ""
         for v in [arr, gray, stretch, bw]:
             try:
@@ -881,10 +920,28 @@ def _extract_text_from_image_url(image_url: str) -> str:
 
 @api_view(["POST"])
 def ocr_doubt_image(request):
+    """Transcribe handwritten / diagram content for grading and doubt flows.
+    Prefers Groq **Llama 4 Scout** vision (handwriting, equations, diagrams), then EasyOCR.
+
+    Request JSON:
+      - imageUrl (required)
+      - purpose: optional. ``grading`` = short transcription for mock-test answers (no 'the image shows…');
+        omit or ``doubt`` = fuller extraction for doubt resolution (default).
+    """
     image_url = (request.data.get("imageUrl") or "").strip()
     if not image_url:
         return Response({"error": "Missing imageUrl"}, status=400)
-    text = _extract_text_from_image_url(image_url)
+    purpose = (request.data.get("purpose") or "doubt").strip().lower()
+    is_grading = purpose in ("grading", "mock", "assessment", "mock_test", "answer")
+    if is_grading:
+        text = _transcribe_exam_answer_with_vision(image_url)
+    else:
+        text = _describe_image_with_vision(image_url)
+    if not text:
+        # English-only EasyOCR for grading — reduces garbage Devanagari on Latin handwriting
+        text = _extract_text_from_image_url(
+            image_url, languages=["en"] if is_grading else None
+        )
     return JsonResponse({"text": text or ""})
 
 
