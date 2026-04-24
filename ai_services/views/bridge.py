@@ -1,4 +1,4 @@
-"""
+﻿"""
 Views for NestJS ai-bridge endpoints.
 These endpoints match the paths called by apexiq-backend/src/modules/ai-bridge/ai-bridge.service.ts
 
@@ -352,6 +352,68 @@ def _clean_transcript_text(text: str) -> str:
     return cleaned.strip()
 
 
+def _looks_like_math_or_formula_line(line: str) -> bool:
+    symbols = len(re.findall(r"[=+\-/*^<>%(){}\[\]]", line))
+    words = len(re.findall(r"[A-Za-z\u0900-\u097F]+", line))
+    return symbols >= 3 and words <= 12
+
+
+def _restore_sentence_punctuation(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return raw
+
+    words = re.findall(r"[A-Za-z\u0900-\u097F]+", raw)
+    if len(words) < 16:
+        return raw
+
+    punct_count = len(re.findall(r"[.!?]", raw))
+    if punct_count >= max(2, len(words) // 25):
+        return raw
+
+    paragraphs = [p.strip() for p in re.split(r"\n+", raw) if p.strip()]
+    rebuilt: list[str] = []
+
+    for paragraph in paragraphs:
+        if _looks_like_math_or_formula_line(paragraph):
+            rebuilt.append(paragraph)
+            continue
+
+        tokens = paragraph.split()
+        if len(tokens) < 8:
+            line = paragraph
+            if line and not re.search(r"[.!?]$", line):
+                line = f"{line}."
+            rebuilt.append(line)
+            continue
+
+        sentence_parts: list[str] = []
+        current: list[str] = []
+        target_len = 18
+
+        for token in tokens:
+            current.append(token)
+            if len(current) >= target_len:
+                sentence_parts.append(" ".join(current))
+                current = []
+        if current:
+            sentence_parts.append(" ".join(current))
+
+        normalized_parts: list[str] = []
+        for part in sentence_parts:
+            part = part.strip()
+            if not part:
+                continue
+            part = part[0].upper() + part[1:] if part else part
+            if not re.search(r"[.!?]$", part):
+                part = f"{part}."
+            normalized_parts.append(part)
+
+        rebuilt.append(" ".join(normalized_parts))
+
+    return "\n".join(rebuilt).strip()
+
+
 
 def _strip_lecture_framing(text: str) -> str:
     """Remove teacher intro/outro, repeated greetings, and Whisper hallucinations."""
@@ -447,6 +509,7 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
     flags = _transcript_quality_flags(cleaned)
     repaired = _repair_low_quality_transcript(cleaned, topic_id, language, institute_id, flags) if flags else cleaned
     final_text = _clean_transcript_text(repaired)
+    final_text = _restore_sentence_punctuation(final_text)
     return final_text, {
         "quality_flags": flags,
         "repair_applied": bool(flags),

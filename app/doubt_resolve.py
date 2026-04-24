@@ -56,6 +56,8 @@ def _build_prompt(req: ResolveDoubtRequest) -> str:
         f"Question text: {question_text}\n"
         f"{image_hint}\n"
         f"If this came from a screenshot or book photo, rely on extracted text and solve the exact asked problem.\n"
+        f"For mathematical/derivation questions, use equation-first formatting with minimal prose.\n"
+        f"Show symbolic steps clearly and end with a final result line.\n"
         f"Provide a {length} explanation. Also list 2-3 key concept names as a JSON array in 'key_concepts'.\n\n"
         f"Respond in this exact JSON format:\n"
         f'{{"explanation": "...", "key_concepts": ["concept1", "concept2"]}}'
