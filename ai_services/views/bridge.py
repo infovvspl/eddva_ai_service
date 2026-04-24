@@ -51,8 +51,6 @@ logger = logging.getLogger("ai_services.llm")
 
 # -- Groq Whisper API (primary -- cloud, fast; multi-key rotation) ---------------
 
-<<<<<<< HEAD
-=======
 _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY", ""),
     os.getenv("GROQ_API_KEY_1", ""),
@@ -65,15 +63,10 @@ _GROQ_KEYS_RAW = [
 ]
 GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
->>>>>>> 628c95f5ca7f13175b18faa5890d40086e115dab
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 GROQ_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB Groq limit
 
 
-<<<<<<< HEAD
-def _transcribe_with_groq(audio_path: str, language: str, api_key: str) -> str:
-    """Transcribe a local audio file via Groq Whisper API. Returns transcript text."""
-=======
 def _parse_groq_retry_after(error_msg: str, default: float = 65.0) -> float:
     """Parse 'Please try again in 1m46.5s' from a Groq rate-limit error. Returns seconds."""
     m = re.search(r"(\d+)m(\d+\.?\d*)s", error_msg)
@@ -87,7 +80,6 @@ def _parse_groq_retry_after(error_msg: str, default: float = 65.0) -> float:
 
 def _transcribe_with_groq(audio_path: str, language: str, prev_context: str = "") -> str:
     """Transcribe via Groq Whisper, rotating through all API keys on rate-limit (429)."""
->>>>>>> 628c95f5ca7f13175b18faa5890d40086e115dab
     try:
         from groq import Groq, RateLimitError as GroqRateLimitError
     except ImportError:
@@ -102,11 +94,7 @@ def _transcribe_with_groq(audio_path: str, language: str, prev_context: str = ""
     if file_size > GROQ_MAX_FILE_BYTES:
         raise RuntimeError(f"File too large for Groq ({file_size // 1024 // 1024} MB > 25 MB)")
 
-<<<<<<< HEAD
-    client = Groq(api_key=api_key)
-=======
     groq_language: str | None = None if language in ("hinglish", "auto") else language
->>>>>>> 628c95f5ca7f13175b18faa5890d40086e115dab
     filename = os.path.basename(audio_path)
 
     with open(audio_path, "rb") as f:
@@ -278,25 +266,6 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                 prev_context = ""
                 for idx, chunk_file in enumerate(chunks):
                     logger.info("Sending chunk %d/%d to Groq...", idx + 1, len(chunks))
-<<<<<<< HEAD
-                    text = None
-                    last_chunk_error = None
-                    for key_idx, api_key in enumerate(groq_keys):
-                        try:
-                            text = _transcribe_with_groq(chunk_file, language, api_key)
-                            break
-                        except Exception as k_exc:
-                            last_chunk_error = k_exc
-                            if is_key_exhausted_error(k_exc) and key_idx < len(groq_keys) - 1:
-                                logger.warning(
-                                    "Groq key exhausted/limited for chunk %d (%d/%d) — rotating",
-                                    idx + 1, key_idx + 1, len(groq_keys),
-                                )
-                                continue
-                            raise
-                    if text is None and last_chunk_error:
-                        raise last_chunk_error
-=======
                     try:
                         text = _transcribe_with_groq(chunk_file, language, prev_context=prev_context)
                     except Exception as exc:
@@ -305,7 +274,6 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                             idx + 1, len(chunks), exc,
                         )
                         text = _transcribe_with_groq(chunk_file, language, prev_context="")
->>>>>>> 628c95f5ca7f13175b18faa5890d40086e115dab
                     if text:
                         full_transcript_parts.append(text)
                         prev_context = text
@@ -316,13 +284,7 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
             except Exception as exc:
                 raise RuntimeError(f"Groq transcription failed: {exc}") from exc
 
-<<<<<<< HEAD
-        # â”€â”€ Fallback: local Whisper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        logger.info("Using local Whisper (Groq keys not set or Groq failed)")
-        return _transcribe_local(audio_path, language)
-=======
         raise RuntimeError("GROQ_API_KEY is not configured — set it in .env to enable transcription")
->>>>>>> 628c95f5ca7f13175b18faa5890d40086e115dab
 
 
 NON_ENGLISH_NOTES_LANGS = {"hi", "hinglish", "hi-in"}
