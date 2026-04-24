@@ -27,6 +27,9 @@ urlpatterns = [
     # AI #7b — Notes from pre-existing Transcript (YouTube captions, no Whisper)
     path("stt/notes-from-text", bridge.generate_notes_from_transcript),
 
+    # AI #7c — YouTube video ID → fetch captions server-side → notes (production-safe)
+    path("stt/notes-from-youtube", bridge.generate_notes_from_youtube),
+
     # AI #8 — Student Feedback Engine
     path("feedback/generate", bridge.generate_feedback),
 

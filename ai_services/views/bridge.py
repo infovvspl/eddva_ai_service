@@ -1623,3 +1623,140 @@ def generate_notes_from_transcript(request):
             "repair_applied": prep_meta.get("repair_applied", False),
         },
     })
+
+
+# ── AI #7c – Full YouTube → Notes pipeline (captions fetched server-side) ─────
+#
+# NestJS sends { videoId, topicId, language }.  This endpoint fetches captions
+# via the Python youtube-transcript-api library (more reliable on VPS/cloud IPs
+# than the npm youtube-transcript package) and pipes them to the LLM pipeline.
+#
+# Body:   { videoId: str, topicId: str, language: str }
+# Returns same shape as /stt/notes.
+
+def _fetch_yt_captions_python(video_id: str) -> str:
+    """Fetch YouTube captions using the Python youtube-transcript-api library."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except ImportError:
+        import subprocess as _sp, sys as _sys
+        _sp.check_call([_sys.executable, "-m", "pip", "install", "youtube-transcript-api", "--quiet"])
+        from youtube_transcript_api import YouTubeTranscriptApi
+
+    segments = None
+    for langs in (["en", "en-US", "en-GB", "en-IN"], None):
+        try:
+            segments = (
+                YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
+                if langs
+                else YouTubeTranscriptApi.get_transcript(video_id)
+            )
+            if segments:
+                break
+        except Exception:
+            continue
+
+    if not segments:
+        raise ValueError(f"No captions available for YouTube video {video_id}")
+
+    noise = {"[music]", "[applause]", "[laughter]", "[noise]", "[inaudible]"}
+    text = " ".join(
+        s["text"].strip()
+        for s in segments
+        if s.get("text", "").strip() and s["text"].strip().lower() not in noise
+    ).strip()
+
+    if not text:
+        raise ValueError(f"Captions were empty after cleaning for video {video_id}")
+    return text
+
+
+@api_view(["POST"])
+def generate_notes_from_youtube(request):
+    import time as _time
+
+    data = request.data
+    video_id = (data.get("videoId") or data.get("video_id") or "").strip()
+    topic_id = data.get("topicId", "")
+    language = data.get("language", "en")
+    institute_id = getattr(request, "institute_id", "default")
+
+    if not video_id:
+        return Response({"error": "Missing videoId"}, status=400)
+
+    _t0 = _time.perf_counter()
+
+    # ── Step 1: Fetch captions ──────────────────────────────────────────────────
+    try:
+        transcript = _fetch_yt_captions_python(video_id)
+        logger.info(
+            "generate_notes_from_youtube | videoId=%s | captions=%d chars | topic=%s",
+            video_id, len(transcript), topic_id,
+        )
+    except Exception as cap_exc:
+        logger.warning(
+            "generate_notes_from_youtube | captions unavailable for %s: %s",
+            video_id, cap_exc,
+        )
+        return Response(
+            {
+                "error": "captions_unavailable",
+                "detail": (
+                    f"Could not fetch captions for video {video_id}. "
+                    "Ensure captions are enabled on the YouTube video, "
+                    "or re-upload the lecture as a file."
+                ),
+            },
+            status=422,
+        )
+
+    if len(transcript) < 20:
+        return Response(
+            {
+                "error": "transcript_too_short",
+                "detail": "The YouTube captions are too short to generate meaningful notes.",
+            },
+            status=422,
+        )
+
+    # ── Step 2: LLM summarisation ───────────────────────────────────────────────
+    english_transcript, prep_meta = _prepare_transcript_for_notes(
+        transcript, topic_id, language, institute_id
+    )
+
+    try:
+        notes_markdown, notes_meta = _generate_comprehensive_notes(
+            english_transcript, topic_id, language, institute_id
+        )
+        notes_markdown, markdown_polished = _polish_notes_markdown(
+            notes_markdown, topic_id, language, institute_id
+        )
+    except RuntimeError as exc:
+        logger.error("generate_notes_from_youtube LLM failed for %s: %s", video_id, exc)
+        return Response({"error": str(exc)}, status=502)
+
+    logger.info(
+        "generate_notes_from_youtube done | videoId=%s | notes=%d chars | took=%.1fs",
+        video_id, len(notes_markdown), _time.perf_counter() - _t0,
+    )
+
+    return Response({
+        "notes": notes_markdown,
+        "rawTranscript": transcript,
+        "englishTranscript": english_transcript,
+        "keyConcepts": [],
+        "formulas": [],
+        "summary": "",
+        "_meta": {
+            "source": "youtube_captions_python",
+            "video_id": video_id,
+            "latency_ms": round((_time.perf_counter() - _t0) * 1000),
+            "transcript_chars": len(transcript),
+            "institute": institute_id,
+            "chunk_count": notes_meta.get("chunk_count", 0),
+            "merge_applied": notes_meta.get("merge_applied", False),
+            "markdown_polished": markdown_polished,
+            "quality_flags": prep_meta.get("quality_flags", []),
+            "repair_applied": prep_meta.get("repair_applied", False),
+        },
+    })

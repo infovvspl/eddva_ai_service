@@ -36,6 +36,9 @@ numpy>=1.24.0
 # ── Redis caching ─────────────────────────────────────────────────────────────
 redis>=5.0
 
+# ── YouTube transcript (caption fetch for lecture AI notes) ──────────────────
+youtube-transcript-api>=0.6.0
+
 # ── Utilities ─────────────────────────────────────────────────────────────────
 requests
 scikit-learn
