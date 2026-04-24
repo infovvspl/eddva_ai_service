@@ -791,6 +791,7 @@ def resolve_doubt(request):
     })
 
 
+<<<<<<< HEAD
 _DOUBT_VISION_PROMPT = (
     "A student has uploaded this image as their doubt/question in an educational app. "
     "Extract and describe ALL content from the image completely: "
@@ -813,24 +814,44 @@ _GRADING_VISION_PROMPT = (
 
 def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
     """Groq Llama 4 Scout vision: shared helper for doubt vs grading prompts."""
+=======
+_groq_vision_clients: dict = {}
+
+def _describe_image_with_vision(image_url: str) -> str:
+    """Use Groq vision model to extract content from an image."""
+>>>>>>> d7bdc312c9076cbf92a7df5ed868163c3b3824c1
     try:
         from groq import Groq
     except ImportError:
         return ""
 
-    if not GROQ_API_KEYS:
+    keys = get_rotated_groq_keys()
+    if not keys:
         return ""
 
-    for api_key in GROQ_API_KEYS:
+    for api_key in keys:
         try:
-            client = Groq(api_key=api_key)
+            if api_key not in _groq_vision_clients:
+                _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=25.0)
+            client = _groq_vision_clients[api_key]
             response = client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[
                     {
                         "role": "user",
                         "content": [
+<<<<<<< HEAD
                             {"type": "text", "text": user_prompt},
+=======
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Extract all content from this educational image: "
+                                    "text, questions, equations (plain text, e.g. x^2+3x=0), "
+                                    "diagrams, and numerical problems. Be concise and precise."
+                                ),
+                            },
+>>>>>>> d7bdc312c9076cbf92a7df5ed868163c3b3824c1
                             {
                                 "type": "image_url",
                                 "image_url": {"url": image_url},
@@ -838,7 +859,7 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
                         ],
                     }
                 ],
-                max_tokens=1024,
+                max_tokens=512,
                 temperature=0.1,
             )
             return (response.choices[0].message.content or "").strip()
