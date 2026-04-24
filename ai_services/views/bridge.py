@@ -791,19 +791,24 @@ def resolve_doubt(request):
     })
 
 
+_groq_vision_clients: dict = {}
+
 def _describe_image_with_vision(image_url: str) -> str:
-    """Use Groq vision model to extract and describe all content from an image."""
+    """Use Groq vision model to extract content from an image."""
     try:
         from groq import Groq
     except ImportError:
         return ""
 
-    if not GROQ_API_KEYS:
+    keys = get_rotated_groq_keys()
+    if not keys:
         return ""
 
-    for api_key in GROQ_API_KEYS:
+    for api_key in keys:
         try:
-            client = Groq(api_key=api_key)
+            if api_key not in _groq_vision_clients:
+                _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=25.0)
+            client = _groq_vision_clients[api_key]
             response = client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[
@@ -813,11 +818,9 @@ def _describe_image_with_vision(image_url: str) -> str:
                             {
                                 "type": "text",
                                 "text": (
-                                    "A student has uploaded this image as their doubt/question in an educational app. "
-                                    "Extract and describe ALL content from the image completely: "
-                                    "any text, questions, mathematical equations, chemical formulas, diagrams, "
-                                    "graphs, figures, or numerical problems. "
-                                    "Be thorough and precise. Write equations in readable plain text (e.g. x^2 + 3x = 0)."
+                                    "Extract all content from this educational image: "
+                                    "text, questions, equations (plain text, e.g. x^2+3x=0), "
+                                    "diagrams, and numerical problems. Be concise and precise."
                                 ),
                             },
                             {
@@ -827,7 +830,7 @@ def _describe_image_with_vision(image_url: str) -> str:
                         ],
                     }
                 ],
-                max_tokens=1024,
+                max_tokens=512,
                 temperature=0.1,
             )
             return (response.choices[0].message.content or "").strip()
