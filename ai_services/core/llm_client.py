@@ -1,9 +1,8 @@
 """
-LLM client — Groq API (llama-3.3-70b-versatile).
+LLM client -- Groq API (llama-3.3-70b-versatile).
 
 Keeps the same .complete() interface as the previous Ollama client so every
-view continues to work without changes.  Ollama config env-vars are preserved
-but unused — they will be wired back once edvav2 is fine-tuned.
+view continues to work without changes.
 """
 
 import json
@@ -19,33 +18,50 @@ from ai_services.core.groq_keys import (
 
 logger = logging.getLogger("ai_services.llm")
 
+<<<<<<< HEAD
 # ── Groq config ───────────────────────────────────────────────────────────────
 GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+=======
+# -- Groq config (multi-key pool for rate-limit rotation) ----------------------
+_GROQ_KEYS_RAW = [
+    os.getenv("GROQ_API_KEY", ""),
+    os.getenv("GROQ_API_KEY_1", ""),
+    os.getenv("GROQ_API_KEY_2", ""),
+    os.getenv("GROQ_API_KEY_3", ""),
+    os.getenv("GROQ_API_KEY_4", ""),
+    os.getenv("GROQ_API_KEY_5", ""),
+    os.getenv("GROQ_API_KEY_6", ""),
+    os.getenv("GROQ_API_KEY_7", ""),
+]
+GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
+GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+>>>>>>> 628c95f5ca7f13175b18faa5890d40086e115dab
 
-# Models that can be requested by name — anything else falls back to GROQ_MODEL
+# Models that can be requested by name -- anything else falls back to GROQ_MODEL
 _GROQ_ALLOWED_MODELS = {
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
     "llama-3.1-70b-versatile",
-    "quiz",  # alias → 8b for low-token quiz calls
+    "quiz",
 }
 _GROQ_MODEL_ALIAS = {
     "quiz": "llama-3.1-8b-instant",
 }
 
+
 def _resolve_model(model: str) -> str:
-    """Return the actual Groq model ID to use."""
     if model in _GROQ_MODEL_ALIAS:
         return _GROQ_MODEL_ALIAS[model]
     if model in _GROQ_ALLOWED_MODELS:
         return model
     return GROQ_MODEL
 
-# ── Ollama config (kept for future use) ──────────────────────────────────────
-OLLAMA_URL   = os.getenv("OLLAMA_URL",   "http://213.192.2.90:40077")
+
+# -- Ollama config (kept for future use) ---------------------------------------
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://213.192.2.90:40077")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "edvav2")
 
-# Prepended to every system prompt.
 _ANTI_HALLUCINATION_PREFIX = (
     "You are EDVA AI, an expert Indian education assistant "
     "for JEE, NEET, and CBSE (Class 10-12).\n"
@@ -53,6 +69,7 @@ _ANTI_HALLUCINATION_PREFIX = (
     "Use correct scientific facts only.\n\n"
 )
 
+<<<<<<< HEAD
 _JSON_MODE_SUFFIX = (
     "\n\nRespond with ONLY a JSON object. No markdown. No code fences. No explanation."
 )
@@ -67,10 +84,12 @@ def _get_groq_client(api_key: str):
         _groq_clients[api_key] = Groq(api_key=api_key)
         logger.info("Groq client ready → model=%s", GROQ_MODEL)
     return _groq_clients[api_key]
+=======
+_JSON_MODE_SUFFIX = "\n\nRespond with ONLY a JSON object. No markdown. No code fences. No explanation."
+>>>>>>> 628c95f5ca7f13175b18faa5890d40086e115dab
 
 
 def _extract_json(raw: str) -> str:
-    """Strip markdown code fences if the model wraps JSON in ```json ... ```."""
     stripped = raw.strip()
     if stripped.startswith("```"):
         lines = stripped.splitlines()
@@ -81,9 +100,21 @@ def _extract_json(raw: str) -> str:
     return stripped
 
 
+def get_llm() -> "LLMClient":
+    return LLMClient()
+
+
+def _get_groq_client():
+    """Startup validation: confirm at least one key is configured."""
+    if not GROQ_API_KEYS:
+        raise RuntimeError("No GROQ_API_KEY configured -- set at least one in .env")
+    from groq import Groq
+    return Groq(api_key=GROQ_API_KEYS[0])
+
+
 class LLMClient:
     """
-    Single entry-point for all LLM calls.  Now backed by Groq.
+    Single entry-point for all LLM calls, backed by Groq with multi-key rotation.
 
     complete() returns:
         {
@@ -94,25 +125,27 @@ class LLMClient:
         }
     """
 
-    MAX_RETRIES   = 3
-    RETRY_BACKOFF = (2, 5, 10)
-
     def complete(
         self,
         *,
         system_prompt: str,
-        user_prompt:   str,
-        model:         str,           # accepted but overridden by GROQ_MODEL
-        temperature:   float = 0.7,
-        max_tokens:    int   = 4096,
-        json_mode:     bool  = True,
-        institute_id:  Optional[str] = None,
+        user_prompt: str,
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        json_mode: bool = True,
+        institute_id: Optional[str] = None,
     ) -> dict:
+        from groq import Groq, RateLimitError as GroqRateLimitError
+
+        if not GROQ_API_KEYS:
+            raise RuntimeError("No GROQ_API_KEY configured -- set at least one in .env")
 
         effective_system = _ANTI_HALLUCINATION_PREFIX + system_prompt
         if json_mode:
             effective_system += _JSON_MODE_SUFFIX
 
+<<<<<<< HEAD
         last_error: Optional[str] = None
 
         effective_model = _resolve_model(model)
@@ -201,7 +234,91 @@ class LLMClient:
 
             if attempt < self.MAX_RETRIES - 1:
                 time.sleep(self.RETRY_BACKOFF[attempt])
+=======
+        effective_model = _resolve_model(model)
+
+        kwargs = dict(
+            model=effective_model,
+            messages=[
+                {"role": "system", "content": effective_system},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        last_error: Optional[str] = None
+
+        # Two rounds across all keys: instant rotation on any error, sleep only if all fail
+        for round_num in range(2):
+            for key_idx, api_key in enumerate(GROQ_API_KEYS):
+                try:
+                    client = Groq(api_key=api_key)
+                    start = time.perf_counter()
+                    resp = client.chat.completions.create(**kwargs)
+                    latency_ms = (time.perf_counter() - start) * 1000
+
+                    raw: str = resp.choices[0].message.content or ""
+                    usage = {
+                        "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
+                        "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
+                        "total_tokens": resp.usage.total_tokens if resp.usage else 0,
+                    }
+
+                    if not json_mode:
+                        logger.info(
+                            "LLM (text) | key=%d/%d model=%s latency=%.0fms",
+                            key_idx + 1, len(GROQ_API_KEYS), effective_model, latency_ms,
+                        )
+                        return {
+                            "content": raw,
+                            "usage": usage,
+                            "model": effective_model,
+                            "latency_ms": latency_ms,
+                        }
+
+                    try:
+                        content = json.loads(_extract_json(raw))
+                    except json.JSONDecodeError:
+                        logger.warning("JSON parse failure on key %d -- retrying next key", key_idx + 1)
+                        last_error = "JSON parse failure"
+                        continue
+
+                    logger.info(
+                        "LLM (json) | key=%d/%d model=%s latency=%.0fms",
+                        key_idx + 1, len(GROQ_API_KEYS), effective_model, latency_ms,
+                    )
+                    return {
+                        "content": content,
+                        "usage": usage,
+                        "model": effective_model,
+                        "latency_ms": latency_ms,
+                    }
+
+                except GroqRateLimitError as exc:
+                    last_error = str(exc)
+                    logger.warning(
+                        "LLM key %d/%d rate-limited -- rotating to next key",
+                        key_idx + 1, len(GROQ_API_KEYS),
+                    )
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.error(
+                        "LLM key %d/%d error (%s) -- rotating to next key",
+                        key_idx + 1, len(GROQ_API_KEYS), last_error,
+                    )
+
+            # All keys failed this round -- wait 10s before round 2
+            if round_num == 0:
+                logger.warning(
+                    "All %d LLM keys failed (round 1) -- waiting 10s before retry",
+                    len(GROQ_API_KEYS),
+                )
+                time.sleep(10)
+>>>>>>> 628c95f5ca7f13175b18faa5890d40086e115dab
 
         raise RuntimeError(
-            f"LLM call failed after {self.MAX_RETRIES} retries: {last_error}"
+            f"LLM call failed after exhausting all {len(GROQ_API_KEYS)} keys: {last_error}"
         )
