@@ -791,8 +791,28 @@ def resolve_doubt(request):
     })
 
 
-def _describe_image_with_vision(image_url: str) -> str:
-    """Use Groq vision model to extract and describe all content from an image."""
+_DOUBT_VISION_PROMPT = (
+    "A student has uploaded this image as their doubt/question in an educational app. "
+    "Extract and describe ALL content from the image completely: "
+    "any text, questions, mathematical equations, chemical formulas, diagrams, "
+    "graphs, figures, or numerical problems. "
+    "Be thorough and precise. Write equations in readable plain text (e.g. x^2 + 3x = 0)."
+)
+
+_GRADING_VISION_PROMPT = (
+    "The image is a student's handwritten or photographed answer for an exam or mock test. "
+    "Transcribe ONLY the answer they wrote — definitions, steps, equations, and labels. "
+    "Output plain text only, with line breaks only where the student's answer has separate lines. "
+    "Do NOT describe the photograph, the page, notebook, desk, or background. "
+    "Do NOT mention ink color, paper, margins, or whether something is 'lined paper'. "
+    "Ignore date headers, calendar widgets, week numbers, and other UI unless they are clearly part of the student's written answer. "
+    "Do NOT use phrases like 'The image shows', 'The note is written', or 'There are no equations'. "
+    "If a word is unclear, use [illegible] for that part. If there is no readable answer, output exactly: (no readable answer)"
+)
+
+
+def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
+    """Groq Llama 4 Scout vision: shared helper for doubt vs grading prompts."""
     try:
         from groq import Groq
     except ImportError:
@@ -810,16 +830,7 @@ def _describe_image_with_vision(image_url: str) -> str:
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    "A student has uploaded this image as their doubt/question in an educational app. "
-                                    "Extract and describe ALL content from the image completely: "
-                                    "any text, questions, mathematical equations, chemical formulas, diagrams, "
-                                    "graphs, figures, or numerical problems. "
-                                    "Be thorough and precise. Write equations in readable plain text (e.g. x^2 + 3x = 0)."
-                                ),
-                            },
+                            {"type": "text", "text": user_prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": image_url},
@@ -832,10 +843,20 @@ def _describe_image_with_vision(image_url: str) -> str:
             )
             return (response.choices[0].message.content or "").strip()
         except Exception as exc:
-            logger.warning("Vision API key failed for doubt image: %s", exc)
+            logger.warning("Vision API key failed for image OCR: %s", exc)
             continue
 
     return ""
+
+
+def _describe_image_with_vision(image_url: str) -> str:
+    """Doubt / general: extract and describe full content (equations, diagrams, etc.)."""
+    return _vision_text_from_image(image_url, _DOUBT_VISION_PROMPT)
+
+
+def _transcribe_exam_answer_with_vision(image_url: str) -> str:
+    """Mock test / grading: answer text only, no photo narration."""
+    return _vision_text_from_image(image_url, _GRADING_VISION_PROMPT)
 
 
 def _extract_text_from_image_url(image_url: str) -> str:
@@ -878,10 +899,24 @@ def _extract_text_from_image_url(image_url: str) -> str:
 
 @api_view(["POST"])
 def ocr_doubt_image(request):
+    """Transcribe handwritten / diagram content for grading and doubt flows.
+    Prefers Groq **Llama 4 Scout** vision (handwriting, equations, diagrams), then EasyOCR.
+
+    Request JSON:
+      - imageUrl (required)
+      - purpose: optional. ``grading`` = short transcription for mock-test answers (no 'the image shows…');
+        omit or ``doubt`` = fuller extraction for doubt resolution (default).
+    """
     image_url = (request.data.get("imageUrl") or "").strip()
     if not image_url:
         return Response({"error": "Missing imageUrl"}, status=400)
-    text = _extract_text_from_image_url(image_url)
+    purpose = (request.data.get("purpose") or "doubt").strip().lower()
+    if purpose in ("grading", "mock", "assessment", "mock_test", "answer"):
+        text = _transcribe_exam_answer_with_vision(image_url)
+    else:
+        text = _describe_image_with_vision(image_url)
+    if not text:
+        text = _extract_text_from_image_url(image_url)
     return JsonResponse({"text": text or ""})
 
 
