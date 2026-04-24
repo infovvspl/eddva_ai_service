@@ -663,18 +663,31 @@ def resolve_doubt(request):
     data = request.data
     question_text = (data.get("questionText") or "").strip()
     question_image_url = (data.get("questionImageUrl") or "").strip()
-    ocr_text = ""
+    image_description = ""
+
     if question_image_url:
-        ocr_text = _extract_text_from_image_url(question_image_url)
-    if not question_text and ocr_text:
-        question_text = ocr_text
-    if not question_text:
+        # Vision API understands diagrams, equations, handwriting — use it first
+        image_description = _describe_image_with_vision(question_image_url)
+        if not image_description:
+            # Fallback to EasyOCR if vision API is unavailable
+            logger.warning("Vision API returned empty for doubt image — falling back to OCR")
+            image_description = _extract_text_from_image_url(question_image_url)
+
+    if not question_text and not image_description:
         return Response({"error": "Missing questionText or readable questionImageUrl"}, status=400)
 
     institute_id = getattr(request, "institute_id", "default")
     template = get_template("doubt_resolve")
+
+    if image_description and question_text:
+        combined_question = f"{question_text}\n\n[Image content]\n{image_description}"
+    elif image_description:
+        combined_question = f"[Student uploaded an image with the following content]\n{image_description}"
+    else:
+        combined_question = question_text
+
     user_prompt = template.user_template.format(
-        question_text=f"{question_text}\n\n[OCR from image]\n{ocr_text}" if ocr_text else question_text,
+        question_text=combined_question,
         topic_id=data.get("topicId", "general"),
         mode=data.get("mode", "detailed"),
         student_context=json.dumps(data.get("studentContext", {})),
@@ -715,7 +728,55 @@ def resolve_doubt(request):
     })
 
 
+def _describe_image_with_vision(image_url: str) -> str:
+    """Use Groq vision model to extract and describe all content from an image."""
+    try:
+        from groq import Groq
+    except ImportError:
+        return ""
+
+    if not GROQ_API_KEYS:
+        return ""
+
+    for api_key in GROQ_API_KEYS:
+        try:
+            client = Groq(api_key=api_key)
+            response = client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "A student has uploaded this image as their doubt/question in an educational app. "
+                                    "Extract and describe ALL content from the image completely: "
+                                    "any text, questions, mathematical equations, chemical formulas, diagrams, "
+                                    "graphs, figures, or numerical problems. "
+                                    "Be thorough and precise. Write equations in readable plain text (e.g. x^2 + 3x = 0)."
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": image_url},
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=1024,
+                temperature=0.1,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except Exception as exc:
+            logger.warning("Vision API key failed for doubt image: %s", exc)
+            continue
+
+    return ""
+
+
 def _extract_text_from_image_url(image_url: str) -> str:
+    """EasyOCR fallback — used only when vision API is unavailable."""
     try:
         import numpy as _np
         from PIL import Image as _Image
