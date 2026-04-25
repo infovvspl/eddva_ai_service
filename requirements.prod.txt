@@ -31,7 +31,7 @@ torchvision --extra-index-url https://download.pytorch.org/whl/cpu
 
 # ── Cheating Detection ────────────────────────────────────────────────────────
 mediapipe>=0.10.13
-numpy>=1.24.0
+numpy>=1.24.0,<2.0          # easyocr + cv2 4.8.x are compiled against NumPy 1.x
 
 # ── Redis caching ─────────────────────────────────────────────────────────────
 redis>=5.0
