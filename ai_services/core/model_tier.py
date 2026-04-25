@@ -1,10 +1,8 @@
 """
-Model tiering — all tiers now resolve to the local edvaqwen model via Ollama.
+Model tiering — maps feature tiers to Groq model IDs.
 
-Tiers are kept so the architecture stays the same and the `get_model_for_task`
-call sites in every view continue to work without any change.
-The `model` value returned by each tier is passed to LLMClient.complete(),
-where it is accepted for API compatibility but always overridden to edvaqwen.
+LLMClient._resolve_model() validates the name against _GROQ_ALLOWED_MODELS
+and falls back to GROQ_MODEL (llama-3.3-70b-versatile) for unknowns.
 
 Removed features (deleted from the platform):
   - performance_analysis   (POST /performance/analyze)
@@ -13,7 +11,6 @@ Removed features (deleted from the platform):
   - cheating_analyze        (POST /cheating/analyze-logs/)
 """
 
-import os
 from enum import Enum
 
 
@@ -23,13 +20,11 @@ class ModelTier(str, Enum):
     POWER = "power"
 
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "edvaqwen")
-
-# All tiers map to the same local model
+# Groq model IDs recognised by LLMClient._resolve_model()
 MODEL_MAP = {
-    ModelTier.FAST:     OLLAMA_MODEL,
-    ModelTier.BALANCED: OLLAMA_MODEL,
-    ModelTier.POWER:    OLLAMA_MODEL,
+    ModelTier.FAST:     "llama-3.1-8b-instant",       # low-latency, simple tasks
+    ModelTier.BALANCED: "llama-3.3-70b-versatile",    # general quality
+    ModelTier.POWER:    "llama-3.3-70b-versatile",    # complex generation (same model, max tokens)
 }
 
 # Which tier each feature uses

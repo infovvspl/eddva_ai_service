@@ -1,4 +1,4 @@
-﻿"""
+"""
 Prompt templates â€" system prompts are defined ONCE and reused.
 
 Each feature has a frozen system prompt. User-specific data goes
