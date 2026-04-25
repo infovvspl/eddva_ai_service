@@ -1456,7 +1456,7 @@ def start_tutor_session(request):
     # system prompt directly so the LLM produces clean Markdown â€" not JSON-wrapped text.
     if len(context) > 300:
         system_prompt = context
-        user_prompt = "Generate the complete lesson now. Write everything in full â€" do not truncate or use placeholders."
+        user_prompt = "Generate the complete lesson now. Write everything in full - do not truncate or use placeholders."
     else:
         template = get_template("tutor_session")
         system_prompt = template.system
@@ -1588,7 +1588,7 @@ def generate_stt_notes(request):
         try:
             raw_transcript = _transcribe_audio(audio_url, language)
             logger.info(
-                "Transcription done â€" %d chars | took=%.1fs",
+                "Transcription done - %d chars | took=%.1fs",
                 len(raw_transcript), _time.perf_counter() - _t0,
             )
         except Exception as exc:
@@ -1616,7 +1616,7 @@ def generate_stt_notes(request):
         )
 
     _t1 = _time.perf_counter()
-    logger.info("Sending to LLM â€" transcript=%d chars | transcription took=%.1fs", len(raw_transcript), _t1 - _t0)
+    logger.info("Sending to LLM - transcript=%d chars | transcription took=%.1fs", len(raw_transcript), _t1 - _t0)
 
     english_transcript, prep_meta = _prepare_transcript_for_notes(
         raw_transcript,
@@ -1945,7 +1945,7 @@ _CONTENT_TYPE_PROMPTS = {
         "Cover all sub-topics and their key points."
     ),
     "flashcard": (
-        "Generate 12â€"15 flashcard pairs for this topic in Markdown. "
+        "Generate 12-15 flashcard pairs for this topic in Markdown. "
         "Format each as: **Q:** <question>  **A:** <answer>. "
         "Cover definitions, formulas, mechanisms, and application questions."
     ),
@@ -1962,7 +1962,7 @@ _CONTENT_TYPE_PROMPTS = {
         "Include exactly 10 questions with a mix of difficulty (3 easy, 5 medium, 2 hard). "
         "For each question:\n"
         "- Number it (Q1, Q2 â€¦)\n"
-        "- Write the question clearly (MCQ with 4 options labelled Aâ€"D, or numerical/short-answer)\n"
+        "- Write the question clearly (MCQ with 4 options labelled A-D, or numerical/short-answer)\n"
         "- After all questions, add a ## Answers section with: answer letter/value and a 2-3 line explanation for each.\n"
         "Ensure questions test understanding, not just recall."
     ),
@@ -1971,13 +1971,13 @@ _CONTENT_TYPE_PROMPTS = {
         "Generate a high-quality Daily Practice Problem (DPP) sheet for this topic in Markdown, "
         "exactly as a top coaching institute would give students.\n\n"
         "Format:\n"
-        "# DPP â€" {topic_name}\n"
+        "# DPP - {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name} | **Date:** ______\n\n"
-        "## Section A â€" Multiple Choice (1 mark each)\n"
-        "Generate 8 MCQ questions, each with 4 options (Aâ€"D). Mix easy and medium difficulty.\n\n"
-        "## Section B â€" Assertionâ€"Reason (1 mark each)\n"
+        "## Section A - Multiple Choice (1 mark each)\n"
+        "Generate 8 MCQ questions, each with 4 options (A-D). Mix easy and medium difficulty.\n\n"
+        "## Section B - Assertion-Reason (1 mark each)\n"
         "Generate 3 assertion-reason type questions.\n\n"
-        "## Section C â€" Numericals / Short Answer (3 marks each)\n"
+        "## Section C - Numericals / Short Answer (3 marks each)\n"
         "Generate 4 numerical or short-answer problems.\n\n"
         "## Answer Key\n"
         "List all correct answers and brief hints/solutions.\n\n"
@@ -1986,12 +1986,12 @@ _CONTENT_TYPE_PROMPTS = {
     # â"€â"€ PYQ â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     "pyq": (
         "Generate a Previous Year Question (PYQ) style practice set for this topic in Markdown. "
-        "Simulate the style of JEE Main / NEET questions from 2018â€"2024.\n\n"
+        "Simulate the style of JEE Main / NEET questions from 2018-2024.\n\n"
         "Format:\n"
-        "# PYQ Practice Set â€" {topic_name}\n"
+        "# PYQ Practice Set - {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
         "## JEE Main Style Questions\n"
-        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options Aâ€"D). "
+        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options A-D). "
         "Note the exam year pattern each question is modelled on (e.g. 'Pattern: JEE Main 2022 Jan').\n\n"
         "## NEET Style Questions\n"
         "Generate 5 questions in NEET MCQ style (single correct, 4 options).\n\n"
@@ -2054,7 +2054,7 @@ def generate_topic_content(request):
         user_prompt += f"Additional instructions: {extra_context}\n"
     user_prompt += (
         f"\n{type_instruction}\n\n"
-        "Return ONLY the Markdown content â€" no preamble, no 'Here is your content:' prefix."
+        "Return ONLY the Markdown content - no preamble, no 'Here is your content:' prefix."
     )
 
     institute_id = getattr(request, "institute_id", "default")
