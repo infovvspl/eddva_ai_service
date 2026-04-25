@@ -36,8 +36,9 @@ numpy>=1.24.0
 # ── Redis caching ─────────────────────────────────────────────────────────────
 redis>=5.0
 
-# ── YouTube transcript (caption fetch for lecture AI notes) ──────────────────
-youtube-transcript-api>=0.6.0
+# ── YouTube caption fetch (lecture AI notes) ─────────────────────────────────
+youtube-transcript-api>=0.6.0   # primary: pure Python, fast
+yt-dlp>=2024.1.1                # fallback: more robust on server IPs, subtitles-only
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 requests

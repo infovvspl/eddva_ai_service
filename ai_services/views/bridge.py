@@ -2053,40 +2053,114 @@ def generate_notes_from_transcript(request):
 # Returns same shape as /stt/notes.
 
 def _fetch_yt_captions_python(video_id: str) -> str:
-    """Fetch YouTube captions using the Python youtube-transcript-api library."""
+    """
+    Fetch YouTube captions for a video ID.
+    Primary:  youtube-transcript-api  (pure Python, fast, no binary)
+    Fallback: yt-dlp --write-auto-subs --skip-download  (more robust on server IPs,
+              bypasses YouTube bot detection via regular yt-dlp user-agent rotation)
+    """
+    _noise = {"[music]", "[applause]", "[laughter]", "[noise]", "[inaudible]", "[ __ ]"}
+
+    # ── Primary: youtube-transcript-api ───────────────────────────────────────
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-    except ImportError:
-        import subprocess as _sp, sys as _sys
-        _sp.check_call([_sys.executable, "-m", "pip", "install", "youtube-transcript-api", "--quiet"])
-        from youtube_transcript_api import YouTubeTranscriptApi
-
-    segments = None
-    for langs in (["en", "en-US", "en-GB", "en-IN"], None):
         try:
-            segments = (
-                YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
-                if langs
-                else YouTubeTranscriptApi.get_transcript(video_id)
-            )
-            if segments:
-                break
-        except Exception:
-            continue
+            from youtube_transcript_api import YouTubeTranscriptApi
+        except ImportError:
+            import subprocess as _sp, sys as _sys
+            _sp.check_call([_sys.executable, "-m", "pip", "install", "youtube-transcript-api", "--quiet"])
+            from youtube_transcript_api import YouTubeTranscriptApi
 
-    if not segments:
-        raise ValueError(f"No captions available for YouTube video {video_id}")
+        segments = None
+        for langs in (["en", "en-US", "en-GB", "en-IN"], None):
+            try:
+                segments = (
+                    YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
+                    if langs
+                    else YouTubeTranscriptApi.get_transcript(video_id)
+                )
+                if segments:
+                    break
+            except Exception:
+                continue
 
-    noise = {"[music]", "[applause]", "[laughter]", "[noise]", "[inaudible]"}
-    text = " ".join(
-        s["text"].strip()
-        for s in segments
-        if s.get("text", "").strip() and s["text"].strip().lower() not in noise
-    ).strip()
+        if segments:
+            text = " ".join(
+                s["text"].strip()
+                for s in segments
+                if s.get("text", "").strip() and s["text"].strip().lower() not in _noise
+            ).strip()
+            if len(text) > 20:
+                logger.info("_fetch_yt_captions_python | transcript-api OK | videoId=%s | %d chars", video_id, len(text))
+                return text
+    except Exception as _e:
+        logger.debug("youtube-transcript-api failed for %s: %s", video_id, _e)
 
-    if not text:
-        raise ValueError(f"Captions were empty after cleaning for video {video_id}")
-    return text
+    # ── Fallback: yt-dlp subtitle download (no video, captions only) ─────────
+    logger.info("_fetch_yt_captions_python | falling back to yt-dlp for videoId=%s", video_id)
+    try:
+        import yt_dlp
+    except ImportError:
+        import subprocess as _sp2, sys as _sys2
+        _sp2.check_call([_sys2.executable, "-m", "pip", "install", "yt-dlp", "--quiet"])
+        import yt_dlp
+
+    import json as _json
+    import tempfile as _tempfile
+
+    with _tempfile.TemporaryDirectory() as _tmpdir:
+        ydl_opts = {
+            "writeautomaticsub": True,
+            "writesubtitles": True,
+            "subtitleslangs": ["en", "en-US", "en-IN", "hi"],
+            "subtitlesformat": "json3/srv3/ttml/vtt/best",
+            "skip_download": True,
+            "outtmpl": os.path.join(_tmpdir, "%(id)s"),
+            "quiet": True,
+            "no_warnings": True,
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as _ydl:
+                _ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+        except Exception as _dl_exc:
+            raise ValueError(f"yt-dlp subtitle download failed for {video_id}: {_dl_exc}") from _dl_exc
+
+        # Find the downloaded subtitle file
+        sub_files = (
+            _glob.glob(os.path.join(_tmpdir, "*.json3")) or
+            _glob.glob(os.path.join(_tmpdir, "*.srv3")) or
+            _glob.glob(os.path.join(_tmpdir, "*.vtt")) or
+            _glob.glob(os.path.join(_tmpdir, "*"))
+        )
+        if not sub_files:
+            raise ValueError(f"yt-dlp found no subtitle files for {video_id} — captions may be disabled")
+
+        sub_file = sub_files[0]
+        with open(sub_file, "r", encoding="utf-8") as _f:
+            raw = _f.read()
+
+        # Parse JSON3 (YouTube's native caption format)
+        if sub_file.endswith(".json3"):
+            data = _json.loads(raw)
+            parts = []
+            for event in data.get("events", []):
+                for seg in event.get("segs", []):
+                    t = seg.get("utf8", "").replace("\n", " ").strip()
+                    if t and t.lower() not in _noise:
+                        parts.append(t)
+            text = " ".join(parts).strip()
+        else:
+            # VTT / SRV3 — strip timestamps and headers
+            text = re.sub(r"\d{2}:\d{2}[:\.,]\d{2,3}\s*-->\s*\d{2}:\d{2}[:\.,]\d{2,3}[^\n]*", "", raw)
+            text = re.sub(r"^WEBVTT.*$", "", text, flags=re.MULTILINE)
+            text = re.sub(r"^\d+$", "", text, flags=re.MULTILINE)
+            text = re.sub(r"<[^>]+>", "", text)           # strip HTML tags
+            text = re.sub(r"\s+", " ", text).strip()
+
+        if len(text) < 20:
+            raise ValueError(f"yt-dlp subtitle file empty after parsing for {video_id}")
+
+        logger.info("_fetch_yt_captions_python | yt-dlp fallback OK | videoId=%s | %d chars", video_id, len(text))
+        return text
 
 
 @api_view(["POST"])
