@@ -30,7 +30,7 @@ torch --extra-index-url https://download.pytorch.org/whl/cpu
 torchvision --extra-index-url https://download.pytorch.org/whl/cpu
 
 # ── Cheating Detection ────────────────────────────────────────────────────────
-mediapipe==0.10.9
+mediapipe>=0.10.13
 numpy>=1.24.0
 
 # ── Redis caching ─────────────────────────────────────────────────────────────
