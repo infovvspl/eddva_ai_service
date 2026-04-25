@@ -65,6 +65,14 @@ GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 GROQ_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB Groq limit
+# Gaps between Whisper segments (seconds) come from the decoded audio; they approximate speech pauses.
+# Used only to space/join text — we do not infer facial expression or intonation.
+WHISPER_PAUSE_COMMA_S = 0.42
+WHISPER_PAUSE_SENTENCE_S = 0.90
+# Post-STT LLM pass: validate/fix punctuation + sentence breaks (incl. ! ?) without rewriting wording.
+PUNCT_REFINE_CHUNK_CHARS = 6500
+PUNCT_REFINE_MIN_WORDS = 8
+PUNCT_REFINE_MAX_TOKENS = 8192
 
 
 def _parse_groq_retry_after(error_msg: str, default: float = 65.0) -> float:
@@ -78,14 +86,196 @@ def _parse_groq_retry_after(error_msg: str, default: float = 65.0) -> float:
     return default
 
 
+def _ends_with_any_punct(s: str) -> bool:
+    t = str(s or "").rstrip()
+    if not t:
+        return True
+    return t[-1] in ".!?;:,…।॥"
+
+
+def _maybe_capitalize_english_letter(t: str) -> str:
+    if not t or not t[0].islower() or not t[0].isascii():
+        return t
+    return t[0].upper() + t[1:]
+
+
+def _snippet_has_devanagari(s: str) -> bool:
+    return bool(re.search(r"[\u0900-\u097F]", str(s or "")))
+
+
+def _acoustic_sentence_boundary_punct(language: str, tail_before: str, next_segment: str) -> str:
+    """
+    Latin full stop (.) for English; Devanagari danda (।, U+0964 — Hindi sentence stop, often typed as "|")
+    for Hindi lectures. Hinglish: danda only when Devanagari appears near the boundary.
+    """
+    lang = (language or "en").strip().lower()
+    if lang in ("hi", "hi-in"):
+        return "। "
+    tail = tail_before[-120:] if tail_before else ""
+    nxt = next_segment[:120] if next_segment else ""
+    if lang == "hinglish":
+        if _snippet_has_devanagari(tail) or _snippet_has_devanagari(nxt):
+            return "। "
+    return ". "
+
+
+def _groq_result_flat_text(result) -> str:
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result.strip()
+    if isinstance(result, dict):
+        return str(result.get("text") or "").strip()
+    return str(getattr(result, "text", "") or "").strip()
+
+
+def _parse_groq_verbose_transcription_result(result) -> list[dict]:
+    """Build [{start, end, text}, ...] from Groq verbose_json ASR (segment timestamps in seconds)."""
+    d: dict | None = None
+    if result is None:
+        return []
+    if isinstance(result, str):
+        return []
+    if isinstance(result, dict):
+        d = result
+    elif hasattr(result, "model_dump"):
+        try:
+            d = result.model_dump()
+        except Exception:
+            d = None
+    if d is None:
+        try:
+            segs = getattr(result, "segments", None) or []
+            text = getattr(result, "text", None) or ""
+            d = {"segments": list(segs) if segs is not None else [], "text": text}
+        except Exception:
+            return []
+
+    segs = d.get("segments") or []
+    out: list[dict] = []
+    for s in segs:
+        if isinstance(s, dict):
+            txt = str(s.get("text", "")).strip()
+            if not txt:
+                continue
+            out.append(
+                {
+                    "start": float(s.get("start", 0) or 0),
+                    "end": float(s.get("end", 0) or 0),
+                    "text": txt,
+                }
+            )
+        else:
+            txt = str(getattr(s, "text", "") or "").strip()
+            if not txt:
+                continue
+            out.append(
+                {
+                    "start": float(getattr(s, "start", 0) or 0),
+                    "end": float(getattr(s, "end", 0) or 0),
+                    "text": txt,
+                }
+            )
+    return sorted(out, key=lambda x: x["start"])
+
+
+def _join_timed_transcript_segments(segments: list[dict], language: str = "en") -> str:
+    """
+    Join STT segment texts using silence gaps between (prev.end, start).
+    This uses timing from the same audio the model decoded (i.e. pauses in speech),
+    not facial expression or intonation. Sentence glue respects lecture language (en / hi / hinglish).
+    """
+    if not segments:
+        return ""
+    if len(segments) == 1:
+        return segments[0].get("text", "").strip()
+
+    out = str(segments[0].get("text", "")).strip()
+    for i in range(1, len(segments)):
+        t = str(segments[i].get("text", "")).strip()
+        if not t:
+            continue
+        prev_end = float(segments[i - 1].get("end", 0) or 0)
+        start = float(segments[i].get("start", 0) or 0)
+        gap = max(0.0, start - prev_end)
+
+        if _ends_with_any_punct(out):
+            out = f"{out} {t}"
+        elif gap >= WHISPER_PAUSE_SENTENCE_S:
+            punct = _acoustic_sentence_boundary_punct(language, out, t)
+            # Sentence-start capitalization applies to Latin text after a full stop, not after danda.
+            t2 = _maybe_capitalize_english_letter(t) if punct.startswith(".") else t
+            out = f"{out}{punct}{t2}"
+        elif gap >= WHISPER_PAUSE_COMMA_S and not out.rstrip().endswith(
+            (",", ";", ":", "-", "।", "?", "!", "…"),
+        ):
+            out = f"{out}, {t}"
+        else:
+            out = f"{out} {t}"
+    return out.strip()
+
+
+def _transcribe_with_groq_one_key(
+    file_bytes: bytes,
+    filename: str,
+    language: str,
+    prev_context: str,
+    api_key: str,
+) -> str:
+    from groq import Groq, RateLimitError as GroqRateLimitError
+
+    groq_language: str | None = None if language in ("hinglish", "auto") else language
+    client = Groq(api_key=api_key)
+
+    for use_verbose in (True, False):
+        kwargs: dict = dict(
+            file=(filename, file_bytes),
+            model=GROQ_WHISPER_MODEL,
+        )
+        if use_verbose:
+            kwargs["response_format"] = "verbose_json"
+            kwargs["timestamp_granularities"] = ["segment"]
+        else:
+            kwargs["response_format"] = "text"
+        if groq_language:
+            kwargs["language"] = groq_language
+        if prev_context:
+            raw = prev_context.encode("utf-8")[-880:]
+            kwargs["prompt"] = raw.decode("utf-8", errors="ignore")
+
+        try:
+            result = client.audio.transcriptions.create(**kwargs)
+        except Exception as exc:
+            if isinstance(exc, GroqRateLimitError):
+                raise
+            if use_verbose:
+                logger.info("Groq verbose_json failed for one key: %s — trying plain text", exc)
+                continue
+            raise
+
+        if use_verbose:
+            segs = _parse_groq_verbose_transcription_result(result)
+            if segs:
+                return _join_timed_transcript_segments(segs, language)
+            flat = _groq_result_flat_text(result)
+            if flat:
+                return flat
+        else:
+            t = _groq_result_flat_text(result)
+            if t:
+                return t
+
+    raise RuntimeError("Groq returned an empty transcript")
+
+
 def _transcribe_with_groq(audio_path: str, language: str, prev_context: str = "") -> str:
-    """Transcribe via Groq Whisper, rotating through all API keys on rate-limit (429)."""
+    """Transcribe via Groq Whisper; use segment timestamps to align pauses, then text fallback."""
     try:
-        from groq import Groq, RateLimitError as GroqRateLimitError
+        from groq import RateLimitError as GroqRateLimitError
     except ImportError:
         import subprocess, sys
         subprocess.check_call([sys.executable, "-m", "pip", "install", "groq", "--quiet"])
-        from groq import Groq, RateLimitError as GroqRateLimitError
+        from groq import RateLimitError as GroqRateLimitError
 
     if not GROQ_API_KEYS:
         raise RuntimeError("No GROQ_API_KEY configured -- set at least one in .env")
@@ -94,38 +284,24 @@ def _transcribe_with_groq(audio_path: str, language: str, prev_context: str = ""
     if file_size > GROQ_MAX_FILE_BYTES:
         raise RuntimeError(f"File too large for Groq ({file_size // 1024 // 1024} MB > 25 MB)")
 
-    groq_language: str | None = None if language in ("hinglish", "auto") else language
     filename = os.path.basename(audio_path)
-
     with open(audio_path, "rb") as f:
         file_bytes = f.read()
 
-    kwargs: dict = dict(
-        file=(filename, file_bytes),
-        model=GROQ_WHISPER_MODEL,
-        response_format="text",
-    )
-    if groq_language:
-        kwargs["language"] = groq_language
-    if prev_context:
-        # Groq measures prompt in UTF-8 bytes (limit 896); Devanagari = 3 bytes/char.
-        raw = prev_context.encode("utf-8")[-880:]
-        kwargs["prompt"] = raw.decode("utf-8", errors="ignore")
-
     last_exc: Exception | None = None
-    for round_num in range(2):  # try all keys twice before giving up
+    for round_num in range(2):
         for key_idx, api_key in enumerate(GROQ_API_KEYS):
             try:
                 logger.info(
-                    "Groq Whisper | key=%d/%d lang=%s",
-                    key_idx + 1, len(GROQ_API_KEYS), groq_language or language,
+                    "Groq Whisper | key=%d/%d lang=%s (pause-aware segments when supported)",
+                    key_idx + 1, len(GROQ_API_KEYS), language,
                 )
-                result = Groq(api_key=api_key).audio.transcriptions.create(**kwargs)
-                return result if isinstance(result, str) else result.text
+                return _transcribe_with_groq_one_key(
+                    file_bytes, filename, language, prev_context, api_key,
+                )
             except GroqRateLimitError as exc:
                 last_exc = exc
                 logger.info("Groq key %d/%d rate-limited -- rotating to next key", key_idx + 1, len(GROQ_API_KEYS))
-        # All keys exhausted for this round -- wait before round 2
         if round_num == 0 and last_exc is not None:
             wait = _parse_groq_retry_after(str(last_exc))
             logger.warning(
@@ -134,6 +310,7 @@ def _transcribe_with_groq(audio_path: str, language: str, prev_context: str = ""
             )
             import time as _time
             _time.sleep(wait)
+            last_exc = None
 
     raise RuntimeError(f"All {len(GROQ_API_KEYS)} Groq keys exhausted: {last_exc}") from last_exc
 
@@ -175,7 +352,12 @@ def _transcribe_local(audio_path: str, language: str) -> str:
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
     )
-    transcript = " ".join(seg.text for seg in segments).strip()
+    seg_list = [
+        {"start": float(s.start), "end": float(s.end), "text": (s.text or "").strip()}
+        for s in segments
+        if (s.text or "").strip()
+    ]
+    transcript = _join_timed_transcript_segments(seg_list, language)
     logger.info(
         "Local Whisper done: %d chars | lang=%s", len(transcript), info.language,
     )
@@ -348,70 +530,245 @@ def _clean_transcript_text(text: str) -> str:
     cleaned = re.sub(r"([=<>+\-/*()])([A-Za-z0-9])", r"\1 \2", cleaned)
     cleaned = re.sub(r"\b([A-Za-z])\s+\+\s+([A-Za-z])\b", r"\1 + \2", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned)
-    cleaned = re.sub(r"([.!?])\s*", r"\1\n", cleaned)
+    cleaned = re.sub(r"([.!?।])\s*", r"\1\n", cleaned)
     return cleaned.strip()
 
 
-def _looks_like_math_or_formula_line(line: str) -> bool:
-    symbols = len(re.findall(r"[=+\-/*^<>%(){}\[\]]", line))
-    words = len(re.findall(r"[A-Za-z\u0900-\u097F]+", line))
-    return symbols >= 3 and words <= 12
+def _token_signature(text: str) -> list[str]:
+    return re.findall(r"[A-Za-z0-9\u0900-\u097F]+", str(text or "").lower())
 
 
-def _restore_sentence_punctuation(text: str) -> str:
+def _is_safe_punctuation_rewrite(original: str, candidate: str) -> bool:
+    o = _token_signature(original)
+    c = _token_signature(candidate)
+    if not o or not c:
+        return False
+    if o == c:
+        return True
+    # Allow tiny drift from LLM formatting output, but reject semantic rewrites.
+    overlap = sum(1 for i, tok in enumerate(o[: min(len(o), len(c))]) if c[i] == tok)
+    ratio = overlap / max(len(o), len(c))
+    return ratio >= 0.98 and abs(len(o) - len(c)) <= max(3, len(o) // 100)
+
+
+def _split_transcript_for_punctuation_refine(
+    text: str, max_chars: int = PUNCT_REFINE_CHUNK_CHARS,
+) -> tuple[list[str], list[str]]:
+    """
+    Split transcript into chunks for LLM punctuation review.
+    Returns (chunks, joiners) where joiners[i] is placed between chunks[i] and chunks[i+1]
+    ('\\n' for paragraph-style breaks, ' ' for pieces of one long line).
+    """
+    t = str(text or "").strip()
+    if not t:
+        return [], []
+    if len(t) <= max_chars:
+        return [t], []
+
+    chunks: list[str] = []
+    joiners: list[str] = []
+    buf_lines: list[str] = []
+
+    def flush_buf() -> None:
+        if not buf_lines:
+            return
+        block = "\n".join(buf_lines)
+        if chunks:
+            joiners.append("\n")
+        chunks.append(block)
+        buf_lines.clear()
+
+    for line in t.split("\n"):
+        if len(line) > max_chars:
+            flush_buf()
+            s = 0
+            first_piece = True
+            while s < len(line):
+                e = min(s + max_chars, len(line))
+                if e < len(line):
+                    cut = line.rfind(" ", s + max_chars // 2, e)
+                    if cut <= s:
+                        cut = e
+                    e = cut
+                piece = line[s:e].strip()
+                if piece:
+                    if chunks:
+                        # After a normal paragraph flush, start of a long line → newline;
+                        # further splits of the same long line → space.
+                        joiners.append("\n" if first_piece else " ")
+                    chunks.append(piece)
+                    first_piece = False
+                s = e if e > s else s + max_chars
+            continue
+
+        cand = "\n".join(buf_lines + [line]) if buf_lines else line
+        if len(cand) <= max_chars:
+            buf_lines.append(line)
+        else:
+            flush_buf()
+            buf_lines = [line]
+
+    flush_buf()
+    return chunks, joiners
+
+
+def _normalize_hindi_sentence_punctuation(text: str, language: str) -> str:
+    """
+    Hindi uses the Devanagari danda (।) as the sentence full stop, not Latin '.'
+    STT often emits '.' or ASCII '|'; map those to । between Hindi (Devanagari) clauses.
+    Avoids digit-decimal patterns like 3.14 or ३.५.
+    """
+    lang = (language or "en").strip().lower()
+    if lang not in ("hi", "hi-in", "hinglish"):
+        return str(text or "")
+    s = str(text or "")
+    if lang == "hinglish" and not _snippet_has_devanagari(s):
+        return s
+
+    # ASCII '|' used like danda between Hindi words (not URL '||')
+    s = re.sub(r"(?<=[\u0900-\u097F])\s*\|(?!\|)\s*(?=[\u0900-\u097F])", " । ", s)
+
+    # Latin '.' between Devanagari sentence units (not decimal: no digit on both sides)
+    period_hindi = re.compile(
+        r"(?<=[\u0900-\u097F])"  # after Devanagari letter/sign
+        r"(?<![\u0966-\u096F0-9])"  # not Hindi/Western digit before dot
+        r"\."
+        r"(?![\u0966-\u096F0-9])"  # not digit after dot
+        r"(?=\s*[\u0900-\u097F]|\s*$|\s*\n)",
+    )
+    if lang in ("hi", "hi-in"):
+        s = period_hindi.sub("।", s)
+    else:
+        # Hinglish: only when Hindi continues after the period
+        s = re.sub(
+            r"(?<=[\u0900-\u097F])(?<![\u0966-\u096F0-9])\.(?![\u0966-\u096F0-9])(?=\s*[\u0900-\u097F])",
+            "।",
+            s,
+        )
+
+    s = re.sub(r"।\s*।+", "।", s)
+    return s
+
+
+def _punctuation_refine_language_instructions(language: str) -> str:
+    """Extra LLM instructions so refinement matches Hindi / Hinglish / English, not English-only."""
+    lang = (language or "en").strip().lower()
+    if lang in ("hi", "hi-in"):
+        return (
+            "\n\nLanguage (Hindi, Devanagari): Use the Hindi poorna viram / danda (Unicode U+0964, the character ।) "
+            "for sentence boundaries — this is the correct Hindi full stop, not the Latin period (.). "
+            "Do not use Latin '.' between Hindi words at sentence end; use ।. "
+            "Use Latin '?' and '!' after Devanagari when the utterance is a question or exclamation. "
+            "Use commas for pauses and lists. Fix small obvious STT spacing issues around । if needed. "
+            "Never translate Hindi to English or strip Devanagari; keep every Hindi word in Devanagari as spoken."
+        )
+    if lang == "hinglish":
+        return (
+            "\n\nLanguage (Hinglish): The text mixes Devanagari Hindi and Latin English. Preserve code-switching "
+            "exactly — do not replace Hindi with English or English with Hindi. Apply punctuation per phrase: "
+            "English clauses follow English punctuation habits; Hindi clauses may use । or . in a way that matches "
+            "that clause. Use '?' and '!' where either script would naturally require them. Keep technical terms in "
+            "the script the speaker used."
+        )
+    if lang in ("en", "english"):
+        return ""
+    return (
+        "\n\nLanguage: If you see Devanagari (Hindi), Latin (English), or a mix, apply appropriate punctuation for "
+        "each without translating or normalizing away either script."
+    )
+
+
+def _refine_transcript_punctuation_post_stt(
+    text: str, topic_id: str, language: str, institute_id: str,
+) -> tuple[str, dict]:
+    """
+    After transcription (and optional pause-based joins), review whether punctuation
+    and sentence boundaries make sense; fix misplaced commas, periods, question marks,
+    and exclamation marks. Does not change word order or add/remove words (validated).
+    """
+    meta: dict = {
+        "punct_refine_applied": False,
+        "punct_refine_chunks": 0,
+        "punct_refine_chunks_accepted": 0,
+    }
     raw = str(text or "").strip()
     if not raw:
-        return raw
+        return raw, meta
 
     words = re.findall(r"[A-Za-z\u0900-\u097F]+", raw)
-    if len(words) < 16:
-        return raw
+    if len(words) < PUNCT_REFINE_MIN_WORDS:
+        return _normalize_hindi_sentence_punctuation(raw, language), meta
 
-    punct_count = len(re.findall(r"[.!?]", raw))
-    if punct_count >= max(2, len(words) // 25):
-        return raw
+    chunks, joiners = _split_transcript_for_punctuation_refine(raw)
+    if not chunks:
+        return raw, meta
 
-    paragraphs = [p.strip() for p in re.split(r"\n+", raw) if p.strip()]
-    rebuilt: list[str] = []
+    meta["punct_refine_chunks"] = len(chunks)
+    refined: list[str] = []
 
-    for paragraph in paragraphs:
-        if _looks_like_math_or_formula_line(paragraph):
-            rebuilt.append(paragraph)
+    lang_extra = _punctuation_refine_language_instructions(language)
+    system_prompt = (
+        "You review lecture transcripts from speech-to-text (with optional timing hints). Transcripts may be in "
+        "English, Hindi (Devanagari), Hinglish (mixed scripts), or similar — treat all of these equally.\n"
+        "Your job is to ensure punctuation and sentence boundaries read naturally and match the speaker's intent "
+        "(statements, questions, emphasis).\n"
+        "You may use commas, the Hindi danda (।) for Hindi sentence ends, Latin full stops only for English "
+        "clauses, question marks, exclamation marks, colons, and semicolons where appropriate. "
+        "Use '?' for real or clearly rhetorical questions; use '!' sparingly for "
+        "clear surprise or strong emphasis, not every sentence.\n"
+        "You must NOT change, add, remove, or reorder words (including particles and names). "
+        "You may only change spacing, line breaks, capitalization at the start of Latin sentences, and punctuation. "
+        "Preserve formulas, numbers, and symbols exactly."
+        f"{lang_extra}"
+    )
+
+    for idx, chunk in enumerate(chunks):
+        if not chunk.strip():
+            refined.append(chunk)
             continue
+        try:
+            llm_result = get_llm().complete(
+                system_prompt=system_prompt,
+                user_prompt=(
+                    f"Lecture topic: {topic_id or 'General'}\n"
+                    f"Lecture language (respect this for punctuation rules): {language}\n"
+                    f"Section {idx + 1} of {len(chunks)}.\n\n"
+                    "Return ONLY the corrected transcript section (no preamble, no markdown fences). "
+                    "Keep Hindi in Devanagari and English in Latin; do not translate.\n\n"
+                    f"{chunk}"
+                ),
+                model="edvaqwen",
+                temperature=0.0,
+                max_tokens=PUNCT_REFINE_MAX_TOKENS,
+                json_mode=False,
+                institute_id=institute_id,
+            )
+            candidate = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+            candidate = candidate.strip()
+            if candidate.startswith("```"):
+                candidate = re.sub(r"^```\w*\s*", "", candidate, count=1)
+                candidate = re.sub(r"\s*```\s*$", "", candidate).strip()
+            if candidate and _is_safe_punctuation_rewrite(chunk, candidate):
+                refined.append(candidate)
+                meta["punct_refine_chunks_accepted"] += 1
+                meta["punct_refine_applied"] = True
+            else:
+                refined.append(chunk)
+        except Exception as exc:
+            logger.warning("Transcript punctuation refinement failed on chunk %d/%d: %s", idx + 1, len(chunks), exc)
+            refined.append(chunk)
 
-        tokens = paragraph.split()
-        if len(tokens) < 8:
-            line = paragraph
-            if line and not re.search(r"[.!?]$", line):
-                line = f"{line}."
-            rebuilt.append(line)
-            continue
+    out_parts: list[str] = [refined[0]]
+    for i in range(1, len(refined)):
+        sep = joiners[i - 1] if i - 1 < len(joiners) else "\n"
+        out_parts.append(sep + refined[i])
+    return "".join(out_parts).strip(), meta
 
-        sentence_parts: list[str] = []
-        current: list[str] = []
-        target_len = 18
 
-        for token in tokens:
-            current.append(token)
-            if len(current) >= target_len:
-                sentence_parts.append(" ".join(current))
-                current = []
-        if current:
-            sentence_parts.append(" ".join(current))
-
-        normalized_parts: list[str] = []
-        for part in sentence_parts:
-            part = part.strip()
-            if not part:
-                continue
-            part = part[0].upper() + part[1:] if part else part
-            if not re.search(r"[.!?]$", part):
-                part = f"{part}."
-            normalized_parts.append(part)
-
-        rebuilt.append(" ".join(normalized_parts))
-
-    return "\n".join(rebuilt).strip()
+def _restore_sentence_punctuation(text: str, topic_id: str, language: str, institute_id: str) -> str:
+    """Backward-compatible name: runs post-STT punctuation + sense check (delegates to _refine_...)."""
+    refined, _meta = _refine_transcript_punctuation_post_stt(text, topic_id, language, institute_id)
+    return refined
 
 
 
@@ -509,10 +866,14 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
     flags = _transcript_quality_flags(cleaned)
     repaired = _repair_low_quality_transcript(cleaned, topic_id, language, institute_id, flags) if flags else cleaned
     final_text = _clean_transcript_text(repaired)
-    final_text = _restore_sentence_punctuation(final_text)
+    final_text, punct_meta = _refine_transcript_punctuation_post_stt(
+        final_text, topic_id, language, institute_id,
+    )
+    final_text = _normalize_hindi_sentence_punctuation(final_text, language)
     return final_text, {
         "quality_flags": flags,
         "repair_applied": bool(flags),
+        **punct_meta,
     }
 
 
