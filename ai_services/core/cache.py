@@ -24,19 +24,41 @@ from typing import Optional
 
 logger = logging.getLogger("ai_services.cache")
 
-# Feature-specific TTLs in seconds
+# Feature-specific TTLs in seconds.
+# Rule of thumb:
+#   - Same inputs ALWAYS produce the same useful output → cache long (24h)
+#   - Output is per-session / per-student-state / must be fresh → TTL=0 (skip cache)
+#   - Not listed here → DEFAULT_TTL (1 hour)
 CACHE_TTL = {
-    "content_suggest": 86400,       # 24 hours — resources don't change often
-    "test_generate": 21600,         # 6 hours — tests can be reused
-    "career_roadmap": 43200,        # 12 hours
-    "performance_analyze": 3600,    # 1 hour — scores change
-    "feedback_analyze": 3600,       # 1 hour — answers vary
-    "study_plan": 7200,             # 2 hours
-    "cheating_analyze": 0,          # never cache — always real-time
-    "notes_generate": 86400,        # 24 hours — same video = same notes
+    # ── Never cache — must always be fresh ────────────────────────────────────
+    "plan_generate":     0,      # Regenerate must produce a new plan every time
+    "cheating_analyze":  0,      # Real-time proctoring data
+    "feedback_generate": 0,      # Per-session test scores — stale feedback is misleading
+
+    # ── Long cache — deterministic, stable content ─────────────────────────────
+    "doubt_resolve":     86400,  # 24h — same physics/chemistry question = same answer
+    "syllabus_generate": 86400,  # 24h — exam syllabus doesn't change mid-year
+    "content_suggest":   86400,  # 24h — resource URLs don't change often
+    "notes_generate":    86400,  # 24h — same transcript = same notes
+    "stt_notes":         86400,  # 24h — same audio = same notes
+
+    # ── Long cache — deterministic, stable content (bridge endpoints) ─────────
+    "quiz_generate":     86400,  # 24h — same transcript always produces same questions
+    "content_generate":  86400,  # 24h — same topic+difficulty always produces same content
+
+    # ── Medium cache ──────────────────────────────────────────────────────────
+    "test_generate":     21600,  # 6h  — topic MCQs are stable within a day
+    "career_roadmap":    43200,  # 12h
+    "study_plan":        0,      # legacy key — mapped to plan_generate now; disable
+    "content_recommend": 21600,  # 6h  — recommendations change as weak topics evolve
+
+    # ── Short cache ───────────────────────────────────────────────────────────
+    "performance_analyze": 3600, # 1h — scores change after new tests
+    "feedback_analyze":    3600, # 1h
+    "notes_analyze":       3600, # 1h
 }
 
-DEFAULT_TTL = 3600  # 1 hour
+DEFAULT_TTL = 3600  # 1 hour — for features not explicitly listed above
 
 
 def _make_cache_key(institute_id: str, feature: str, prompt_hash: str) -> str:
@@ -98,10 +120,13 @@ class ResponseCache:
         self._init_redis()
 
     def _init_redis(self):
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        redis_url = os.getenv("REDIS_URL", "")
+        if not redis_url:
+            logger.info("REDIS_URL not set — using in-memory LRU cache")
+            return
         try:
             import redis
-            self._redis = redis.from_url(redis_url, decode_responses=True, socket_timeout=2)
+            self._redis = redis.from_url(redis_url, decode_responses=True, socket_timeout=1)
             self._redis.ping()
             logger.info("Redis cache connected: %s", redis_url)
         except Exception as e:
