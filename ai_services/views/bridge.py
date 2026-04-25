@@ -1,4 +1,4 @@
-﻿"""
+"""
 Views for NestJS ai-bridge endpoints.
 These endpoints match the paths called by apexiq-backend/src/modules/ai-bridge/ai-bridge.service.ts
 
@@ -73,6 +73,9 @@ WHISPER_PAUSE_SENTENCE_S = 0.90
 PUNCT_REFINE_CHUNK_CHARS = 6500
 PUNCT_REFINE_MIN_WORDS = 8
 PUNCT_REFINE_MAX_TOKENS = 8192
+WORD_REPAIR_CHUNK_CHARS = 5200
+WORD_REPAIR_MIN_WORDS = 20
+WORD_REPAIR_MAX_TOKENS = 4096
 
 
 def _parse_groq_retry_after(error_msg: str, default: float = 65.0) -> float:
@@ -650,6 +653,99 @@ def _normalize_hindi_sentence_punctuation(text: str, language: str) -> str:
     return s
 
 
+def _repair_hindi_hinglish_wording_post_stt(
+    text: str, topic_id: str, language: str, institute_id: str,
+) -> tuple[str, dict]:
+    """
+    Correct obvious ASR word errors in Hindi/Hinglish transcripts (misheard words,
+    phonetic confusions, broken transliterations) while preserving speaker meaning.
+    This step is intentionally language-preserving (no forced translation).
+    """
+    meta = {
+        "word_repair_applied": False,
+        "word_repair_chunks": 0,
+        "word_repair_chunks_accepted": 0,
+    }
+    lang = (language or "").strip().lower()
+    if lang not in ("hi", "hi-in", "hinglish"):
+        return str(text or "").strip(), meta
+
+    raw = str(text or "").strip()
+    if not raw:
+        return raw, meta
+
+    words = re.findall(r"[A-Za-z\u0900-\u097F]+", raw)
+    if len(words) < WORD_REPAIR_MIN_WORDS:
+        return raw, meta
+
+    chunks, joiners = _split_transcript_for_punctuation_refine(raw, max_chars=WORD_REPAIR_CHUNK_CHARS)
+    if not chunks:
+        return raw, meta
+    meta["word_repair_chunks"] = len(chunks)
+
+    system_prompt = (
+        "You repair Hindi/Hinglish educational lecture transcripts produced by ASR.\n"
+        "Goal: fix obvious word-level transcription mistakes so sentences make semantic sense.\n"
+        "Allowed changes:\n"
+        "- Correct misheard/misspelled Hindi words and Hinglish transliterations.\n"
+        "- Fix small grammar glue words only when needed for coherence.\n"
+        "- Preserve technical terms and formulas.\n"
+        "Hard constraints:\n"
+        "- Do NOT add new facts, examples, or explanations not present in source.\n"
+        "- Keep sentence order and paragraph order.\n"
+        "- Preserve code-mix (Hindi + English) style used by speaker.\n"
+        "- Keep Hindi in Devanagari where source uses Devanagari.\n"
+        "- Return plain text only."
+    )
+
+    repaired_chunks: list[str] = []
+    for idx, chunk in enumerate(chunks):
+        c = chunk.strip()
+        if not c:
+            repaired_chunks.append(chunk)
+            continue
+        try:
+            llm_result = get_llm().complete(
+                system_prompt=system_prompt,
+                user_prompt=(
+                    f"Lecture topic: {topic_id or 'General'}\n"
+                    f"Language: {language}\n"
+                    f"Section {idx + 1}/{len(chunks)}\n\n"
+                    "Fix only ASR word mistakes and obvious incoherent phrasing. Keep meaning intact.\n\n"
+                    f"{c}"
+                ),
+                model="edvaqwen",
+                temperature=0.0,
+                max_tokens=WORD_REPAIR_MAX_TOKENS,
+                json_mode=False,
+                institute_id=institute_id,
+            )
+            candidate = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+            candidate = candidate.strip()
+            if candidate.startswith("```"):
+                candidate = re.sub(r"^```\w*\s*", "", candidate, count=1)
+                candidate = re.sub(r"\s*```\s*$", "", candidate).strip()
+            # Guardrail: reject wildly longer/shorter rewrites.
+            if candidate and (0.65 <= (len(candidate) / max(len(c), 1)) <= 1.45):
+                repaired_chunks.append(candidate)
+                meta["word_repair_chunks_accepted"] += 1
+                meta["word_repair_applied"] = True
+            else:
+                repaired_chunks.append(c)
+        except Exception as exc:
+            logger.warning("Hindi/Hinglish word repair failed on chunk %d/%d: %s", idx + 1, len(chunks), exc)
+            repaired_chunks.append(c)
+
+    if not repaired_chunks:
+        return raw, meta
+
+    out_parts: list[str] = [repaired_chunks[0]]
+    for i in range(1, len(repaired_chunks)):
+        sep = joiners[i - 1] if i - 1 < len(joiners) else "\n"
+        out_parts.append(sep + repaired_chunks[i])
+    return "".join(out_parts).strip(), meta
+
+
 def _punctuation_refine_language_instructions(language: str) -> str:
     """Extra LLM instructions so refinement matches Hindi / Hinglish / English, not English-only."""
     lang = (language or "en").strip().lower()
@@ -748,12 +844,46 @@ def _refine_transcript_punctuation_post_stt(
             if candidate.startswith("```"):
                 candidate = re.sub(r"^```\w*\s*", "", candidate, count=1)
                 candidate = re.sub(r"\s*```\s*$", "", candidate).strip()
+            accepted = False
             if candidate and _is_safe_punctuation_rewrite(chunk, candidate):
                 refined.append(candidate)
                 meta["punct_refine_chunks_accepted"] += 1
                 meta["punct_refine_applied"] = True
-            else:
-                refined.append(chunk)
+                accepted = True
+
+            # Fallback: strict punctuation-only pass when first pass changed words too much.
+            if not accepted:
+                strict = get_llm().complete(
+                    system_prompt=(
+                        "You are a punctuation restorer.\n"
+                        "Return the SAME words in the SAME order.\n"
+                        "Only add/fix punctuation, spacing and line breaks.\n"
+                        "Do not change, add, remove, or reorder any word."
+                    ),
+                    user_prompt=(
+                        f"Language hint: {language}\n"
+                        "Use commas, question marks, exclamation marks, and sentence stops where needed.\n"
+                        "For Hindi sentence ends prefer danda (।) over Latin period.\n\n"
+                        f"{chunk}"
+                    ),
+                    model="edvaqwen",
+                    temperature=0.0,
+                    max_tokens=PUNCT_REFINE_MAX_TOKENS,
+                    json_mode=False,
+                    institute_id=institute_id,
+                )
+                strict_candidate = strict["content"] if isinstance(strict["content"], str) else str(strict["content"])
+                strict_candidate = strict_candidate.strip()
+                if strict_candidate.startswith("```"):
+                    strict_candidate = re.sub(r"^```\w*\s*", "", strict_candidate, count=1)
+                    strict_candidate = re.sub(r"\s*```\s*$", "", strict_candidate).strip()
+
+                if strict_candidate and _token_signature(strict_candidate) == _token_signature(chunk):
+                    refined.append(strict_candidate)
+                    meta["punct_refine_chunks_accepted"] += 1
+                    meta["punct_refine_applied"] = True
+                else:
+                    refined.append(chunk)
         except Exception as exc:
             logger.warning("Transcript punctuation refinement failed on chunk %d/%d: %s", idx + 1, len(chunks), exc)
             refined.append(chunk)
@@ -829,8 +959,8 @@ def _repair_low_quality_transcript(text: str, topic_id: str, language: str, inst
         llm_result = get_llm().complete(
             system_prompt=(
                 "You repair noisy educational lecture transcripts. Clean OCR/STT artifacts, remove garbage tokens, "
-                "repair obvious equation formatting, and rewrite broken statements into clear English only when the "
-                "intended meaning is scientifically obvious from context. Do not invent new topics."
+                "repair obvious equation formatting, and fix broken statements into coherent text while preserving "
+                "the original source language style (Hindi/Hinglish/English as given). Do not invent new topics."
             ),
             user_prompt=(
                 f"Lecture topic: {topic_id or 'General'}\n"
@@ -866,6 +996,9 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
     flags = _transcript_quality_flags(cleaned)
     repaired = _repair_low_quality_transcript(cleaned, topic_id, language, institute_id, flags) if flags else cleaned
     final_text = _clean_transcript_text(repaired)
+    final_text, word_meta = _repair_hindi_hinglish_wording_post_stt(
+        final_text, topic_id, language, institute_id,
+    )
     final_text, punct_meta = _refine_transcript_punctuation_post_stt(
         final_text, topic_id, language, institute_id,
     )
@@ -873,6 +1006,7 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
     return final_text, {
         "quality_flags": flags,
         "repair_applied": bool(flags),
+        **word_meta,
         **punct_meta,
     }
 

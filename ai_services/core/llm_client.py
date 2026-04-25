@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+import threading
 from typing import Optional
 
 from ai_services.core.groq_keys import (
@@ -17,6 +18,8 @@ from ai_services.core.groq_keys import (
 )
 
 logger = logging.getLogger("ai_services.llm")
+_KEY_STATE_LOCK = threading.Lock()
+_DISABLED_GROQ_KEYS: set[str] = set()
 
 # -- Groq config (multi-key pool for rate-limit rotation) ----------------------
 _GROQ_KEYS_RAW = [
@@ -138,10 +141,31 @@ class LLMClient:
             kwargs["response_format"] = {"type": "json_object"}
 
         last_error: Optional[str] = None
+        
+        def _is_permanently_bad_key_error(msg: str) -> bool:
+            m = (msg or "").lower()
+            return any(
+                token in m
+                for token in (
+                    "invalid api key",
+                    "invalid_api_key",
+                    "organization has been restricted",
+                    "organization_restricted",
+                )
+            )
+
+        def _active_keys() -> list[str]:
+            with _KEY_STATE_LOCK:
+                keys = [k for k in GROQ_API_KEYS if k and k not in _DISABLED_GROQ_KEYS]
+            return keys
 
         # Two rounds across all keys: instant rotation on any error, sleep only if all fail
         for round_num in range(2):
-            for key_idx, api_key in enumerate(GROQ_API_KEYS):
+            keys_this_round = _active_keys()
+            if not keys_this_round:
+                raise RuntimeError("No active GROQ keys left. Check invalid/restricted keys in .env")
+
+            for key_idx, api_key in enumerate(keys_this_round):
                 try:
                     client = Groq(api_key=api_key)
                     start = time.perf_counter()
@@ -158,7 +182,7 @@ class LLMClient:
                     if not json_mode:
                         logger.info(
                             "LLM (text) | key=%d/%d model=%s latency=%.0fms",
-                            key_idx + 1, len(GROQ_API_KEYS), effective_model, latency_ms,
+                            key_idx + 1, len(keys_this_round), effective_model, latency_ms,
                         )
                         return {
                             "content": raw,
@@ -176,7 +200,7 @@ class LLMClient:
 
                     logger.info(
                         "LLM (json) | key=%d/%d model=%s latency=%.0fms",
-                        key_idx + 1, len(GROQ_API_KEYS), effective_model, latency_ms,
+                        key_idx + 1, len(keys_this_round), effective_model, latency_ms,
                     )
                     return {
                         "content": content,
@@ -189,20 +213,28 @@ class LLMClient:
                     last_error = str(exc)
                     logger.warning(
                         "LLM key %d/%d rate-limited -- rotating to next key",
-                        key_idx + 1, len(GROQ_API_KEYS),
+                        key_idx + 1, len(keys_this_round),
                     )
                 except Exception as exc:
                     last_error = str(exc)
+                    if _is_permanently_bad_key_error(last_error):
+                        with _KEY_STATE_LOCK:
+                            _DISABLED_GROQ_KEYS.add(api_key)
+                        logger.error(
+                            "LLM key %d/%d permanently disabled (%s)",
+                            key_idx + 1, len(keys_this_round), last_error,
+                        )
+                        continue
                     logger.error(
                         "LLM key %d/%d error (%s) -- rotating to next key",
-                        key_idx + 1, len(GROQ_API_KEYS), last_error,
+                        key_idx + 1, len(keys_this_round), last_error,
                     )
 
             # All keys failed this round -- wait 10s before round 2
             if round_num == 0:
                 logger.warning(
                     "All %d LLM keys failed (round 1) -- waiting 10s before retry",
-                    len(GROQ_API_KEYS),
+                    len(keys_this_round),
                 )
                 time.sleep(10)
 
