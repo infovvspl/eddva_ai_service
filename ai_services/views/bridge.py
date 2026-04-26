@@ -45,6 +45,7 @@ from rest_framework.response import Response
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
 from ai_services.core.groq_keys import get_rotated_groq_keys, is_key_exhausted_error
+from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
 from .base import ai_call, ai_call_text, get_llm
 
 logger = logging.getLogger("ai_services.llm")
@@ -1216,6 +1217,67 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
 
 # â"€â"€ AI #1 -- Doubt Clearing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+def _coerce_json_array_string_to_prose(t: str) -> str:
+    """If the model outputs a JSON array of strings, join into plain text for the client."""
+    t = (t or "").strip()
+    if not (t.startswith("[") and t.endswith("]")):
+        return t
+    try:
+        data = json.loads(t)
+    except json.JSONDecodeError:
+        return t
+    if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+        return t
+    parts = [s.strip() for s in data if s.strip()]
+    if not parts:
+        return t
+    logger.warning("LLM returned a JSON list of strings; coercing to joined prose")
+    return ". ".join(parts)
+
+
+def _coerce_tutor_or_doubt_text(raw) -> str:
+    """Normalize doubt/tutor free-text: dict from json_mode, bare JSON arrays, or object with only `hints`."""
+    if raw is None:
+        return ""
+    if isinstance(raw, list) and (not raw or all(isinstance(x, str) for x in raw)):
+        if not raw:
+            return ""
+        parts = [s.strip() for s in raw if isinstance(s, str) and s.strip()]
+        if parts:
+            return ". ".join(parts)
+    if isinstance(raw, dict):
+        r = raw.get("response", raw.get("explanation"))
+        if isinstance(r, list) and r and all(isinstance(x, str) for x in r):
+            r = ". ".join(s.strip() for s in r if s and s.strip())
+        elif isinstance(r, str):
+            r = r.strip()
+        else:
+            r = (str(r) if r is not None else "").strip()
+        hints = raw.get("hints")
+        if not r and isinstance(hints, list) and hints and all(isinstance(x, str) for x in hints):
+            r = ". ".join(s.strip() for s in hints if s and s.strip())
+        if r:
+            raw = r
+        else:
+            return str(raw).strip()
+    t = (raw if isinstance(raw, str) else str(raw)).strip()
+    t = _coerce_json_array_string_to_prose(t)
+    if t.startswith("{") and t.endswith("}"):
+        try:
+            obj = json.loads(t)
+        except json.JSONDecodeError:
+            return t
+        if isinstance(obj, dict):
+            r = (obj.get("response") or "").strip()
+            h = obj.get("hints")
+            if r:
+                return r
+            if isinstance(h, list) and h and all(isinstance(x, str) for x in h):
+                logger.warning("LLM JSON had empty response; coalescing from hints")
+                return ". ".join(s.strip() for s in h if s.strip())
+    return t
+
+
 @api_view(["POST"])
 def resolve_doubt(request):
     data = request.data
@@ -1270,6 +1332,7 @@ def resolve_doubt(request):
         explanation_text = raw_text.get("explanation", str(raw_text))
     else:
         explanation_text = str(raw_text).strip()
+    explanation_text = _coerce_tutor_or_doubt_text(explanation_text)
 
     return JsonResponse({
         "explanation": explanation_text,
@@ -1456,11 +1519,7 @@ def start_tutor_session(request):
     # system prompt directly so the LLM produces clean Markdown -- not JSON-wrapped text.
     if len(context) > 300:
         system_prompt = context
-<<<<<<< HEAD
-        user_prompt = "Generate the complete lesson now. Write everything in full - do not truncate or use placeholders."
-=======
         user_prompt = "Generate the complete lesson now. Write everything in full -- do not truncate or use placeholders."
->>>>>>> c54e3e29312bfdb475aa67ab775cec010cfba024
     else:
         template = get_template("tutor_session")
         system_prompt = template.system
@@ -1488,6 +1547,7 @@ def start_tutor_session(request):
         explanation_text = raw_text.get("response", str(raw_text))
     else:
         explanation_text = str(raw_text).strip()
+    explanation_text = _coerce_tutor_or_doubt_text(explanation_text)
 
     return JsonResponse({
         "response": explanation_text,
@@ -1524,19 +1584,17 @@ def continue_tutor_session(request):
             system_prompt=template.system,
             user_prompt=user_prompt,
             model=get_model_for_task("tutor_continue"),
-            temperature=0.3,
-            max_tokens=1024,
-            json_mode=False,
+            temperature=0.2,
+            max_tokens=1200,
+            json_mode=True,
+            json_mode_suffix=_JSON_MODE_TUTOR_SUFFIX,
             institute_id=institute_id,
         )
     except RuntimeError as e:
         return JsonResponse({"error": str(e)}, status=502)
 
     raw_text = result["content"]
-    if isinstance(raw_text, dict):
-        explanation_text = raw_text.get("response", str(raw_text))
-    else:
-        explanation_text = str(raw_text).strip()
+    explanation_text = _coerce_tutor_or_doubt_text(raw_text)
 
     return JsonResponse({
         "response": explanation_text,
@@ -1592,11 +1650,7 @@ def generate_stt_notes(request):
         try:
             raw_transcript = _transcribe_audio(audio_url, language)
             logger.info(
-<<<<<<< HEAD
-                "Transcription done - %d chars | took=%.1fs",
-=======
                 "Transcription done -- %d chars | took=%.1fs",
->>>>>>> c54e3e29312bfdb475aa67ab775cec010cfba024
                 len(raw_transcript), _time.perf_counter() - _t0,
             )
         except Exception as exc:
@@ -1624,11 +1678,7 @@ def generate_stt_notes(request):
         )
 
     _t1 = _time.perf_counter()
-<<<<<<< HEAD
-    logger.info("Sending to LLM - transcript=%d chars | transcription took=%.1fs", len(raw_transcript), _t1 - _t0)
-=======
     logger.info("Sending to LLM -- transcript=%d chars | transcription took=%.1fs", len(raw_transcript), _t1 - _t0)
->>>>>>> c54e3e29312bfdb475aa67ab775cec010cfba024
 
     english_transcript, prep_meta = _prepare_transcript_for_notes(
         raw_transcript,
@@ -1957,11 +2007,7 @@ _CONTENT_TYPE_PROMPTS = {
         "Cover all sub-topics and their key points."
     ),
     "flashcard": (
-<<<<<<< HEAD
         "Generate 12-15 flashcard pairs for this topic in Markdown. "
-=======
-        "Generate 12--15 flashcard pairs for this topic in Markdown. "
->>>>>>> c54e3e29312bfdb475aa67ab775cec010cfba024
         "Format each as: **Q:** <question>  **A:** <answer>. "
         "Cover definitions, formulas, mechanisms, and application questions."
     ),
@@ -1978,11 +2024,7 @@ _CONTENT_TYPE_PROMPTS = {
         "Include exactly 10 questions with a mix of difficulty (3 easy, 5 medium, 2 hard). "
         "For each question:\n"
         "- Number it (Q1, Q2 â€¦)\n"
-<<<<<<< HEAD
         "- Write the question clearly (MCQ with 4 options labelled A-D, or numerical/short-answer)\n"
-=======
-        "- Write the question clearly (MCQ with 4 options labelled A--D, or numerical/short-answer)\n"
->>>>>>> c54e3e29312bfdb475aa67ab775cec010cfba024
         "- After all questions, add a ## Answers section with: answer letter/value and a 2-3 line explanation for each.\n"
         "Ensure questions test understanding, not just recall."
     ),
@@ -1991,23 +2033,13 @@ _CONTENT_TYPE_PROMPTS = {
         "Generate a high-quality Daily Practice Problem (DPP) sheet for this topic in Markdown, "
         "exactly as a top coaching institute would give students.\n\n"
         "Format:\n"
-<<<<<<< HEAD
-        "# DPP - {topic_name}\n"
-        "**Subject:** {subject_name} | **Chapter:** {chapter_name} | **Date:** ______\n\n"
-        "## Section A - Multiple Choice (1 mark each)\n"
-        "Generate 8 MCQ questions, each with 4 options (A-D). Mix easy and medium difficulty.\n\n"
-        "## Section B - Assertion-Reason (1 mark each)\n"
-        "Generate 3 assertion-reason type questions.\n\n"
-        "## Section C - Numericals / Short Answer (3 marks each)\n"
-=======
         "# DPP -- {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name} | **Date:** ______\n\n"
         "## Section A -- Multiple Choice (1 mark each)\n"
-        "Generate 8 MCQ questions, each with 4 options (A--D). Mix easy and medium difficulty.\n\n"
-        "## Section B -- Assertion--Reason (1 mark each)\n"
+        "Generate 8 MCQ questions, each with 4 options (A-D). Mix easy and medium difficulty.\n\n"
+        "## Section B -- Assertion-Reason (1 mark each)\n"
         "Generate 3 assertion-reason type questions.\n\n"
         "## Section C -- Numericals / Short Answer (3 marks each)\n"
->>>>>>> c54e3e29312bfdb475aa67ab775cec010cfba024
         "Generate 4 numerical or short-answer problems.\n\n"
         "## Answer Key\n"
         "List all correct answers and brief hints/solutions.\n\n"
@@ -2016,21 +2048,12 @@ _CONTENT_TYPE_PROMPTS = {
     # â"€â"€ PYQ â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     "pyq": (
         "Generate a Previous Year Question (PYQ) style practice set for this topic in Markdown. "
-<<<<<<< HEAD
         "Simulate the style of JEE Main / NEET questions from 2018-2024.\n\n"
-        "Format:\n"
-        "# PYQ Practice Set - {topic_name}\n"
-        "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
-        "## JEE Main Style Questions\n"
-        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options A-D). "
-=======
-        "Simulate the style of JEE Main / NEET questions from 2018--2024.\n\n"
         "Format:\n"
         "# PYQ Practice Set -- {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
         "## JEE Main Style Questions\n"
-        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options A--D). "
->>>>>>> c54e3e29312bfdb475aa67ab775cec010cfba024
+        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options A-D). "
         "Note the exam year pattern each question is modelled on (e.g. 'Pattern: JEE Main 2022 Jan').\n\n"
         "## NEET Style Questions\n"
         "Generate 5 questions in NEET MCQ style (single correct, 4 options).\n\n"
@@ -2093,11 +2116,7 @@ def generate_topic_content(request):
         user_prompt += f"Additional instructions: {extra_context}\n"
     user_prompt += (
         f"\n{type_instruction}\n\n"
-<<<<<<< HEAD
-        "Return ONLY the Markdown content - no preamble, no 'Here is your content:' prefix."
-=======
         "Return ONLY the Markdown content -- no preamble, no 'Here is your content:' prefix."
->>>>>>> c54e3e29312bfdb475aa67ab775cec010cfba024
     )
 
     institute_id = getattr(request, "institute_id", "default")

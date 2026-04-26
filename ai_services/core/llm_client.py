@@ -69,6 +69,12 @@ _ANTI_HALLUCINATION_PREFIX = (
 
 _JSON_MODE_SUFFIX = "\n\nRespond with ONLY a JSON object. No markdown. No code fences. No explanation."
 
+# For tutor/teacher-style replies: JSON is required, but string values may include Markdown and formulas.
+_JSON_MODE_TUTOR_SUFFIX = (
+    "\n\nRespond with ONLY one valid JSON object. "
+    "In string fields (especially \"response\"), you may use Markdown, **bold**, and normal math text for equations."
+)
+
 
 def _extract_json(raw: str) -> str:
     stripped = raw.strip()
@@ -116,6 +122,7 @@ class LLMClient:
         max_tokens: int = 4096,
         json_mode: bool = True,
         institute_id: Optional[str] = None,
+        json_mode_suffix: Optional[str] = None,
     ) -> dict:
         from groq import Groq, RateLimitError as GroqRateLimitError
 
@@ -124,7 +131,7 @@ class LLMClient:
 
         effective_system = _ANTI_HALLUCINATION_PREFIX + system_prompt
         if json_mode:
-            effective_system += _JSON_MODE_SUFFIX
+            effective_system += (json_mode_suffix if json_mode_suffix is not None else _JSON_MODE_SUFFIX)
 
         effective_model = _resolve_model(model)
 

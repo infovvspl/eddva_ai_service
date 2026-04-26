@@ -43,8 +43,17 @@ logger = logging.getLogger("ai_services.llm")
 _VALID_DIFFICULTIES = {"easy", "medium", "hard"}
 
 
+def _dedupe_mcq_key(question: str) -> str:
+    if not question:
+        return ""
+    t = re.sub(r"\s+", " ", question).strip().lower()
+    t = re.sub(r"[^\w\s\u0900-\u0fff]", "", t, flags=re.UNICODE)
+    return t[:300]
+
+
 def parse_mcq_text(raw_text, topic, difficulty):
     questions = []
+    seen_keys: set = set()
     # Split on blank line before each new "Question:" block
     blocks = re.split(r'\n\n(?=Question\s*\d*\s*:)', raw_text.strip())
     for i, block in enumerate(blocks):
@@ -67,12 +76,19 @@ def parse_mcq_text(raw_text, topic, difficulty):
                     c_match.group(1).strip() if c_match else '',
                     d_match.group(1).strip() if d_match else '',
                 ]
+                if not all(options):
+                    continue
+                qtext = _clean_text(q_match.group(1).strip())
+                dk = _dedupe_mcq_key(qtext)
+                if not dk or dk in seen_keys:
+                    continue
+                seen_keys.add(dk)
                 questions.append({
-                    'id': i + 1,
-                    'question': q_match.group(1).strip(),
+                    'id': len(questions) + 1,
+                    'question': qtext,
                     'options': options,
                     'answer': answer_letter,
-                    'explanation': exp_match.group(1).strip() if exp_match else '',
+                    'explanation': _clean_text(exp_match.group(1).strip() if exp_match else ''),
                 })
         except Exception:
             continue
@@ -115,7 +131,7 @@ def generate_practice_test(request):
         return Response({"error": "Missing topic"}, status=400)
 
     try:
-        num_questions = max(1, min(int(data.get("num_questions", 5)), 10))
+        num_questions = max(1, min(int(data.get("num_questions", 5)), 20))
     except (TypeError, ValueError):
         num_questions = 5
 
@@ -125,8 +141,9 @@ def generate_practice_test(request):
 
     template = get_template("test_generate")
     user_prompt = (
-        f"Generate {num_questions} MCQ questions on {topic} for JEE/NEET.\n"
-        f"Difficulty: {difficulty}.\n\n"
+        f"Generate {num_questions} distinct MCQ questions on {topic} for JEE/NEET.\n"
+        f"Difficulty: {difficulty} — every question must be {difficulty} only (do not mix difficulties).\n"
+        "No duplicate or near-duplicate questions.\n\n"
         "For each question write exactly:\n"
         "Question: [question text]\n"
         "A) [option 1]\n"
@@ -135,6 +152,7 @@ def generate_practice_test(request):
         "D) [option 4]\n"
         "Correct Answer: [A/B/C/D]\n"
         "Explanation: [one sentence]\n\n"
+        "All four options must be non-empty; only A–D, exactly four options per question.\n"
         f"Write all {num_questions} questions now."
     )
 
@@ -151,7 +169,7 @@ def generate_practice_test(request):
             user_prompt=user_prompt,
             model="groq",
             temperature=0.3,
-            max_tokens=2048,
+            max_tokens=4096,
             json_mode=False,
             institute_id=institute_id,
         )
