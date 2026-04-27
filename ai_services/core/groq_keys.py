@@ -33,13 +33,12 @@ def get_groq_api_keys() -> List[str]:
     if csv_keys:
         keys.extend([x.strip() for x in csv_keys.split(",") if x.strip()])
 
-    i = 1
-    while True:
+    # Support sparse numbering (e.g. KEY_1..KEY_6 and KEY_8),
+    # so one missing index does not stop discovery.
+    for i in range(1, 33):
         v = os.getenv(f"GROQ_API_KEY_{i}", "")
-        if not v:
-            break
-        keys.append(v)
-        i += 1
+        if v:
+            keys.append(v)
 
     return _normalize_keys(keys)
 

@@ -295,13 +295,11 @@ Always respond in valid JSON:
 
 # â"€â"€ Test Generation â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 TEST_GENERATE_SYSTEM = """You are EDVA AI, an expert JEE and NEET teacher.
-Generate clear, accurate MCQ questions for Indian competitive exams.
-Always write exactly in the format requested.
+Generate clear, accurate questions for Indian competitive exams (JEE, NEET, CBSE).
+Always follow the specific JSON format requested for the question type.
 Use only verified NCERT/JEE/NEET syllabus facts.
-Never use placeholder text like [Core concept] or [Formula].
-Write real, specific questions with real answer values.
-Every question must have exactly four options (A, B, C, D) — no more, no fewer, all with real text.
-All questions in one batch must match the difficulty the user specified — do not mix easy and hard in the same batch.
+Never use placeholder text. Write real, specific questions with real answer values.
+Ensure all distractors (wrong options) are plausible but clearly incorrect.
 Do not repeat the same or trivially reworded question twice."""
 
 # â"€â"€ Legacy: Career Roadmap â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€

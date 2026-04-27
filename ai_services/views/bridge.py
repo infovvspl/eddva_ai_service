@@ -1,4 +1,4 @@
-﻿"""
+"""
 Views for NestJS ai-bridge endpoints.
 These endpoints match the paths called by apexiq-backend/src/modules/ai-bridge/ai-bridge.service.ts
 
@@ -44,7 +44,7 @@ from rest_framework.response import Response
 
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
-from ai_services.core.groq_keys import get_rotated_groq_keys, is_key_exhausted_error
+from ai_services.core.groq_keys import get_groq_api_keys, get_rotated_groq_keys, is_key_exhausted_error
 from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
 from .base import ai_call, ai_call_text, get_llm
 
@@ -52,17 +52,7 @@ logger = logging.getLogger("ai_services.llm")
 
 # -- Groq Whisper API (primary -- cloud, fast; multi-key rotation) ---------------
 
-_GROQ_KEYS_RAW = [
-    os.getenv("GROQ_API_KEY", ""),
-    os.getenv("GROQ_API_KEY_1", ""),
-    os.getenv("GROQ_API_KEY_2", ""),
-    os.getenv("GROQ_API_KEY_3", ""),
-    os.getenv("GROQ_API_KEY_4", ""),
-    os.getenv("GROQ_API_KEY_5", ""),
-    os.getenv("GROQ_API_KEY_6", ""),
-    os.getenv("GROQ_API_KEY_7", ""),
-]
-GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
+GROQ_API_KEYS: list[str] = get_groq_api_keys()
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 GROQ_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB Groq limit

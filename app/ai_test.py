@@ -33,11 +33,40 @@ router = APIRouter(prefix="/test", tags=["AI Practice Test"])
 
 class QuestionType(str, Enum):
     mcq = "mcq"
+    assertion_reason = "assertion_reason"
+    statement_based = "statement_based"
+    match_the_following = "match_the_following"
+    integer = "integer"
+    diagram = "diagram"
+    msq = "msq"
     true_false = "true_false"
     short_answer = "short_answer"
     long_answer = "long_answer"
+    case_study = "case_study"
     fill_blank = "fill_blank"
     mix = "mix"  # LLM spreads all types evenly
+
+
+def infer_question_type_from_text(text: str, fallback: str) -> str:
+    t = (text or "").lower()
+    if (
+        ("assertion (a)" in t and "reason (r)" in t)
+        or ("assertion" in t and "reason" in t)
+        or ("both a and r" in t)
+    ):
+        return QuestionType.assertion_reason.value
+    if (
+        "match the following" in t
+        or ("column i" in t and "column ii" in t)
+        or "matrix match" in t
+    ):
+        return QuestionType.match_the_following.value
+    if (
+        "read the following passage" in t
+        or "based on the paragraph" in t
+    ):
+        return QuestionType.case_study.value
+    return fallback
 
 
 class DifficultyLevel(str, Enum):
@@ -46,12 +75,27 @@ class DifficultyLevel(str, Enum):
     hard = "hard"
 
 
+class ExamMode(str, Enum):
+    competitive = "competitive"
+    academics = "academics"
+
+
 class GenerateRequest(BaseModel):
     topic: str = Field(..., example="Photosynthesis")
     num_questions: int = Field(5, ge=1, le=50)
     question_types: List[QuestionType] = Field(
         default=[QuestionType.mcq],
         example=["mcq", "true_false"],
+    )
+    exam_mode: ExamMode = Field(
+        ExamMode.competitive,
+        description="competitive | academics",
+    )
+    marks_per_question: int = Field(
+        3,
+        ge=2,
+        le=5,
+        description="Controls question depth and model-answer structure",
     )
     difficulty: DifficultyLevel = Field(
         ...,
@@ -71,7 +115,9 @@ class Question(BaseModel):
     question: str
     options: Optional[List[str]] = None
     answer: str
-    explanation: Optional[str] = None
+    model_answer: Optional[str] = None
+    explanation: Optional[str] = None  # Why the right answer is right
+    mark_scheme_breakdown: Optional[List[str]] = None
     difficulty: DifficultyLevel
     topic_tags: List[str] = []
 
@@ -98,14 +144,50 @@ def build_llm_prompt(
     context: Optional[str],
     batch_index: int,
     total_batches: int,
+    exam_mode: ExamMode,
+    marks_per_question: int,
 ) -> str:
     context_block = f"\n\nContext/Study Material:\n{context}\n" if context else ""
 
     types = [t.value for t in question_types]
     if "mix" in types:
-        type_instruction = "mix — spread evenly across: mcq, true_false, short_answer, long_answer, fill_blank"
+        type_instruction = (
+            "mix — spread based on exam_mode. "
+            "competitive: assertion_reason, statement_based, mcq, match_the_following (matrix match style), paragraph/case-based, integer, diagram, msq. "
+            "academics: mcq, assertion_reason, short_answer, long_answer, case_study, diagram."
+        )
     else:
         type_instruction = ", ".join(types)
+
+    marks_rules = {
+        2: (
+            "2-Mark pattern:\n"
+            "- 1 mark: correct definition/statement\n"
+            "- 1 mark: second point/example/explanation\n"
+            "- Expectation: exactly 2 clear points OR 1 definition + 1 example."
+        ),
+        3: (
+            "3-Mark pattern:\n"
+            "- 1 mark: definition/principle\n"
+            "- 2 marks: explanation with 2 distinct points/steps\n"
+            "- Expectation: total 3 key points in logical flow."
+        ),
+        4: (
+            "4-Mark pattern:\n"
+            "- 1 mark: definition/formula/statement\n"
+            "- 2-3 marks: explanation in 2-3 structured steps/points\n"
+            "- 0-1 mark: diagram/example/conclusion\n"
+            "- Expectation: 3-4 structured points; for numericals, show stepwise working."
+        ),
+        5: (
+            "5-Mark pattern:\n"
+            "- 1 mark: definition/introduction\n"
+            "- 3 marks: detailed explanation with 3 core points/steps\n"
+            "- 1 mark: diagram/example/conclusion\n"
+            "- Expectation: 4-5 key points with proper structure."
+        ),
+    }
+    marks_instruction = marks_rules.get(marks_per_question, marks_rules[3])
 
     batch_note = (
         f"\nNote: This is batch {batch_index + 1} of {total_batches}. "
@@ -118,26 +200,37 @@ def build_llm_prompt(
 {context_block}{batch_note}
 Requirements:
 - Question types: {type_instruction}
+- Exam mode: {exam_mode.value}
 - Difficulty: {difficulty.value}  <- ALL questions must match this difficulty exactly
+- Marks per question: {marks_per_question}
+- The cognitive depth of each question MUST match marks_per_question.
 - Return ONLY a valid JSON array. No extra text, no comments, no markdown.
 
 Each element must follow this schema:
 {{
-  "type": "<mcq|true_false|short_answer|long_answer|fill_blank>",
+  "type": "<mcq|assertion_reason|statement_based|match_the_following|integer|diagram|msq|true_false|short_answer|long_answer|case_study|fill_blank>",
   "question": "<question text>",
   "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
   "answer": "<correct answer>",
-  "explanation": "<required: 2–4 sentences explaining why the correct answer is right; never leave empty>",
+  "model_answer": "<required: ideal answer aligned to marks_per_question pattern>",
+  "explanation": "<required: explanation of RIGHT answer for student review; must be present for every question>",
+  "mark_scheme_breakdown": ["<per-mark checkpoint 1>", "<per-mark checkpoint 2>"],
   "difficulty": "{difficulty.value}",
   "topic_tags": ["tag1", "tag2"]
 }}
 
 STRICT RULES:
-- Every question MUST include a non-empty "explanation" string (step-by-step or conceptual reasoning).
+- Every question MUST include a non-empty "model_answer" and non-empty "explanation".
+- The "explanation" is compulsory for student review of ALL questions; never leave empty.
 - "options" only for mcq and true_false. Omit for everything else.
+- For msq questions, include 4-6 options and provide all correct choices in "answer".
 - short_answer: 1-2 sentence answer
 - long_answer: detailed paragraph answer
 - fill_blank: question must contain _____
+- For diagram questions (any subject), include label/observation expectations in model_answer.
+- For assertion_reason and statement_based, evaluate each statement explicitly before final conclusion.
+- Use this exact mark-aligned pattern for question + model answer + mark_scheme_breakdown:
+{marks_instruction}
 - No trailing commas. Valid JSON only.
 - Start your response with [ and end with ]"""
 
@@ -146,7 +239,7 @@ STRICT RULES:
 async def call_ollama(prompt: str, model: str = None) -> str:
     """Call local Ollama to generate text."""
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=240) as client:
             resp = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
@@ -222,6 +315,7 @@ def build_questions(
         q_type_raw = item.get("type", req.question_types[0].value)
         if q_type_raw == "mix":
             q_type_raw = "short_answer"
+        q_type_raw = infer_question_type_from_text(item.get("question", ""), q_type_raw)
         try:
             q_type = QuestionType(q_type_raw)
         except ValueError:
@@ -239,7 +333,12 @@ def build_questions(
                 question=item.get("question", ""),
                 options=raw_options,
                 answer=item.get("answer", ""),
-                explanation=item.get("explanation"),
+                model_answer=item.get("model_answer"),
+                explanation=(
+                    item.get("explanation")
+                    or "The given answer is correct because it matches the core concept and required steps for this mark level."
+                ),
+                mark_scheme_breakdown=item.get("mark_scheme_breakdown"),
                 difficulty=req.difficulty,
                 topic_tags=item.get("topic_tags", []),
             )
@@ -298,6 +397,8 @@ async def generate_test(req: GenerateRequest):
             context=req.context,
             batch_index=batch_index,
             total_batches=total_batches,
+            exam_mode=req.exam_mode,
+            marks_per_question=req.marks_per_question,
         )
 
         raw_response = await call_ollama(prompt, req.model)
@@ -331,6 +432,8 @@ async def generate_test(req: GenerateRequest):
         metadata={
             "model_used": req.model,
             "requested_types": [t.value for t in req.question_types],
+            "exam_mode": req.exam_mode.value,
+            "marks_per_question": req.marks_per_question,
             "num_questions": len(all_questions),
             "batches_used": total_batches,
             "batch_size": BATCH_SIZE,

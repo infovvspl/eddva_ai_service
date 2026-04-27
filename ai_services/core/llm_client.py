@@ -13,6 +13,7 @@ import threading
 from typing import Optional
 
 from ai_services.core.groq_keys import (
+    get_groq_api_keys,
     get_rotated_groq_keys,
     is_key_exhausted_error,
 )
@@ -22,17 +23,7 @@ _KEY_STATE_LOCK = threading.Lock()
 _DISABLED_GROQ_KEYS: set[str] = set()
 
 # -- Groq config (multi-key pool for rate-limit rotation) ----------------------
-_GROQ_KEYS_RAW = [
-    os.getenv("GROQ_API_KEY", ""),
-    os.getenv("GROQ_API_KEY_1", ""),
-    os.getenv("GROQ_API_KEY_2", ""),
-    os.getenv("GROQ_API_KEY_3", ""),
-    os.getenv("GROQ_API_KEY_4", ""),
-    os.getenv("GROQ_API_KEY_5", ""),
-    os.getenv("GROQ_API_KEY_6", ""),
-    os.getenv("GROQ_API_KEY_7", ""),
-]
-GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
+GROQ_API_KEYS: list[str] = get_groq_api_keys()
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
