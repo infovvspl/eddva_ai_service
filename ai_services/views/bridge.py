@@ -52,7 +52,27 @@ logger = logging.getLogger("ai_services.llm")
 
 # -- Groq Whisper API (primary -- cloud, fast; multi-key rotation) ---------------
 
+<<<<<<< HEAD
 GROQ_API_KEYS: list[str] = get_groq_api_keys()
+=======
+_GROQ_KEYS_RAW = [
+    os.getenv("GROQ_API_KEY", ""),
+    os.getenv("GROQ_API_KEY_1", ""),
+    os.getenv("GROQ_API_KEY_2", ""),
+    os.getenv("GROQ_API_KEY_3", ""),
+    os.getenv("GROQ_API_KEY_4", ""),
+    os.getenv("GROQ_API_KEY_5", ""),
+    os.getenv("GROQ_API_KEY_6", ""),
+    os.getenv("GROQ_API_KEY_7", ""),
+    os.getenv("GROQ_API_KEY_8", ""),
+    os.getenv("GROQ_API_KEY_9", ""),
+    os.getenv("GROQ_API_KEY_10", ""),
+    os.getenv("GROQ_API_KEY_11", ""),
+    os.getenv("GROQ_API_KEY_12", ""),
+    os.getenv("GROQ_API_KEY_13", ""),
+]
+GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
+>>>>>>> 00b8f95ada3212c3cf655bec78f0117cdf64f311
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 GROQ_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB Groq limit
@@ -438,23 +458,66 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                 
                 logger.info("Chunking complete: %d segments generated.", len(chunks))
                 
-                full_transcript_parts = []
-                prev_context = ""
-                for idx, chunk_file in enumerate(chunks):
-                    logger.info("Sending chunk %d/%d to Groq...", idx + 1, len(chunks))
-                    try:
-                        text = _transcribe_with_groq(chunk_file, language, prev_context=prev_context)
-                    except Exception as exc:
-                        logger.warning(
-                            "Groq chunk %d/%d failed with context prompt (%s) — retrying without prompt",
-                            idx + 1, len(chunks), exc,
-                        )
-                        text = _transcribe_with_groq(chunk_file, language, prev_context="")
-                    if text:
-                        full_transcript_parts.append(text)
-                        prev_context = text
+                # ── Parallel Whisper: assign each chunk a dedicated key ──────────
+                # Sequential Whisper = N×15s; parallel = ~15s regardless of N.
+                # prev_context (cross-chunk prompt) is skipped for speed — Groq
+                # Whisper handles Hindi well without it.
+                from concurrent.futures import ThreadPoolExecutor, as_completed as _futures_done
+                from groq import RateLimitError as _WGroqRateLimit
+                import time as _wtime
 
-                transcript = " ".join(full_transcript_parts).strip()
+                def _whisper_one_chunk(args):
+                    idx, chunk_file, api_key = args
+                    key_num = (GROQ_API_KEYS.index(api_key) + 1) if api_key in GROQ_API_KEYS else 0
+                    logger.info(
+                        "Groq Whisper | key=%d/%d lang=%s (parallel chunk %d/%d)",
+                        key_num, len(GROQ_API_KEYS), language, idx + 1, len(chunks),
+                    )
+                    with open(chunk_file, "rb") as _f:
+                        file_bytes = _f.read()
+                    filename = os.path.basename(chunk_file)
+                    for attempt in range(2):
+                        try:
+                            return idx, _transcribe_with_groq_one_key(file_bytes, filename, language, "", api_key)
+                        except _WGroqRateLimit as exc:
+                            if attempt == 0:
+                                wait = _parse_groq_retry_after(str(exc))
+                                logger.warning("Whisper key %d rate-limited — waiting %.0fs", key_num, wait)
+                                _wtime.sleep(wait)
+                                continue
+                            raise
+                    return idx, ""
+
+                chunk_assignments = [
+                    (idx, chunk_file, GROQ_API_KEYS[idx % len(GROQ_API_KEYS)])
+                    for idx, chunk_file in enumerate(chunks)
+                ]
+                transcript_parts = [""] * len(chunks)
+                max_parallel = min(len(chunks), len(GROQ_API_KEYS), 8)
+
+                try:
+                    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+                        futs = {pool.submit(_whisper_one_chunk, a): a[0] for a in chunk_assignments}
+                        for fut in _futures_done(futs):
+                            idx, text = fut.result()
+                            if text:
+                                transcript_parts[idx] = text
+                except Exception as exc:
+                    logger.warning("Parallel Whisper failed (%s) — falling back to sequential", exc)
+                    transcript_parts = []
+                    prev_ctx = ""
+                    for idx, chunk_file in enumerate(chunks):
+                        logger.info("Sending chunk %d/%d to Groq (sequential fallback)...", idx + 1, len(chunks))
+                        try:
+                            text = _transcribe_with_groq(chunk_file, language, prev_context=prev_ctx)
+                        except Exception as exc2:
+                            logger.warning("Groq chunk %d/%d failed (%s) — skipping", idx + 1, len(chunks), exc2)
+                            text = ""
+                        if text:
+                            transcript_parts.append(text)
+                            prev_ctx = text
+
+                transcript = " ".join(t for t in transcript_parts if t).strip()
                 logger.info("Groq transcription OK — %d chars (from %d chunks)", len(transcript), len(chunks))
                 return transcript
             except Exception as exc:
@@ -705,7 +768,7 @@ def _repair_hindi_hinglish_wording_post_stt(
                     "Fix only ASR word mistakes and obvious incoherent phrasing. Keep meaning intact.\n\n"
                     f"{c}"
                 ),
-                model="edvaqwen",
+                model="llama-3.1-8b-instant",
                 temperature=0.0,
                 max_tokens=WORD_REPAIR_MAX_TOKENS,
                 json_mode=False,
@@ -824,7 +887,7 @@ def _refine_transcript_punctuation_post_stt(
                     "Keep Hindi in Devanagari and English in Latin; do not translate.\n\n"
                     f"{chunk}"
                 ),
-                model="edvaqwen",
+                model="llama-3.1-8b-instant",
                 temperature=0.0,
                 max_tokens=PUNCT_REFINE_MAX_TOKENS,
                 json_mode=False,
@@ -857,7 +920,7 @@ def _refine_transcript_punctuation_post_stt(
                         "For Hindi sentence ends prefer danda (।) over Latin period.\n\n"
                         f"{chunk}"
                     ),
-                    model="edvaqwen",
+                    model="llama-3.1-8b-instant",
                     temperature=0.0,
                     max_tokens=PUNCT_REFINE_MAX_TOKENS,
                     json_mode=False,
@@ -946,6 +1009,10 @@ def _repair_low_quality_transcript(text: str, topic_id: str, language: str, inst
     if not flags:
         return cleaned
 
+    # Cap input to ~4500 chars (~1500 tokens for Hindi) to stay under 6000 TPM on 8b model
+    _REPAIR_INPUT_CAP = 4500
+    repair_input = cleaned[:_REPAIR_INPUT_CAP] if len(cleaned) > _REPAIR_INPUT_CAP else cleaned
+
     try:
         llm_result = get_llm().complete(
             system_prompt=(
@@ -958,11 +1025,11 @@ def _repair_low_quality_transcript(text: str, topic_id: str, language: str, inst
                 f"Source language: {language}\n"
                 f"Detected issues: {', '.join(flags)}\n\n"
                 "Clean and repair this transcript for note generation. Preserve as much original meaning as possible.\n\n"
-                f"{cleaned}"
+                f"{repair_input}"
             ),
-            model="edvaqwen",
+            model="llama-3.1-8b-instant",
             temperature=0.2,
-            max_tokens=4096,
+            max_tokens=2048,
             json_mode=False,
             institute_id=institute_id,
         )
@@ -987,6 +1054,22 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
     flags = _transcript_quality_flags(cleaned)
     repaired = _repair_low_quality_transcript(cleaned, topic_id, language, institute_id, flags) if flags else cleaned
     final_text = _clean_transcript_text(repaired)
+
+    lang = (language or "en").strip().lower()
+    is_hindi_hinglish = lang in ("hi", "hi-in", "hinglish")
+
+    if is_hindi_hinglish:
+        # Skip LLM-heavy word repair and punctuation refinement for Hindi/Hinglish.
+        # Chunk notes generation already reads Hindi natively and translates to English,
+        # so 9+ sequential preprocessing LLM calls here add ~60s latency with no benefit.
+        final_text = _normalize_hindi_sentence_punctuation(final_text, language)
+        return final_text, {
+            "quality_flags": flags,
+            "repair_applied": bool(flags),
+            "word_repair_applied": False, "word_repair_chunks": 0, "word_repair_chunks_accepted": 0,
+            "punct_refine_applied": False, "punct_refine_chunks": 0, "punct_refine_chunks_accepted": 0,
+        }
+
     final_text, word_meta = _repair_hindi_hinglish_wording_post_stt(
         final_text, topic_id, language, institute_id,
     )
@@ -1002,10 +1085,33 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
     }
 
 
-NOTES_CHUNK_CHAR_LIMIT = 7500
-NOTES_CHUNK_OVERLAP_CHARS = 800
-NOTES_SECTION_MAX_TOKENS = 2600
-NOTES_MERGE_MAX_TOKENS = 4096
+NOTES_CHUNK_CHAR_LIMIT = 9000
+NOTES_CHUNK_OVERLAP_CHARS = 600   # used for English only; Hindi uses 0 (see _generate_comprehensive_notes)
+NOTES_SECTION_MAX_TOKENS = 700    # baseline; overridden per-call by adaptive formula below
+NOTES_MERGE_MAX_TOKENS = 1800
+# Adaptive formula ensures merge never overflows 6000 TPM regardless of chunk count:
+#   section_tokens = max(350, min(700, 3900 // N))   → N × section_tokens ≤ 3900 + 300 + 1800 ≤ 6000 ✅
+_MERGE_MAX_INPUT_CHARS = 15_500   # safety net: ~3900 English tokens × 4 chars/token
+
+
+def _compress_hindi_filler(text: str) -> str:
+    """Strip common Hindi/Hinglish filler words and repeated phrases to reduce token count ~10-15%."""
+    import re as _re
+    # Standalone filler words (word-boundary safe)
+    _FILLERS = _re.compile(
+        r'\b(?:um+|uh+|hmm+|haan|aur|toh|matlab|basically|actually|obviously|'
+        r'theek hai|theek|dekho|dekha|suno|suniye|bolo|boliye|'
+        r'samjhe|samjha|samajh gaye|samajh|'
+        r'okay|ok|right|so|like|you know|i mean|'
+        r'ek baar|ek bar|phir se|dobara|again)\b[,.]?\s*',
+        _re.IGNORECASE,
+    )
+    text = _FILLERS.sub(' ', text)
+    # Remove 3+ consecutive identical words ("samjhe samjhe samjhe" → "samjhe")
+    text = _re.sub(r'\b(\w+)(\s+\1){2,}\b', r'\1', text, flags=_re.IGNORECASE)
+    text = _re.sub(r'[ \t]{2,}', ' ', text)
+    text = _re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 
 def _chunk_transcript(text: str, chunk_size: int = NOTES_CHUNK_CHAR_LIMIT, overlap: int = NOTES_CHUNK_OVERLAP_CHARS) -> list[str]:
@@ -1051,7 +1157,7 @@ def _chunk_transcript(text: str, chunk_size: int = NOTES_CHUNK_CHAR_LIMIT, overl
     return [chunk for chunk in chunks if chunk]
 
 
-def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institute_id: str, chunk_index: int, total_chunks: int) -> str:
+def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institute_id: str, chunk_index: int, total_chunks: int, max_tokens: int = NOTES_SECTION_MAX_TOKENS) -> str:
     is_hindi = str(language or "").lower() in ("hi", "hinglish", "hi-in")
     lang_instruction = (
         "The transcript is in Hindi or Hinglish (Hindi+English mix). "
@@ -1088,9 +1194,9 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
             "- Do not add unrelated content not supported by the transcript.\n\n"
             f"{chunk_text}"
         ),
-        model="edvaqwen",
+        model="llama-3.1-8b-instant",
         temperature=0.4,
-        max_tokens=NOTES_SECTION_MAX_TOKENS,
+        max_tokens=max_tokens,
         json_mode=False,
         institute_id=institute_id,
     )
@@ -1127,7 +1233,7 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
             "- End with a concise Summary section.\n\n"
             f"{combined_sections}"
         ),
-        model="edvaqwen",
+        model="llama-3.3-70b-versatile",
         temperature=0.3,
         max_tokens=NOTES_MERGE_MAX_TOKENS,
         json_mode=False,
@@ -1137,21 +1243,68 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
 
 
 def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str, institute_id: str) -> tuple[str, dict]:
-    chunks = _chunk_transcript(transcript)
+    import time as _time
+
+    is_hindi = str(language or "").lower() in ("hi", "hi-in", "hinglish")
+
+    # Hindi optimizations: zero overlap (sentences are self-contained) + filler removal
+    if is_hindi:
+        transcript = _compress_hindi_filler(transcript)
+        chunks = _chunk_transcript(transcript, overlap=0)
+    else:
+        chunks = _chunk_transcript(transcript)
+
     if not chunks:
         return "", {"chunk_count": 0}
 
-    if len(chunks) == 1:
-        notes = _generate_chunk_notes(chunks[0], topic_id, language, institute_id, 1, 1).strip()
-        return notes, {"chunk_count": 1, "merge_applied": False}
+    # Adaptive section token budget — satisfies both constraints simultaneously:
+    #   TPM:   N × section_tokens + 300 prompt + 1800 merge ≤ 6000  → section_tokens ≤ 3900 // N
+    #   Chars: N × section_tokens × 4 ≤ _MERGE_MAX_INPUT_CHARS      → section_tokens ≤ _MERGE_MAX_INPUT_CHARS // (N × 4)
+    n = len(chunks)
+    section_tokens = max(350, min(NOTES_SECTION_MAX_TOKENS, 3900 // n, _MERGE_MAX_INPUT_CHARS // max(n * 4, 1)))
 
-    logger.info("Generating chunked notes | chunks=%d | topic=%s | lang=%s", len(chunks), topic_id, language)
+    if n == 1:
+        notes = _generate_chunk_notes(chunks[0], topic_id, language, institute_id, 1, 1, max_tokens=section_tokens).strip()
+        return notes, {"chunk_count": 1, "merge_applied": False, "section_tokens": section_tokens}
+
+    logger.info(
+        "Generating chunked notes | chunks=%d | section_tokens=%d | topic=%s | lang=%s",
+        n, section_tokens, topic_id, language,
+    )
+
+    # Sequential processing with round-robin key distribution (see llm_client.py).
+    # 1.5s gap between chunks keeps each call well under 6,000 TPM.
     partial_notes: list[str] = []
-    for idx, chunk in enumerate(chunks):
-        partial_notes.append(_generate_chunk_notes(chunk, topic_id, language, institute_id, idx + 1, len(chunks)).strip())
+    failed_chunks = 0
+    for i, chunk in enumerate(chunks):
+        try:
+            notes = _generate_chunk_notes(
+                chunk, topic_id, language, institute_id, i + 1, n, max_tokens=section_tokens,
+            ).strip()
+            partial_notes.append(notes)
+        except Exception as exc:
+            logger.warning("Chunk %d/%d notes failed (%s) — skipping", i + 1, n, exc)
+            failed_chunks += 1
+            partial_notes.append("")
+        if i < n - 1:
+            _time.sleep(1.5)
 
-    merged = _merge_chunk_notes(partial_notes, topic_id, language, institute_id).strip()
-    return merged, {"chunk_count": len(chunks), "merge_applied": True}
+    non_empty = [p for p in partial_notes if p.strip()]
+    if not non_empty:
+        return "", {"chunk_count": n, "failed_chunks": failed_chunks, "error": "all_chunks_failed"}
+
+    # Safety net: cap merge input so it never overflows 6000 TPM
+    combined = "\n\n".join(non_empty)
+    if len(combined) > _MERGE_MAX_INPUT_CHARS:
+        logger.warning(
+            "Merge input truncated %d → %d chars (adaptive formula should have prevented this)",
+            len(combined), _MERGE_MAX_INPUT_CHARS,
+        )
+        combined = combined[:_MERGE_MAX_INPUT_CHARS]
+        non_empty = [combined]
+
+    merged = _merge_chunk_notes(non_empty, topic_id, language, institute_id).strip()
+    return merged, {"chunk_count": n, "failed_chunks": failed_chunks, "merge_applied": True, "section_tokens": section_tokens}
 
 
 def _looks_like_unstructured_notes(notes: str) -> bool:
@@ -1191,9 +1344,9 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
                 "- Do not add unrelated information\n\n"
                 f"{cleaned}"
             ),
-            model="edvaqwen",
+            model="llama-3.1-8b-instant",
             temperature=0.2,
-            max_tokens=4096,
+            max_tokens=2048,  # was 4096; merged notes ≈ 1800 input tokens → 1800+2048=3848 fits under 6000 TPM
             json_mode=False,
             institute_id=institute_id,
         )
@@ -1718,6 +1871,65 @@ def generate_stt_notes(request):
     })
 
 
+
+
+# -- AI #7a -- Speech-to-Text Transcribe Only (Phase 1 of two-phase pipeline) --
+# Accepts { audioUrl, language, topicId }
+# Returns { rawTranscript, transcript } -- Whisper only, zero LLM calls.
+# NestJS content.service.ts calls this first, saves transcript to DB, then
+# calls /stt/notes-from-text in a second fire-and-forget pass for notes.
+
+@api_view(["POST"])
+def stt_transcribe_only(request):
+    """Whisper transcription only -- no LLM. Saves transcript in ~2-5 min (vs 15+ min for full pipeline)."""
+    import time as _time
+    data = request.data
+    audio_url = (data.get("audioUrl") or "").strip()
+    if not audio_url:
+        return Response({"error": "Missing audioUrl"}, status=400)
+
+    language = data.get("language", "hi")
+    topic_id = data.get("topicId", "")
+    logger.info("stt_transcribe_only | url=%s | language=%s", audio_url, language)
+    _t0 = _time.perf_counter()
+
+    try:
+        raw_transcript = _transcribe_audio(audio_url, language)
+    except Exception as exc:
+        logger.error("stt_transcribe_only FAILED for %s: %s", audio_url, exc)
+        return Response(
+            {
+                "error": "transcription_failed",
+                "detail": str(exc),
+                "audioUrl": audio_url,
+            },
+            status=502,
+        )
+
+    if len(raw_transcript.strip()) < 20:
+        return Response(
+            {
+                "error": "transcript_too_short",
+                "detail": "Whisper returned almost nothing. The audio may be silent or corrupted.",
+            },
+            status=422,
+        )
+
+    elapsed = _time.perf_counter() - _t0
+    logger.info("stt_transcribe_only done | %d chars | took=%.1fs", len(raw_transcript), elapsed)
+
+    return JsonResponse({
+        "rawTranscript": raw_transcript,
+        "transcript": raw_transcript,
+        "language": language,
+        "topicId": topic_id,
+        "_meta": {
+            "source": "whisper",
+            "chars": len(raw_transcript),
+            "latency_s": round(elapsed, 1),
+        },
+    })
+
 # â"€â"€ AI #8 -- Student Feedback Engine â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 @api_view(["POST"])
@@ -2189,12 +2401,15 @@ def generate_notes_from_transcript(request):
             language,
             institute_id,
         )
-        notes_markdown, markdown_polished = _polish_notes_markdown(
-            notes_markdown,
-            topic_id,
-            language,
-            institute_id,
-        )
+        # Skip polish for Hindi/Hinglish: the 70b merge already outputs clean structured markdown.
+        # Polish saves ~3,800 tokens per video × 8 keys = meaningful daily capacity gain.
+        _is_hindi_lang = str(language or "").lower() in ("hi", "hi-in", "hinglish")
+        if _is_hindi_lang:
+            markdown_polished = False
+        else:
+            notes_markdown, markdown_polished = _polish_notes_markdown(
+                notes_markdown, topic_id, language, institute_id,
+            )
     except RuntimeError as exc:
         logger.error("notes_from_transcript LLM failed (institute=%s): %s", institute_id, exc)
         return Response({"error": str(exc)}, status=502)

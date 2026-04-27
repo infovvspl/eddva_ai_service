@@ -24,6 +24,9 @@ urlpatterns = [
     # AI #7 — Speech-to-Text Notes
     path("stt/notes", bridge.generate_stt_notes),
 
+    # AI #7a -- Transcribe-only (Phase 1 of two-phase pipeline)
+    path("stt/transcribe", bridge.stt_transcribe_only),
+
     # AI #7b — Notes from pre-existing Transcript (YouTube captions, no Whisper)
     path("stt/notes-from-text", bridge.generate_notes_from_transcript),
 
