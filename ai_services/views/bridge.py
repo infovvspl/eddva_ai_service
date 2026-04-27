@@ -52,6 +52,7 @@ logger = logging.getLogger("ai_services.llm")
 
 # -- Groq Whisper API (primary -- cloud, fast; multi-key rotation) ---------------
 
+GROQ_API_KEYS: list[str] = get_groq_api_keys()
 _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY", ""),
     os.getenv("GROQ_API_KEY_1", ""),
