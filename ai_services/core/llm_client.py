@@ -21,6 +21,19 @@ logger = logging.getLogger("ai_services.llm")
 _KEY_STATE_LOCK = threading.Lock()
 _DISABLED_GROQ_KEYS: set[str] = set()
 
+# Round-robin cursor: each complete() call starts from a different key so sequential
+# chunk calls (notes generation) spread load evenly instead of hammering key[0] each time.
+_KEY_CURSOR = 0
+_KEY_CURSOR_LOCK = threading.Lock()
+
+
+def _next_key_offset() -> int:
+    global _KEY_CURSOR
+    with _KEY_CURSOR_LOCK:
+        idx = _KEY_CURSOR
+        _KEY_CURSOR += 1
+        return idx
+
 # -- Groq config (multi-key pool for rate-limit rotation) ----------------------
 _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY", ""),
@@ -31,6 +44,12 @@ _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY_5", ""),
     os.getenv("GROQ_API_KEY_6", ""),
     os.getenv("GROQ_API_KEY_7", ""),
+    os.getenv("GROQ_API_KEY_8", ""),
+    os.getenv("GROQ_API_KEY_9", ""),
+    os.getenv("GROQ_API_KEY_10", ""),
+    os.getenv("GROQ_API_KEY_11", ""),
+    os.getenv("GROQ_API_KEY_12", ""),
+    os.getenv("GROQ_API_KEY_13", ""),
 ]
 GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
@@ -99,6 +118,102 @@ def _get_groq_client():
     return Groq(api_key=GROQ_API_KEYS[0])
 
 
+def check_groq_keys() -> dict:
+    """
+    Health-check every configured Groq key with a minimal LLM call (max_tokens=5).
+    Permanently disables invalid/restricted keys so they are never used in production.
+    Returns a summary dict and logs a table.  Designed to run in a background thread
+    at startup so it never blocks Django boot.
+    """
+    from groq import Groq
+
+    keys = GROQ_API_KEYS
+    if not keys:
+        logger.critical("GROQ HEALTH CHECK: No keys configured — set GROQ_API_KEY in .env")
+        return {"total": 0, "ok": 0, "rate_limited": 0, "dead": 0}
+
+    logger.info("GROQ HEALTH CHECK: testing %d key(s) ...", len(keys))
+
+    ok_count = 0
+    rate_limited_count = 0
+    dead_count = 0
+    error_count = 0
+
+    for i, key in enumerate(keys):
+        key_num = i + 1
+        key_hint = f"{key[:8]}…{key[-4:]}" if len(key) > 12 else key
+        try:
+            from groq import RateLimitError as _RLE, AuthenticationError as _AE
+            client = Groq(api_key=key)
+            client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{"role": "user", "content": "Reply with the single word: OK"}],
+                max_tokens=5,
+                temperature=0,
+            )
+            ok_count += 1
+            logger.info("  [%2d/%d] %s  →  OK", key_num, len(keys), key_hint)
+
+        except Exception as exc:
+            msg = str(exc)
+            msg_lower = msg.lower()
+            is_rate = (
+                getattr(exc, "status_code", None) == 429
+                or "rate limit" in msg_lower
+                or "too many requests" in msg_lower
+            )
+            is_dead = (
+                getattr(exc, "status_code", None) in (401, 403)
+                or "invalid api key" in msg_lower
+                or "invalid_api_key" in msg_lower
+                or "organization has been restricted" in msg_lower
+                or "organization_restricted" in msg_lower
+            )
+
+            if is_dead:
+                dead_count += 1
+                with _KEY_STATE_LOCK:
+                    _DISABLED_GROQ_KEYS.add(key)
+                logger.error(
+                    "  [%2d/%d] %s  →  DEAD (disabled) — %s",
+                    key_num, len(keys), key_hint, msg[:120],
+                )
+            elif is_rate:
+                rate_limited_count += 1
+                logger.warning(
+                    "  [%2d/%d] %s  →  RATE LIMITED (will auto-recover)",
+                    key_num, len(keys), key_hint,
+                )
+            else:
+                error_count += 1
+                logger.warning(
+                    "  [%2d/%d] %s  →  ERROR — %s",
+                    key_num, len(keys), key_hint, msg[:120],
+                )
+
+    usable = ok_count + rate_limited_count
+    logger.info(
+        "GROQ HEALTH CHECK DONE: %d total | %d OK | %d rate-limited | %d dead | %d error",
+        len(keys), ok_count, rate_limited_count, dead_count, error_count,
+    )
+    if usable == 0:
+        logger.critical(
+            "GROQ: NO usable keys! All %d keys are dead/errored. Check .env immediately.",
+            len(keys),
+        )
+    elif dead_count:
+        logger.warning("GROQ: %d dead key(s) permanently disabled — remove them from .env", dead_count)
+
+    return {
+        "total": len(keys),
+        "ok": ok_count,
+        "rate_limited": rate_limited_count,
+        "dead": dead_count,
+        "error": error_count,
+        "usable": usable,
+    }
+
+
 class LLMClient:
     """
     Single entry-point for all LLM calls, backed by Groq with multi-key rotation.
@@ -148,7 +263,21 @@ class LLMClient:
             kwargs["response_format"] = {"type": "json_object"}
 
         last_error: Optional[str] = None
-        
+
+        def _parse_retry_after(msg: str, default: float = 65.0) -> float:
+            """Parse 'Please try again in 1m46.5s' → seconds.
+            Capped at 75s: Groq TPM windows are 60s, so 75s is always enough to reset.
+            Never wait longer — a longer Groq-suggested time means TPD (daily) exhaustion
+            on that specific key, but other keys will be available in round 2."""
+            import re as _re
+            m = _re.search(r"(\d+)m(\d+\.?\d*)s", msg or "")
+            if m:
+                return min(int(m.group(1)) * 60 + float(m.group(2)) + 2, 75.0)
+            m = _re.search(r"(\d+\.?\d*)s", msg or "")
+            if m:
+                return min(float(m.group(1)) + 2, 75.0)
+            return default
+
         def _is_permanently_bad_key_error(msg: str) -> bool:
             m = (msg or "").lower()
             return any(
@@ -166,13 +295,25 @@ class LLMClient:
                 keys = [k for k in GROQ_API_KEYS if k and k not in _DISABLED_GROQ_KEYS]
             return keys
 
-        # Two rounds across all keys: instant rotation on any error, sleep only if all fail
-        for round_num in range(2):
+        # Round-robin starting key: each invocation starts from a different key so that
+        # sequential chunk calls (notes generation) distribute load evenly across the key pool
+        # instead of every call starting at key[0] and triggering needless rate-limit retries.
+        start_offset = _next_key_offset()
+
+        # Three rounds across all keys: instant rotation on any error, sleep between rounds.
+        # Round 1: normal attempt. Round 2 (after 65s): TPM windows guaranteed reset.
+        # Round 3 (after another 65s): final attempt before giving up.
+        for round_num in range(3):
             keys_this_round = _active_keys()
             if not keys_this_round:
                 raise RuntimeError("No active GROQ keys left. Check invalid/restricted keys in .env")
 
-            for key_idx, api_key in enumerate(keys_this_round):
+            n = len(keys_this_round)
+            offset = start_offset % n
+            ordered_keys = keys_this_round[offset:] + keys_this_round[:offset]
+
+            for key_idx, api_key in enumerate(ordered_keys):
+                actual_key_num = (offset + key_idx) % n + 1  # human-readable key number for logs
                 try:
                     client = Groq(api_key=api_key)
                     start = time.perf_counter()
@@ -189,7 +330,7 @@ class LLMClient:
                     if not json_mode:
                         logger.info(
                             "LLM (text) | key=%d/%d model=%s latency=%.0fms",
-                            key_idx + 1, len(keys_this_round), effective_model, latency_ms,
+                            actual_key_num, n, effective_model, latency_ms,
                         )
                         return {
                             "content": raw,
@@ -201,13 +342,13 @@ class LLMClient:
                     try:
                         content = json.loads(_extract_json(raw))
                     except json.JSONDecodeError:
-                        logger.warning("JSON parse failure on key %d -- retrying next key", key_idx + 1)
+                        logger.warning("JSON parse failure on key %d -- retrying next key", actual_key_num)
                         last_error = "JSON parse failure"
                         continue
 
                     logger.info(
                         "LLM (json) | key=%d/%d model=%s latency=%.0fms",
-                        key_idx + 1, len(keys_this_round), effective_model, latency_ms,
+                        actual_key_num, n, effective_model, latency_ms,
                     )
                     return {
                         "content": content,
@@ -220,7 +361,7 @@ class LLMClient:
                     last_error = str(exc)
                     logger.warning(
                         "LLM key %d/%d rate-limited -- rotating to next key",
-                        key_idx + 1, len(keys_this_round),
+                        actual_key_num, n,
                     )
                 except Exception as exc:
                     last_error = str(exc)
@@ -229,22 +370,25 @@ class LLMClient:
                             _DISABLED_GROQ_KEYS.add(api_key)
                         logger.error(
                             "LLM key %d/%d permanently disabled (%s)",
-                            key_idx + 1, len(keys_this_round), last_error,
+                            actual_key_num, n, last_error,
                         )
                         continue
                     logger.error(
                         "LLM key %d/%d error (%s) -- rotating to next key",
-                        key_idx + 1, len(keys_this_round), last_error,
+                        actual_key_num, n, last_error,
                     )
 
-            # All keys failed this round -- wait 10s before round 2
-            if round_num == 0:
+            # All keys failed this round — wait before next round.
+            # 75s cap guarantees any TPM window (60s) is fully reset before we retry.
+            if round_num < 2:
+                wait_s = _parse_retry_after(last_error or "", default=65.0)
                 logger.warning(
-                    "All %d LLM keys failed (round 1) -- waiting 10s before retry",
-                    len(keys_this_round),
+                    "All %d LLM keys failed (round %d) -- waiting %.0fs before retry",
+                    n, round_num + 1, wait_s,
                 )
-                time.sleep(10)
+                time.sleep(wait_s)
 
         raise RuntimeError(
-            f"LLM call failed after exhausting all {len(GROQ_API_KEYS)} keys: {last_error}"
+            f"LLM call failed after 3 rounds across all {len(GROQ_API_KEYS)} keys "
+            f"(check dead/exhausted keys in .env): {last_error}"
         )
