@@ -52,9 +52,7 @@ logger = logging.getLogger("ai_services.llm")
 
 # -- Groq Whisper API (primary -- cloud, fast; multi-key rotation) ---------------
 
-<<<<<<< HEAD
 GROQ_API_KEYS: list[str] = get_groq_api_keys()
-=======
 _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY", ""),
     os.getenv("GROQ_API_KEY_1", ""),
@@ -72,7 +70,6 @@ _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY_13", ""),
 ]
 GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
->>>>>>> 00b8f95ada3212c3cf655bec78f0117cdf64f311
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 GROQ_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB Groq limit
