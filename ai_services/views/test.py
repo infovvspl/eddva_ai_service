@@ -44,6 +44,34 @@ logger = logging.getLogger("ai_services.llm")
 
 _VALID_DIFFICULTIES = {"easy", "medium", "hard"}
 
+_SUBJECT_RULES_TEST = {
+    "physics": (
+        "PHYSICS: Focus on numerical problems requiring formula application, unit analysis, "
+        "and multi-step calculation. Cover mechanics, thermodynamics, electrostatics, optics, "
+        "and modern physics as relevant to the topic. All answers must include SI units."
+    ),
+    "chemistry": (
+        "CHEMISTRY: Include stoichiometric calculations, molar mass problems, reaction mechanisms, "
+        "and NCERT-level factual/conceptual questions. Cover physical, organic, and inorganic "
+        "chemistry as appropriate to the topic. Ensure numerical answers show balanced equations."
+    ),
+    "mathematics": (
+        "MATHEMATICS: Focus on application problems requiring step-wise derivation or proof. "
+        "State the relevant theorem or formula clearly in the question. Cover calculus, algebra, "
+        "coordinate geometry, and trigonometry as appropriate to the topic."
+    ),
+    "maths": (
+        "MATHEMATICS: Focus on application problems requiring step-wise derivation or proof. "
+        "State the relevant theorem or formula clearly in the question. Cover calculus, algebra, "
+        "coordinate geometry, and trigonometry as appropriate to the topic."
+    ),
+    "biology": (
+        "BIOLOGY: Prefer assertion-reason, statement-based, and process-identification questions. "
+        "Cover cell biology, genetics, ecology, human physiology, and plant biology as relevant "
+        "to the topic. Use NCERT terminology and diagrams where applicable."
+    ),
+}
+
 
 def _dedupe_mcq_key(question: str) -> str:
     if not question:
@@ -168,6 +196,8 @@ def generate_practice_test(request):
     if difficulty not in _VALID_DIFFICULTIES:
         difficulty = "medium"
 
+    subject = (data.get("subject") or "").strip()
+    chapter = (data.get("chapter") or "").strip()
     exam_target = (data.get("exam_target") or "").strip().lower()
 
     qtype = (data.get("type") or data.get("question_type") or "mcq").strip().lower()
@@ -267,10 +297,31 @@ STRICT RULES (VERY IMPORTANT):
         else "foundation level concept testing question"
     )
 
+    # Build curriculum breadcrumb for the prompt
+    curriculum_parts = []
+    if subject:
+        curriculum_parts.append(f"Subject: {subject}")
+    if chapter:
+        curriculum_parts.append(f"Chapter: {chapter}")
+    curriculum_parts.append(f"Topic: {topic}")
+    curriculum_context = " → ".join(curriculum_parts)
+
+    scope_constraint = ""
+    if subject or chapter:
+        scope_constraint = (
+            f"IMPORTANT: All questions MUST be strictly within the scope of {curriculum_context}. "
+            f"Do NOT generate questions from unrelated topics or subjects.\n"
+        )
+
+    subject_rule = _SUBJECT_RULES_TEST.get(subject.lower(), "") if subject else ""
+
     user_prompt = (
-        f"Generate {num_questions} distinct {qtype} questions on the topic: {topic}.\n"
+        f"Generate {num_questions} distinct {qtype} questions.\n"
+        f"Curriculum scope: {curriculum_context}\n"
+        f"{scope_constraint}"
         f"Difficulty: {difficulty}. This should be a {diff_context}.\n"
         f"{type_instr}\n\n"
+        f"{subject_rule}\n\n"
         f"{heuristic_block}\n"
         "Return the result as a JSON object with a 'questions' array. "
         "Each question object MUST have: 'question', 'answer', and 'explanation'. "
@@ -281,8 +332,8 @@ STRICT RULES (VERY IMPORTANT):
     template = get_template("test_generate")
 
     logger.info(
-        "generate_practice_test | topic=%s | type=%s | n=%d",
-        topic[:50], qtype, num_questions
+        "generate_practice_test | subject=%s | chapter=%s | topic=%s | type=%s | n=%d",
+        subject or "—", chapter or "—", topic[:50], qtype, num_questions
     )
 
     try:

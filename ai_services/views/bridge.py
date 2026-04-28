@@ -1413,45 +1413,42 @@ _SUBJECT_RULES: dict[str, str] = {
 
 def _build_solver_system_prompt(subject: str, qtype: str) -> str:
     rules = _SUBJECT_RULES.get(subject, _SUBJECT_RULES["physics"])
+    is_numerical = qtype in ("numerical", "derivation")
     return (
         f"You are an expert AI doubt resolver for JEE and NEET students.\n"
-        f"Subject: {subject.upper()}\n"
-        f"Question Type: {qtype}\n\n"
-        "MANDATORY FIRST STEPS — DO NOT SKIP:\n"
-        "1. State subject and question type\n"
-        "2. Chemistry numerical: build molar mass table FIRST\n"
-        "3. Physics numerical: list all given quantities with units FIRST\n"
-        "4. Math: identify technique/rule FIRST before applying\n"
-        "5. DO NOT begin solving until steps 1–3 are done\n\n"
-        "UNIVERSAL RULES — NEVER VIOLATE:\n"
-        "1. Every arithmetic operation on its own line\n"
-        "2. Never skip steps\n"
-        "3. Verify final answer by back-substitution\n"
-        "4. Carry units through every step\n"
-        "5. If you get an impossible value (α>1, negative mass, probability>1):\n"
-        "   STOP, write IMPOSSIBLE VALUE DETECTED, recheck from Step 1\n"
-        "6. NEVER try multiple formulas — identify correct one first, apply once\n\n"
+        f"Subject: {subject.upper()} | Question Type: {qtype}\n\n"
+        + (
+            "NUMERICAL ACCURACY RULES — CRITICAL:\n"
+            "A. NEVER compute anything in your head. Write EVERY number operation explicitly.\n"
+            "B. NEVER skip arithmetic steps — e.g. write '9.45 / 94.5 = 0.1' not just '0.1'.\n"
+            "C. NEVER round intermediate values — carry full decimal precision until final answer.\n"
+            "D. After the final answer, VERIFY by substituting back into the original equation.\n"
+            "E. If result seems impossible (negative mass, probability > 1, α > 1): STOP and recheck.\n\n"
+            if is_numerical else ""
+        )
+        + "MANDATORY SETUP — DO NOT BEGIN SOLVING UNTIL DONE:\n"
+        "- Physics numerical: list ALL Given quantities with symbols + SI units in one block\n"
+        "- Chemistry numerical: write molar masses of ALL atoms/molecules before any calculation\n"
+        "- Math: state the theorem/technique to be used in one sentence\n"
+        "- Theory/Biology: identify the exact concept/process being asked\n\n"
+        "UNIVERSAL RULES:\n"
+        "1. Every arithmetic operation on its own separate line\n"
+        "2. Carry units at EVERY step — never drop them mid-calculation\n"
+        "3. One formula application per step — never chain multiple formulas in one line\n"
+        "4. NEVER try multiple formulas — identify the correct one first, apply it once\n\n"
         f"{rules}\n\n"
-        "OUTPUT — respond ONLY with this exact JSON. No markdown, no preamble.\n\n"
+        "OUTPUT — respond with ONLY the following JSON object. No markdown, no preamble, no trailing text.\n\n"
         '{\n'
         '  "brief": {\n'
-        '    "answer": "<NUMERICALS: numbered steps + final answer. Format: Step 1: [calculation]. Step 2: [calculation]. ... Final Answer: [value with units]. NO narrative sentences. THEORY/BIOLOGY/CONCEPTUAL: 1-3 direct sentences, to the point. No sub-steps.>"\n'
+        '    "answer": "NUMERICALS: numbered steps with explicit arithmetic + Final Answer with units. Example: Step 1: M = 12+35.5+2(1)+2(16) = 94.5 g/mol. Step 2: n = 9.45/94.5 = 0.1 mol. Final Answer: 0.372 K. THEORY: 1-3 direct sentences only, no sub-steps."\n'
         '  },\n'
         '  "detailed": {\n'
-        '    "solution": "<Step-by-step working. Each step: \'Step N — [what you are doing]: [calculation or statement]. Reason: [one-phrase explanation of why this step is done].\' Every arithmetic on its own line. End with Final Answer.>",\n'
-        '    "final_answer": "<final answer with units>",\n'
-        '    "verification": "<substitute answer back and confirm>",\n'
-        '    "key_concept": "<one-line revision takeaway>"\n'
+        '    "solution": "Step N — [action]: [explicit calculation]. Reason: [one phrase why]. Each arithmetic on its own line. End with Final Answer.",\n'
+        '    "final_answer": "value with units",\n'
+        '    "verification": "substitute answer back into original equation and confirm LHS = RHS",\n'
+        '    "key_concept": "one-line formula or principle to remember"\n'
         '  }\n'
-        '}\n\n'
-        "BRIEF RULES:\n"
-        "- Numericals: steps + answer ONLY. No 'In this problem / Using / Since' opening sentences.\n"
-        "- Theory: 1-3 direct sentences. No sub-steps.\n"
-        "- GOOD brief (numerical): 'Step 1: M(ClCH₂COOH) = 94.5 g/mol\\nStep 2: n = 9.45/94.5 = 0.1 mol\\nFinal Answer: Ka = 36 × 10⁻³'\n"
-        "DETAILED RULES:\n"
-        "- Every arithmetic operation on its own line\n"
-        "- Each step has a one-phrase 'Reason:' explaining WHY\n"
-        "- GOOD detailed step: 'Step 3 — Calculate molality: m = 0.1/0.5 = 0.2 mol/kg. Reason: molality = moles of solute / kg of solvent.'"
+        '}'
     )
 
 
@@ -1591,10 +1588,12 @@ def resolve_doubt(request):
         logger.warning("Doubt detector failed (%s); defaulting to physics/numerical", exc)
 
     # ── Step 2: Build subject-specific system prompt and solve ────────────────
-    # Dynamic prompt injects subject + type + subject rules so qwen/qwen3-32b
-    # gets precisely targeted instructions rather than a generic multi-subject prompt.
     solver_system = _build_solver_system_prompt(subject, qtype)
+    # /no_think tells qwen/qwen3-32b to skip its internal <think> block and go
+    # straight to the answer. This is a model-level instruction (trained into Qwen3),
+    # not an API parameter — so Groq does not reject it.
     user_prompt = (
+        f"/no_think\n\n"
         f"Topic: {data.get('topicId', 'general')}\n\n"
         f"Question:\n{combined_question}"
     )
@@ -1603,42 +1602,44 @@ def resolve_doubt(request):
         solve_result = get_llm().complete(
             system_prompt=solver_system,
             user_prompt=user_prompt,
-            model="llama-3.3-70b-versatile",
+            model="qwen/qwen3-32b",
             temperature=0.1,
-            max_tokens=3000,
-            json_mode=False,
+            max_tokens=4096,
+            json_mode=True,
+            json_mode_suffix="",
             institute_id=institute_id,
         )
     except RuntimeError as e:
         return JsonResponse({"error": str(e)}, status=502)
 
-    raw_text = str(solve_result["content"]).strip()
-    raw_text = _strip_think_blocks(raw_text)
+    # json_mode=True guarantees solve_result["content"] is already a parsed dict
+    parsed = solve_result["content"] if isinstance(solve_result["content"], dict) else {}
+    brief_obj: dict = parsed.get("brief") or {}
+    detailed_obj: dict = parsed.get("detailed") or {}
 
-    # Parse the structured JSON response from the model
-    brief_obj: dict = {}
-    detailed_obj: dict = {}
-    try:
-        m = _re.search(r'\{.*\}', raw_text, flags=_re.DOTALL)
-        if m:
-            parsed = json.loads(m.group())
-            brief_obj = parsed.get("brief", {}) or {}
-            detailed_obj = parsed.get("detailed", {}) or {}
-    except (json.JSONDecodeError, Exception):
-        pass
+    # Fallback: if model returned a flat structure instead of nested brief/detailed
+    if not brief_obj and not detailed_obj and parsed:
+        answer_raw = parsed.get("answer") or parsed.get("solution") or ""
+        brief_obj = {"answer": answer_raw}
+        detailed_obj = {
+            "solution": parsed.get("solution") or answer_raw,
+            "final_answer": parsed.get("final_answer") or "",
+            "verification": parsed.get("verification") or "",
+            "key_concept": parsed.get("key_concept") or "",
+        }
 
     # Select answer + explanation based on requested mode
     if mode == "brief":
         answer = brief_obj.get("answer") or detailed_obj.get("final_answer") or ""
-        explanation = brief_obj.get("explanation") or raw_text
+        explanation = brief_obj.get("answer") or detailed_obj.get("solution") or ""
     else:
         answer = detailed_obj.get("final_answer") or brief_obj.get("answer") or ""
-        explanation = detailed_obj.get("solution") or raw_text
+        explanation = detailed_obj.get("solution") or brief_obj.get("answer") or ""
 
     return JsonResponse({
         "subject": subject,
         "type": qtype,
-        "model_used": "qwen/qwen3-32b",
+        "model_used": solve_result["model"],
         "answer": answer,
         "explanation": explanation,
         "brief": brief_obj,
