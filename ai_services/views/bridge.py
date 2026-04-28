@@ -1,4 +1,4 @@
-﻿"""
+"""
 Views for NestJS ai-bridge endpoints.
 These endpoints match the paths called by apexiq-backend/src/modules/ai-bridge/ai-bridge.service.ts
 
@@ -1402,6 +1402,8 @@ def _coerce_tutor_or_doubt_text(raw) -> str:
             return str(raw).strip()
     t = (raw if isinstance(raw, str) else str(raw)).strip()
     t = _coerce_json_array_string_to_prose(t)
+    import re
+    t = re.sub(r'<scratchpad>.*?</scratchpad>', '', t, flags=re.DOTALL).strip()
     if t.startswith("{") and t.endswith("}"):
         try:
             obj = json.loads(t)
@@ -1459,7 +1461,7 @@ def resolve_doubt(request):
             system_prompt=template.system,
             user_prompt=user_prompt,
             model=get_model_for_task("doubt_resolve"),
-            temperature=0.3,
+            temperature=0.0,
             max_tokens=1024,
             json_mode=False,
             institute_id=institute_id,
@@ -1724,7 +1726,7 @@ def continue_tutor_session(request):
             system_prompt=template.system,
             user_prompt=user_prompt,
             model=get_model_for_task("tutor_continue"),
-            temperature=0.2,
+            temperature=0.0,
             max_tokens=1200,
             json_mode=True,
             json_mode_suffix=_JSON_MODE_TUTOR_SUFFIX,
