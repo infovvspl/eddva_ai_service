@@ -2153,8 +2153,17 @@ def generate_quiz_questions(request):
     lecture_title = data.get("lectureTitle", "Lecture")
     topic_id = data.get("topicId", "")
 
-    # Chunk the content so every part of the notes is covered (no truncation)
-    MAX_CHUNK_CHARS = 12000
+    # If falling back to raw transcript, cap it — transcripts are very long and
+    # tokenize at ~2 chars/token for Hindi/math, which overflows the 6K TPM limit.
+    # Notes are already summarised so they stay small.
+    if source_type == "transcript" and len(source_text) > 15000:
+        source_text = source_text[:15000]
+        logger.warning("quiz_generate: transcript truncated to 15000 chars to stay within token limits")
+
+    # 3500 chars per chunk keeps each LLM call safely under 6000 TPM on any text type
+    # (worst case Hindi text: 3500 ÷ 2 chars/token = 1750 tokens content
+    #  + 400 system + 200 template + 800 output = ~3150 tokens total, well under limit)
+    MAX_CHUNK_CHARS = 3500
     chunks = _chunk_notes(source_text, MAX_CHUNK_CHARS)
     n_chunks = len(chunks)
 
@@ -2166,14 +2175,16 @@ def generate_quiz_questions(request):
     template = get_template("quiz_generate")
     all_questions = []
     last_meta = {}
+    all_latencies = []
 
+    # Build one task per non-empty chunk; track metadata alongside each task
+    chunk_meta = []  # (chunk_idx, q_count, start_pct, end_pct) for active chunks
+    tasks = []
     for i, (chunk, q_count) in enumerate(zip(chunks, counts)):
         if q_count == 0:
             continue
-        # Map chunk position to video timestamp range
         start_pct = max(5, int((i / n_chunks) * 90) + 5)
         end_pct = min(95, int(((i + 1) / n_chunks) * 90) + 5)
-
         user_prompt = template.user_template.format(
             lecture_title=lecture_title,
             topic_id=topic_id,
@@ -2184,19 +2195,26 @@ def generate_quiz_questions(request):
             total_chunks=n_chunks,
             content=chunk,
         )
+        tasks.append({
+            "system_prompt": template.system,
+            "user_prompt": user_prompt,
+            "max_tokens": max(800, q_count * 350),
+        })
+        chunk_meta.append((i + 1, q_count, start_pct, end_pct))
 
-        try:
-            result = get_llm().complete(
-                system_prompt=template.system,
-                user_prompt=user_prompt,
-                model="quiz",
-                temperature=0.3,
-                max_tokens=max(800, q_count * 350),
-                json_mode=False,
-                institute_id=institute_id,
-            )
-        except RuntimeError as e:
-            logger.error("Quiz chunk %d/%d failed (institute=%s): %s", i + 1, n_chunks, institute_id, e)
+    # Dispatch all chunks in parallel — each gets a DIFFERENT Groq API key so
+    # every call fires simultaneously with its own full TPM budget.
+    results = get_llm().parallel_complete_many(
+        tasks=tasks,
+        model="quiz",
+        temperature=0.3,
+        json_mode=False,
+        institute_id=institute_id,
+    )
+
+    for result, (chunk_idx, q_count, start_pct, end_pct) in zip(results, chunk_meta):
+        if result is None:
+            logger.error("Quiz chunk %d/%d failed (institute=%s): no result", chunk_idx, n_chunks, institute_id)
             continue
 
         raw = result["content"] if isinstance(result["content"], str) else str(result["content"])
@@ -2212,10 +2230,11 @@ def generate_quiz_questions(request):
                 q["triggerAtPercent"] = start_pct
 
         all_questions.extend(chunk_qs)
-        last_meta = {"model": result["model"], "latency_ms": round(result["latency_ms"])}
+        all_latencies.append(result["latency_ms"])
+        last_meta = {"model": result["model"]}
         logger.info(
             "Quiz chunk %d/%d | source=%s | q_count=%d | got=%d",
-            i + 1, n_chunks, source_type, q_count, len(chunk_qs),
+            chunk_idx, n_chunks, source_type, q_count, len(chunk_qs),
         )
 
     if not all_questions:
@@ -2233,6 +2252,8 @@ def generate_quiz_questions(request):
             "requested": num_questions,
             "generated": len(all_questions),
             "institute": institute_id,
+            "parallel": True,
+            "wall_time_ms": round(max(all_latencies)) if all_latencies else 0,
             **last_meta,
         },
     })
