@@ -58,6 +58,9 @@ urlpatterns = [
     # AI #16 — Topic Content Generator
     path("content/generate", bridge.generate_topic_content),
 
+    # AI Engine Health (teacher/admin panel)
+    path("ai/health", bridge.ai_engine_health),
+
     # ══════════════════════════════════════════════════════════════════════════
     #  Legacy Django endpoints (original ai_services views)
     # ══════════════════════════════════════════════════════════════════════════

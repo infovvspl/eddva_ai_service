@@ -1357,6 +1357,117 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
 
 # â"€â"€ AI #1 -- Doubt Clearing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+# Step-1 detector: lightweight classification (subject + question type)
+_DOUBT_DETECTOR_SYSTEM = (
+    "You are a JEE/NEET question classifier. "
+    "Respond with ONLY a valid JSON object — no text before or after.\n"
+    'Format: {"subject": "<subject>", "type": "<type>"}\n'
+    "subject must be exactly one of: physics, chemistry, math, biology\n"
+    "type must be exactly one of: numerical, derivation, conceptual, mcq, theory"
+)
+
+# Per-subject rules injected into the solver system prompt at runtime.
+# Kept compact (<200 tokens each) so total request stays under 6 000 TPM.
+_SUBJECT_RULES: dict[str, str] = {
+    "physics": (
+        "PHYSICS RULES:\n"
+        "1. List all Given quantities with symbols and SI units\n"
+        "2. State what to Find\n"
+        "3. Identify the exact law/formula — write it symbolically first\n"
+        "4. Substitute values explicitly: replace each symbol with its number+unit\n"
+        "5. One arithmetic operation per line; carry units at every step\n"
+        "6. Pitfalls: g=9.8 or 10 m/s² (use what is given), sign conventions, degrees vs radians"
+    ),
+    "chemistry": (
+        "CHEMISTRY RULES:\n"
+        "1. Build molar mass table FIRST —\n"
+        "   H=1, He=4, Li=7, C=12, N=14, O=16, Na=23, Mg=24, Al=27, S=32,\n"
+        "   Cl=35.5, K=39, Ca=40, Fe=56, Cu=63.5, Zn=65, Br=80, Ag=108, I=127, Ba=137, Pb=207\n"
+        "2. Balance equation before stoichiometry\n"
+        "3. n = mass/M; C = n/V(L); one mole-conversion per line\n"
+        "4. Equilibrium: write ICE table (Initial / Change / Equilibrium)\n"
+        "5. Colligative: ΔTf = i·Kf·m; ΔTb = i·Kb·m (i = van't Hoff factor)\n"
+        "6. Redox: state oxidation-number changes before balancing"
+    ),
+    "math": (
+        "MATH RULES:\n"
+        "1. State the technique/theorem before applying it\n"
+        "2. Algebra: one operation per line; show every expansion/factorisation\n"
+        "3. Calculus: write substitution explicitly, show du; transform limits for definite integrals\n"
+        "4. Trigonometry: use exact values (sin30°=½, cos60°=½, tan45°=1, sin90°=1)\n"
+        "5. Coordinate: derive from standard form; show all intermediate equations\n"
+        "6. Probability: state independence/mutual-exclusivity; use P(A∪B)=P(A)+P(B)−P(A∩B)\n"
+        "7. Verify: substitute final answer back into original equation"
+    ),
+    "biology": (
+        "BIOLOGY RULES:\n"
+        "1. Name all phases/stages in correct sequence\n"
+        "2. Use precise scientific terminology (binomial names where relevant)\n"
+        "3. Genetics: draw Punnett square; list all genotype and phenotype ratios\n"
+        "4. Photosynthesis/Respiration: name molecules at each stage and the location\n"
+        "5. Physiology: name the organ, tissue, and cell type involved\n"
+        "6. State exceptions explicitly (C4 plants, incomplete dominance, anomalous species)"
+    ),
+}
+
+
+def _build_solver_system_prompt(subject: str, qtype: str) -> str:
+    rules = _SUBJECT_RULES.get(subject, _SUBJECT_RULES["physics"])
+    return (
+        f"You are an expert AI doubt resolver for JEE and NEET students.\n"
+        f"Subject: {subject.upper()}\n"
+        f"Question Type: {qtype}\n\n"
+        "MANDATORY FIRST STEPS — DO NOT SKIP:\n"
+        "1. State subject and question type\n"
+        "2. Chemistry numerical: build molar mass table FIRST\n"
+        "3. Physics numerical: list all given quantities with units FIRST\n"
+        "4. Math: identify technique/rule FIRST before applying\n"
+        "5. DO NOT begin solving until steps 1–3 are done\n\n"
+        "UNIVERSAL RULES — NEVER VIOLATE:\n"
+        "1. Every arithmetic operation on its own line\n"
+        "2. Never skip steps\n"
+        "3. Verify final answer by back-substitution\n"
+        "4. Carry units through every step\n"
+        "5. If you get an impossible value (α>1, negative mass, probability>1):\n"
+        "   STOP, write IMPOSSIBLE VALUE DETECTED, recheck from Step 1\n"
+        "6. NEVER try multiple formulas — identify correct one first, apply once\n\n"
+        f"{rules}\n\n"
+        "OUTPUT — respond ONLY with this exact JSON. No markdown, no preamble.\n\n"
+        '{\n'
+        '  "brief": {\n'
+        '    "answer": "<NUMERICALS: numbered steps + final answer. Format: Step 1: [calculation]. Step 2: [calculation]. ... Final Answer: [value with units]. NO narrative sentences. THEORY/BIOLOGY/CONCEPTUAL: 1-3 direct sentences, to the point. No sub-steps.>"\n'
+        '  },\n'
+        '  "detailed": {\n'
+        '    "solution": "<Step-by-step working. Each step: \'Step N — [what you are doing]: [calculation or statement]. Reason: [one-phrase explanation of why this step is done].\' Every arithmetic on its own line. End with Final Answer.>",\n'
+        '    "final_answer": "<final answer with units>",\n'
+        '    "verification": "<substitute answer back and confirm>",\n'
+        '    "key_concept": "<one-line revision takeaway>"\n'
+        '  }\n'
+        '}\n\n'
+        "BRIEF RULES:\n"
+        "- Numericals: steps + answer ONLY. No 'In this problem / Using / Since' opening sentences.\n"
+        "- Theory: 1-3 direct sentences. No sub-steps.\n"
+        "- GOOD brief (numerical): 'Step 1: M(ClCH₂COOH) = 94.5 g/mol\\nStep 2: n = 9.45/94.5 = 0.1 mol\\nFinal Answer: Ka = 36 × 10⁻³'\n"
+        "DETAILED RULES:\n"
+        "- Every arithmetic operation on its own line\n"
+        "- Each step has a one-phrase 'Reason:' explaining WHY\n"
+        "- GOOD detailed step: 'Step 3 — Calculate molality: m = 0.1/0.5 = 0.2 mol/kg. Reason: molality = moles of solute / kg of solvent.'"
+    )
+
+
+def _strip_think_blocks(text: str) -> str:
+    """Strip <think>...</think> reasoning traces (qwen3, DeepSeek-R1).
+    If the closing tag is missing (max_tokens hit mid-thinking), falls back to
+    extracting any JSON block found inside the raw text."""
+    import re as _re
+    cleaned = _re.sub(r'<think>.*?</think>', '', text, flags=_re.DOTALL | _re.IGNORECASE).strip()
+    if cleaned:
+        return cleaned
+    # Unclosed think block — try to salvage JSON that the model started writing inside
+    m = _re.search(r'\{.*\}', text, flags=_re.DOTALL)
+    return m.group() if m else ""
+
+
 def _coerce_json_array_string_to_prose(t: str) -> str:
     """If the model outputs a JSON array of strings, join into plain text for the client."""
     t = (t or "").strip()
@@ -1422,70 +1533,122 @@ def _coerce_tutor_or_doubt_text(raw) -> str:
 
 @api_view(["POST"])
 def resolve_doubt(request):
-    data = request.data
-    question_text = (data.get("questionText") or "").strip()
-    question_image_url = (data.get("questionImageUrl") or "").strip()
-    image_description = ""
+    import re as _re
 
-    if question_image_url:
-        # Vision API understands diagrams, equations, handwriting — use it first
-        image_description = _describe_image_with_vision(question_image_url)
+    data = request.data
+    question_text = (data.get("questionText") or data.get("question") or "").strip()
+    raw_mode = (data.get("mode") or "detailed").strip().lower()
+    mode = "brief" if raw_mode in ("brief", "short") else "detailed"
+
+    # Image support: base64 data URL (from NestJS) or raw HTTPS URL
+    image_description = ""
+    image_source = (data.get("questionImageBase64") or data.get("questionImageUrl") or "").strip()
+    if image_source:
+        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT)
         if not image_description:
-            # Fallback to EasyOCR if vision API is unavailable
-            logger.warning("Vision API returned empty for doubt image — falling back to OCR")
-            image_description = _extract_text_from_image_url(question_image_url)
+            logger.warning("Vision API returned empty for doubt image")
 
     if not question_text and not image_description:
-        return Response({"error": "Missing questionText or readable questionImageUrl"}, status=400)
+        return Response({"error": "Missing questionText or readable image"}, status=400)
 
     institute_id = getattr(request, "institute_id", "default")
-    template = get_template("doubt_resolve")
 
     if image_description and question_text:
         combined_question = f"{question_text}\n\n[Image content]\n{image_description}"
     elif image_description:
-        combined_question = f"[Student uploaded an image with the following content]\n{image_description}"
+        combined_question = f"[Student uploaded an image]\n{image_description}"
     else:
         combined_question = question_text
 
-    user_prompt = template.user_template.format(
-        question_text=combined_question,
-        topic_id=data.get("topicId", "general"),
-        mode=data.get("mode", "detailed"),
-        student_context=json.dumps(data.get("studentContext", {})),
+    # ── Step 1: Classify subject and question type (llama-3.1-8b-instant, ~300 ms) ──
+    subject, qtype = "physics", "numerical"
+    try:
+        detect_result = get_llm().complete(
+            system_prompt=_DOUBT_DETECTOR_SYSTEM,
+            user_prompt=f"Classify this question:\n\n{combined_question[:800]}",
+            model="llama-3.1-8b-instant",
+            temperature=0.0,
+            max_tokens=60,
+            json_mode=True,
+            institute_id=institute_id,
+        )
+        detect_data = detect_result.get("content", {})
+        if isinstance(detect_data, str):
+            m = _re.search(r'\{[^}]+\}', detect_data)
+            if m:
+                try:
+                    detect_data = json.loads(m.group())
+                except json.JSONDecodeError:
+                    pass
+        if isinstance(detect_data, dict):
+            s = (detect_data.get("subject") or "physics").lower().strip()
+            t = (detect_data.get("type") or "numerical").lower().strip()
+            valid_subjects = {"physics", "chemistry", "math", "biology"}
+            valid_types = {"numerical", "derivation", "conceptual", "mcq", "theory"}
+            subject = s if s in valid_subjects else "physics"
+            qtype = t if t in valid_types else "numerical"
+    except Exception as exc:
+        logger.warning("Doubt detector failed (%s); defaulting to physics/numerical", exc)
+
+    # ── Step 2: Build subject-specific system prompt and solve ────────────────
+    # Dynamic prompt injects subject + type + subject rules so qwen/qwen3-32b
+    # gets precisely targeted instructions rather than a generic multi-subject prompt.
+    solver_system = _build_solver_system_prompt(subject, qtype)
+    user_prompt = (
+        f"Topic: {data.get('topicId', 'general')}\n\n"
+        f"Question:\n{combined_question}"
     )
 
-    # Plain text mode -- edvaqwen returns high-quality text but not reliable JSON
     try:
-        result = get_llm().complete(
-            system_prompt=template.system,
+        solve_result = get_llm().complete(
+            system_prompt=solver_system,
             user_prompt=user_prompt,
-            model=get_model_for_task("doubt_resolve"),
-            temperature=0.0,
-            max_tokens=1024,
+            model="llama-3.3-70b-versatile",
+            temperature=0.1,
+            max_tokens=3000,
             json_mode=False,
             institute_id=institute_id,
         )
     except RuntimeError as e:
         return JsonResponse({"error": str(e)}, status=502)
 
-    raw_text = result["content"]
-    if isinstance(raw_text, dict):
-        explanation_text = raw_text.get("explanation", str(raw_text))
+    raw_text = str(solve_result["content"]).strip()
+    raw_text = _strip_think_blocks(raw_text)
+
+    # Parse the structured JSON response from the model
+    brief_obj: dict = {}
+    detailed_obj: dict = {}
+    try:
+        m = _re.search(r'\{.*\}', raw_text, flags=_re.DOTALL)
+        if m:
+            parsed = json.loads(m.group())
+            brief_obj = parsed.get("brief", {}) or {}
+            detailed_obj = parsed.get("detailed", {}) or {}
+    except (json.JSONDecodeError, Exception):
+        pass
+
+    # Select answer + explanation based on requested mode
+    if mode == "brief":
+        answer = brief_obj.get("answer") or detailed_obj.get("final_answer") or ""
+        explanation = brief_obj.get("explanation") or raw_text
     else:
-        explanation_text = str(raw_text).strip()
-    explanation_text = _coerce_tutor_or_doubt_text(explanation_text)
+        answer = detailed_obj.get("final_answer") or brief_obj.get("answer") or ""
+        explanation = detailed_obj.get("solution") or raw_text
 
     return JsonResponse({
-        "explanation": explanation_text,
+        "subject": subject,
+        "type": qtype,
+        "model_used": "qwen/qwen3-32b",
+        "answer": answer,
+        "explanation": explanation,
+        "brief": brief_obj,
+        "detailed": detailed_obj,
         "conceptLinks": [],
         "related_topics": [],
-        "difficulty_level": "medium",
-        "follow_up_questions": [],
         "_meta": {
             "source": "llm",
-            "model": result["model"],
-            "latency_ms": round(result["latency_ms"]),
+            "model": solve_result["model"],
+            "latency_ms": round(solve_result["latency_ms"]),
             "institute": institute_id,
         },
     })
@@ -2768,4 +2931,52 @@ def generate_notes_from_youtube(request):
             "quality_flags": prep_meta.get("quality_flags", []),
             "repair_applied": prep_meta.get("repair_applied", False),
         },
+    })
+
+
+# ── AI Engine Health Check ────────────────────────────────────────────────────
+#
+# Returns status of all configured AI language model keys.
+# Uses in-memory state for instant response (no live API calls by default).
+# Pass ?refresh=true to re-probe all keys (~2-5s, one call per key).
+
+@api_view(["GET"])
+def ai_engine_health(request):
+    from ai_services.core.llm_client import (
+        GROQ_API_KEYS, _DISABLED_GROQ_KEYS, _KEY_STATE_LOCK, check_groq_keys,
+    )
+
+    refresh = request.query_params.get("refresh", "false").lower() == "true"
+
+    if refresh:
+        summary = check_groq_keys()
+    else:
+        with _KEY_STATE_LOCK:
+            dead_keys = set(_DISABLED_GROQ_KEYS)
+        total = len(GROQ_API_KEYS)
+        dead = len(dead_keys)
+        usable = total - dead
+        summary = {"total": total, "ok": usable, "rate_limited": 0, "dead": dead, "error": 0, "usable": usable}
+
+    with _KEY_STATE_LOCK:
+        dead_keys = set(_DISABLED_GROQ_KEYS)
+
+    keys_status = []
+    for i, key in enumerate(GROQ_API_KEYS):
+        hint = f"{key[:4]}…{key[-3:]}" if len(key) > 8 else "****"
+        status = "dead" if key in dead_keys else "ok"
+        keys_status.append({"index": i + 1, "hint": hint, "status": status})
+
+    if summary.get("usable", 0) == 0:
+        overall = "critical"
+    elif summary.get("dead", 0) > 0 or summary.get("error", 0) > 0:
+        overall = "degraded"
+    else:
+        overall = "operational"
+
+    return Response({
+        "overall": overall,
+        "summary": summary,
+        "keys": keys_status,
+        "cached": not refresh,
     })

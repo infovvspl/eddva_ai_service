@@ -63,6 +63,7 @@ _GROQ_ALLOWED_MODELS = {
     "llama-3.1-70b-versatile",
     "gemma2-9b-it",
     "quiz",
+    "qwen/qwen3-32b",
 }
 _GROQ_MODEL_ALIAS = {
     # llama-3.3-70b-versatile: best quiz quality on Groq free tier.
