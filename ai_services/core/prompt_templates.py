@@ -146,22 +146,23 @@ RESTRICTIONS:
 - No code blocks or JSON wrappers. Return raw Markdown only."""
 
 # AI #13 - In-Video Quiz Generator
-QUIZ_GENERATE_SYSTEM = """You are an expert educational quiz designer. Given a lecture transcript, generate multiple-choice questions (MCQs) that test whether students understood the content just taught.
+QUIZ_GENERATE_SYSTEM = """You are an expert educational quiz designer. You are given structured lecture notes (or a transcript) and must generate in-video MCQ checkpoint questions.
 
 CRITICAL RULES:
-1. Questions MUST be based ONLY on content explicitly stated in the transcript.
-2. Generate 3-6 questions â€" roughly 1 per major topic or section covered.
-3. triggerAtPercent: the approximate % through the video when the teacher finished that topic (0-95). Space them evenly â€" never cluster all questions at 90%+.
-4. Each distractor (wrong option) must be plausible but clearly wrong to an attentive student.
-5. The explanation must quote or paraphrase something the teacher actually said.
-6. segmentTitle: a short label for the topic section just finished (max 5 words).
+1. Questions MUST be based ONLY on concepts explicitly stated in the provided content. NEVER invent facts, formulas, or examples not present in the notes.
+2. Generate EXACTLY the number of questions requested -- no more, no fewer.
+3. Cover the ENTIRE provided content evenly -- do not cluster all questions around the same subtopic.
+4. triggerAtPercent: must be within the range given in the request. Space values evenly within that range.
+5. Each distractor (wrong option) must be plausible but clearly wrong to a student who studied the notes.
+6. The explanation must directly quote or paraphrase the exact line from the notes that justifies the answer.
+7. segmentTitle: 3-5 word label for the subtopic this question covers.
 
 Always respond in valid JSON:
 {
     "questions": [
         {
             "id": "q1",
-            "questionText": "<clear question testing a key concept just taught>",
+            "questionText": "<clear question testing a key concept from the notes>",
             "options": [
                 {"label": "A", "text": "<option text>"},
                 {"label": "B", "text": "<option text>"},
@@ -169,9 +170,9 @@ Always respond in valid JSON:
                 {"label": "D", "text": "<option text>"}
             ],
             "correctOption": "<A|B|C|D>",
-            "triggerAtPercent": <integer 5-95>,
+            "triggerAtPercent": <integer within the requested range>,
             "segmentTitle": "<short topic name>",
-            "explanation": "<why this answer is correct, referencing the lecture>"
+            "explanation": "<why correct, quoting the notes>"
         }
     ]
 }"""
@@ -454,11 +455,13 @@ TEMPLATES: Dict[str, PromptTemplate] = {
         system=QUIZ_GENERATE_SYSTEM,
         user_template=(
             "Lecture Title: {lecture_title}\n"
-            "Topic/Subject: {topic_id}\n\n"
-            "=== FULL LECTURE TRANSCRIPT ===\n"
-            "{transcript}\n"
-            "=== END OF TRANSCRIPT ===\n\n"
-            "Generate quiz checkpoints for this lecture. Space triggerAtPercent values evenly across the lecture."
+            "Topic/Subject: {topic_id}\n"
+            "Generate exactly {num_questions} question(s). triggerAtPercent must be between {start_pct} and {end_pct}.\n\n"
+            "=== LECTURE NOTES (Section {chunk_idx}/{total_chunks}) ===\n"
+            "{content}\n"
+            "=== END ===\n\n"
+            "Generate exactly {num_questions} quiz checkpoint question(s) STRICTLY based on the above notes only. "
+            "Do not reference any topic, fact, or formula not present in the notes above."
         ),
     ),
 

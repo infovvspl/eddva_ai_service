@@ -2091,53 +2091,149 @@ def _parse_quiz_json(raw: str) -> dict:
     return {"questions": []}
 
 
+def _chunk_notes(text: str, max_chars: int = 12000) -> list:
+    """Split Markdown notes into chunks at H2/H3 headers, each at most max_chars."""
+    import re as _re
+    if len(text) <= max_chars:
+        return [text]
+    # Split at ## / ### headers to keep semantic boundaries
+    parts = _re.split(r'\n(?=#{2,3}\s)', text)
+    parts = [p.strip() for p in parts if p.strip()]
+    chunks = []
+    current = ""
+    for part in parts:
+        if not current:
+            current = part
+        elif len(current) + len(part) + 2 <= max_chars:
+            current = current + "\n\n" + part
+        else:
+            chunks.append(current)
+            # If a single section is too large, split at paragraph boundaries
+            if len(part) > max_chars:
+                paras = part.split("\n\n")
+                buf = ""
+                for para in paras:
+                    if len(buf) + len(para) + 2 <= max_chars:
+                        buf = (buf + "\n\n" + para).strip() if buf else para
+                    else:
+                        if buf:
+                            chunks.append(buf)
+                        buf = para[:max_chars]
+                if buf:
+                    chunks.append(buf)
+                current = ""
+            else:
+                current = part
+    if current:
+        chunks.append(current)
+    return chunks or [text[:max_chars]]
+
+
 @api_view(["POST"])
 def generate_quiz_questions(request):
     data = request.data
-    transcript = data.get("transcript", "")
-    if not transcript:
-        return Response({"error": "Missing transcript"}, status=400)
-    if len(transcript.strip()) < 50:
-        return Response({"error": "Transcript too short to generate quiz questions"}, status=422)
 
-    # Groq TPM limits -- cap transcript at ~8 000 chars (~2 000 tokens) to stay within budget
-    MAX_TRANSCRIPT_CHARS = 8000
-    if len(transcript) > MAX_TRANSCRIPT_CHARS:
-        transcript = transcript[:MAX_TRANSCRIPT_CHARS]
-        logger.info("Quiz transcript truncated to %d chars", MAX_TRANSCRIPT_CHARS)
+    # Notes are the primary source; transcript is a fallback
+    notes = (data.get("notes") or "").strip()
+    transcript = (data.get("transcript") or "").strip()
+    source_text = notes or transcript
+    source_type = "notes" if notes else "transcript"
 
-    template = get_template("quiz_generate")
-    user_prompt = template.user_template.format(
-        lecture_title=data.get("lectureTitle", "Lecture"),
-        topic_id=data.get("topicId", ""),
-        transcript=transcript,
-    )
+    if not source_text:
+        return Response({"error": "Missing notes or transcript"}, status=400)
+    if len(source_text) < 50:
+        return Response({"error": "Content too short to generate quiz questions"}, status=422)
+
+    try:
+        num_questions = max(3, min(int(data.get("numQuestions", 5)), 20))
+    except (TypeError, ValueError):
+        num_questions = 5
 
     institute_id = getattr(request, "institute_id", "default")
-    try:
-        result = get_llm().complete(
-            system_prompt=template.system,
-            user_prompt=user_prompt,
-            model="quiz",
-            temperature=0.3,
-            max_tokens=1200,
-            json_mode=False,
-            institute_id=institute_id,
-        )
-    except RuntimeError as e:
-        logger.error("Quiz generation failed (institute=%s): %s", institute_id, e)
-        return Response({"error": str(e)}, status=502)
+    lecture_title = data.get("lectureTitle", "Lecture")
+    topic_id = data.get("topicId", "")
 
-    raw = result["content"] if isinstance(result["content"], str) else str(result["content"])
-    parsed = _parse_quiz_json(raw)
+    # Chunk the content so every part of the notes is covered (no truncation)
+    MAX_CHUNK_CHARS = 12000
+    chunks = _chunk_notes(source_text, MAX_CHUNK_CHARS)
+    n_chunks = len(chunks)
+
+    # Distribute questions across chunks proportionally
+    base_q = num_questions // n_chunks
+    remainder = num_questions % n_chunks
+    counts = [base_q + (1 if i < remainder else 0) for i in range(n_chunks)]
+
+    template = get_template("quiz_generate")
+    all_questions = []
+    last_meta = {}
+
+    for i, (chunk, q_count) in enumerate(zip(chunks, counts)):
+        if q_count == 0:
+            continue
+        # Map chunk position to video timestamp range
+        start_pct = max(5, int((i / n_chunks) * 90) + 5)
+        end_pct = min(95, int(((i + 1) / n_chunks) * 90) + 5)
+
+        user_prompt = template.user_template.format(
+            lecture_title=lecture_title,
+            topic_id=topic_id,
+            num_questions=q_count,
+            start_pct=start_pct,
+            end_pct=end_pct,
+            chunk_idx=i + 1,
+            total_chunks=n_chunks,
+            content=chunk,
+        )
+
+        try:
+            result = get_llm().complete(
+                system_prompt=template.system,
+                user_prompt=user_prompt,
+                model="quiz",
+                temperature=0.3,
+                max_tokens=max(800, q_count * 350),
+                json_mode=False,
+                institute_id=institute_id,
+            )
+        except RuntimeError as e:
+            logger.error("Quiz chunk %d/%d failed (institute=%s): %s", i + 1, n_chunks, institute_id, e)
+            continue
+
+        raw = result["content"] if isinstance(result["content"], str) else str(result["content"])
+        parsed = _parse_quiz_json(raw)
+        chunk_qs = parsed.get("questions", [])
+
+        # Clamp triggerAtPercent to the chunk's range
+        for q in chunk_qs:
+            pct = q.get("triggerAtPercent", start_pct)
+            try:
+                q["triggerAtPercent"] = max(start_pct, min(end_pct, int(pct)))
+            except (TypeError, ValueError):
+                q["triggerAtPercent"] = start_pct
+
+        all_questions.extend(chunk_qs)
+        last_meta = {"model": result["model"], "latency_ms": round(result["latency_ms"])}
+        logger.info(
+            "Quiz chunk %d/%d | source=%s | q_count=%d | got=%d",
+            i + 1, n_chunks, source_type, q_count, len(chunk_qs),
+        )
+
+    if not all_questions:
+        return Response({"error": "Quiz generation produced no questions. Try again."}, status=502)
+
+    # Renumber IDs sequentially
+    for idx, q in enumerate(all_questions):
+        q["id"] = f"q{idx + 1}"
 
     return Response({
-        **parsed,
+        "questions": all_questions,
         "_meta": {
-            "source": "llm",
-            "model": result["model"],
-            "latency_ms": round(result["latency_ms"]),
+            "source": source_type,
+            "chunks": n_chunks,
+            "requested": num_questions,
+            "generated": len(all_questions),
             "institute": institute_id,
+            **last_meta,
         },
     })
 
