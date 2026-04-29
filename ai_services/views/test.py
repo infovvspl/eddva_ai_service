@@ -189,6 +189,17 @@ def generate_practice_test(request):
     if not topic:
         return JsonResponse({"error": "Missing topic"}, status=400)
 
+    notes = data.get("notes")
+    notes_context = ""
+    if notes:
+        if isinstance(notes, list):
+            notes_context = "\n".join([f"- {n}" for n in notes if n])
+        elif isinstance(notes, str):
+            notes_context = notes.strip()
+        
+        if notes_context:
+            notes_context = f"\n\nADDITIONAL CONTEXT (from lecture notes):\n{notes_context}\n"
+
     try:
         num_questions = max(1, min(int(data.get("num_questions", 2)), 10))
     except (TypeError, ValueError):
@@ -432,6 +443,7 @@ STRICT RULES (VERY IMPORTANT):
         f"{type_instr}\n\n"
         f"{subject_rule}\n\n"
         f"{heuristic_block}\n"
+        f"{notes_context}\n"
         "Return the result as a JSON object with a 'questions' array. "
         "Each question object MUST have: 'question', 'answer', and 'explanation'. "
         "Include an 'options' field only for MCQs."
