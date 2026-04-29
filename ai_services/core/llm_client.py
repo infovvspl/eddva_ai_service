@@ -36,6 +36,7 @@ def _next_key_offset() -> int:
         return idx
 
 # -- Groq config (multi-key pool for rate-limit rotation) ----------------------
+GROQ_API_KEYS: list[str] = get_groq_api_keys()
 _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY", ""),
     os.getenv("GROQ_API_KEY_1", ""),
@@ -51,13 +52,6 @@ _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY_11", ""),
     os.getenv("GROQ_API_KEY_12", ""),
     os.getenv("GROQ_API_KEY_13", ""),
-    os.getenv("GROQ_API_KEY_14", ""),
-    os.getenv("GROQ_API_KEY_15", ""),
-    os.getenv("GROQ_API_KEY_16", ""),
-    os.getenv("GROQ_API_KEY_17", ""),
-    os.getenv("GROQ_API_KEY_18", ""),
-    os.getenv("GROQ_API_KEY_19", ""),
-    os.getenv("GROQ_API_KEY_20", ""),
 ]
 GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
@@ -68,16 +62,10 @@ _GROQ_ALLOWED_MODELS = {
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
     "llama-3.1-70b-versatile",
-    "gemma2-9b-it",
     "quiz",
-    "qwen/qwen3-32b",
-    "openai/gpt-oss-120b",
-    "qwen/qwen3-32b",
 }
 _GROQ_MODEL_ALIAS = {
-    # llama-3.3-70b-versatile: best quiz quality on Groq free tier.
-    # 3,500-char chunks ≈ 3,000 tokens total — fits within the 6,000 TPM limit.
-    "quiz": "llama-3.3-70b-versatile",
+    "quiz": "llama-3.1-8b-instant",
 }
 
 
@@ -406,151 +394,3 @@ class LLMClient:
             f"LLM call failed after 3 rounds across all {len(GROQ_API_KEYS)} keys "
             f"(check dead/exhausted keys in .env): {last_error}"
         )
-
-    # ── Internal: single-key call (no rotation) ───────────────────────────────
-
-    def _groq_call_single_key(self, *, api_key: str, kwargs: dict) -> dict:
-        """
-        Make exactly ONE Groq call using the given api_key.
-        Returns the same structure as complete().
-        Raises on any error so the caller can decide what to do.
-        """
-        from groq import Groq
-        client = Groq(api_key=api_key)
-        start = time.perf_counter()
-        resp = client.chat.completions.create(**kwargs)
-        latency_ms = (time.perf_counter() - start) * 1000
-
-        raw: str = resp.choices[0].message.content or ""
-        usage = {
-            "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
-            "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
-            "total_tokens": resp.usage.total_tokens if resp.usage else 0,
-        }
-        content = raw
-        if kwargs.get("response_format", {}).get("type") == "json_object":
-            try:
-                content = json.loads(_extract_json(raw))
-            except json.JSONDecodeError:
-                raise RuntimeError(f"JSON parse failure from key")
-
-        return {
-            "content": content,
-            "usage": usage,
-            "model": kwargs["model"],
-            "latency_ms": latency_ms,
-        }
-
-    # ── Parallel multi-chunk dispatch ─────────────────────────────────────────
-
-    def parallel_complete_many(
-        self,
-        *,
-        tasks: list[dict],
-        model: str,
-        temperature: float = 0.3,
-        json_mode: bool = False,
-        institute_id: Optional[str] = None,
-    ) -> list[Optional[dict]]:
-        """
-        Fire every task in parallel, each pinned to a DIFFERENT Groq API key.
-
-        tasks: list of dicts, each with:
-            - system_prompt: str
-            - user_prompt:   str
-            - max_tokens:    int  (optional, default 1024)
-
-        Returns a list of results in the same order as tasks.
-        Failed tasks return None (caller should handle gracefully).
-
-        With 13 keys and 8 chunks, all 8 LLM calls fire simultaneously —
-        each uses a fresh key's full TPM budget, so total time ≈ 1 call time.
-        """
-        import concurrent.futures
-
-        effective_model = _resolve_model(model)
-
-        def _active_keys() -> list[str]:
-            with _KEY_STATE_LOCK:
-                return [k for k in GROQ_API_KEYS if k and k not in _DISABLED_GROQ_KEYS]
-
-        active_keys = _active_keys()
-        if not active_keys:
-            raise RuntimeError("No active GROQ keys for parallel dispatch")
-
-        n_tasks = len(tasks)
-        results: list[Optional[dict]] = [None] * n_tasks
-
-        def _run_task(task_idx: int, task: dict, api_key: str) -> tuple[int, Optional[dict]]:
-            sys_prompt = _ANTI_HALLUCINATION_PREFIX + task["system_prompt"]
-            kwargs = dict(
-                model=effective_model,
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user",   "content": task["user_prompt"]},
-                ],
-                temperature=temperature,
-                max_tokens=task.get("max_tokens", 1024),
-            )
-            if json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-
-            # Try the assigned key first
-            try:
-                result = self._groq_call_single_key(api_key=api_key, kwargs=kwargs)
-                logger.info(
-                    "parallel chunk %d/%d | key=%d/%d model=%s latency=%.0fms",
-                    task_idx + 1, n_tasks,
-                    active_keys.index(api_key) + 1, len(active_keys),
-                    effective_model, result["latency_ms"],
-                )
-                return task_idx, result
-            except Exception as primary_err:
-                logger.warning(
-                    "parallel chunk %d/%d | assigned key failed (%s) — falling back to rotation",
-                    task_idx + 1, n_tasks, str(primary_err)[:120],
-                )
-
-            # Fall back: let standard complete() rotate across remaining keys
-            try:
-                result = self.complete(
-                    system_prompt=task["system_prompt"],
-                    user_prompt=task["user_prompt"],
-                    model=model,
-                    temperature=temperature,
-                    max_tokens=task.get("max_tokens", 1024),
-                    json_mode=json_mode,
-                    institute_id=institute_id,
-                )
-                return task_idx, result
-            except Exception as fallback_err:
-                logger.error(
-                    "parallel chunk %d/%d | fallback also failed: %s",
-                    task_idx + 1, n_tasks, str(fallback_err)[:200],
-                )
-                return task_idx, None
-
-        # Assign each task to a distinct key, cycling if tasks > keys
-        assigned_keys = [active_keys[i % len(active_keys)] for i in range(n_tasks)]
-
-        max_workers = min(n_tasks, len(active_keys))
-        logger.info(
-            "parallel_complete_many | %d chunks × %d keys | model=%s | workers=%d",
-            n_tasks, len(active_keys), effective_model, max_workers,
-        )
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [
-                pool.submit(_run_task, i, task, assigned_keys[i])
-                for i, task in enumerate(tasks)
-            ]
-            for future in concurrent.futures.as_completed(futures):
-                idx, result = future.result()
-                results[idx] = result
-
-        successes = sum(1 for r in results if r is not None)
-        logger.info(
-            "parallel_complete_many done | %d/%d chunks succeeded",
-            successes, n_tasks,
-        )
-        return results
