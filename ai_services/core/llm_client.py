@@ -51,6 +51,13 @@ _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY_11", ""),
     os.getenv("GROQ_API_KEY_12", ""),
     os.getenv("GROQ_API_KEY_13", ""),
+    os.getenv("GROQ_API_KEY_14", ""),
+    os.getenv("GROQ_API_KEY_15", ""),
+    os.getenv("GROQ_API_KEY_16", ""),
+    os.getenv("GROQ_API_KEY_17", ""),
+    os.getenv("GROQ_API_KEY_18", ""),
+    os.getenv("GROQ_API_KEY_19", ""),
+    os.getenv("GROQ_API_KEY_20", ""),
 ]
 GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
@@ -63,6 +70,8 @@ _GROQ_ALLOWED_MODELS = {
     "llama-3.1-70b-versatile",
     "gemma2-9b-it",
     "quiz",
+    "qwen/qwen3-32b",
+    "openai/gpt-oss-120b",
     "qwen/qwen3-32b",
 }
 _GROQ_MODEL_ALIAS = {

@@ -1366,6 +1366,173 @@ _DOUBT_DETECTOR_SYSTEM = (
     "type must be exactly one of: numerical, derivation, conceptual, mcq, theory"
 )
 
+# ── Keyword-based subject & type detection (runs before LLM, free + instant) ──
+
+PHYSICS_KEYWORDS = [
+    'block', 'mass', 'incline', 'friction', 'force', 'velocity',
+    'acceleration', 'momentum', 'torque', 'current', 'voltage',
+    'resistance', 'lens', 'mirror', 'charge', 'electric', 'magnetic',
+    'wave', 'frequency', 'pendulum', 'spring', 'collision', 'projectile',
+    'gravity', 'newton', 'joule', 'watt', 'ampere', 'capacitor', 'inductor',
+    'circuit', 'magnetic field', 'refraction', 'reflection', 'doppler',
+    'thermodynamics', 'entropy', 'carnot', 'pressure', 'temperature',
+    'radioactive', 'nuclear', 'photon', 'electron', 'proton', 'neutron',
+    'kinetic energy', 'potential energy', 'power', 'work done',
+]
+
+CHEMISTRY_KEYWORDS = [
+    'mole', 'molarity', 'molality', 'ka', 'kb', 'ksp', 'ph', 'reaction',
+    'compound', 'element', 'titration', 'equilibrium', 'bond', 'entropy',
+    'enthalpy', 'oxidation', 'reduction', 'acid', 'base', 'salt',
+    'organic', 'alkane', 'alkene', 'benzene', 'ester', 'aldehyde',
+    'molar mass', 'dissociation', 'buffer', 'normality', 'equivalent',
+    'hybridization', 'isomer', 'polymer', 'monomer', 'catalyst',
+    'activation energy', 'rate constant', 'order of reaction',
+    'electrode', 'electrolysis', 'galvanic', 'cell potential',
+    'freezing point', 'boiling point', 'osmotic pressure', 'vapour pressure',
+]
+
+MATH_KEYWORDS = [
+    'integrate', 'differentiate', 'derivative', 'matrix', 'determinant',
+    'probability', 'parabola', 'ellipse', 'hyperbola', 'complex number',
+    'binomial', 'permutation', 'combination', 'limit', 'series',
+    'sequence', 'polynomial', 'quadratic', 'trigonometric identity',
+    'inverse trigonometric', 'definite integral', 'indefinite integral',
+    'integral', 'differential equation', 'coordinate geometry', 'straight line',
+    'locus', 'conic section', 'arithmetic progression', 'geometric progression',
+    'value of x', 'roots of', 'zeroes of', 'solve the equation',
+]
+
+BIOLOGY_KEYWORDS = [
+    'cell', 'mitosis', 'meiosis', 'photosynthesis', 'dna', 'rna',
+    'enzyme', 'hormone', 'ecosystem', 'genetics', 'neuron', 'chromosome',
+    'protein', 'ribosome', 'chloroplast', 'mitochondria', 'evolution',
+    'respiration', 'digestion', 'excretion', 'reproduction', 'immunity',
+    'biodiversity', 'food chain', 'biomolecule', 'nitrogen cycle',
+    'krebs cycle', 'calvin cycle', 'glycolysis', 'atp', 'adp', 'nadh',
+    'allele', 'genotype', 'phenotype', 'dominant', 'recessive', 'mendel',
+]
+
+
+def _detect_subject_by_keyword(question: str):
+    """Returns (subject, score) where subject matches _SUBJECT_RULES keys, or (None, 0)."""
+    q = question.lower()
+    scores = {
+        'physics':   sum(1 for kw in PHYSICS_KEYWORDS   if kw in q),
+        'chemistry': sum(1 for kw in CHEMISTRY_KEYWORDS if kw in q),
+        'math':      sum(1 for kw in MATH_KEYWORDS      if kw in q),
+        'biology':   sum(1 for kw in BIOLOGY_KEYWORDS   if kw in q),
+    }
+    best = max(scores, key=scores.get)
+    return (best, scores[best]) if scores[best] > 0 else (None, 0)
+
+
+def _detect_type_by_keyword(question: str) -> str:
+    """Returns question type string. Defaults to 'numerical' for JEE/NEET."""
+    q = question.lower()
+    if any(w in q for w in ['derive', 'prove', 'show that', 'establish']):
+        return 'derivation'
+    if any(w in q for w in ['mechanism', 'iupac', 'name the compound', 'identify the compound']):
+        return 'organic'
+    if any(w in q for w in ['explain', 'why does', 'what is', 'define', 'describe', 'state']):
+        return 'conceptual'
+    if any(w in q for w in ['sketch', 'draw the graph', 'plot']):
+        return 'graph'
+    if any(w in q for w in ['label', 'draw and label', 'name the parts']):
+        return 'diagram'
+    if any(w in q for w in ['ncert', 'according to', 'as per']):
+        return 'ncert_fact'
+    return 'numerical'
+
+
+def _detect_subject_and_type_for_doubt(question: str, has_image: bool, institute_id: str):
+    """
+    Priority: keyword detection (instant) → LLM fallback (images / ambiguous text).
+    Returns (subject, qtype) where subject is one of: physics, chemistry, math, biology.
+    """
+    if question and question.strip():
+        subject, score = _detect_subject_by_keyword(question)
+        if subject:
+            return subject, _detect_type_by_keyword(question)
+
+    # Fallback: LLM classifier for image-only or zero-keyword questions
+    subject, qtype = "physics", "numerical"
+    try:
+        detect_result = get_llm().complete(
+            system_prompt=_DOUBT_DETECTOR_SYSTEM,
+            user_prompt=f"Classify this question:\n\n{question[:800]}",
+            model="llama-3.1-8b-instant",
+            temperature=0.0,
+            max_tokens=60,
+            json_mode=True,
+            institute_id=institute_id,
+        )
+        detect_data = detect_result.get("content", {})
+        if isinstance(detect_data, str):
+            import re as _re2
+            m = _re2.search(r'\{[^}]+\}', detect_data)
+            if m:
+                try:
+                    detect_data = json.loads(m.group())
+                except json.JSONDecodeError:
+                    pass
+        if isinstance(detect_data, dict):
+            s = (detect_data.get("subject") or "physics").lower().strip()
+            t = (detect_data.get("type") or "numerical").lower().strip()
+            valid_subjects = {"physics", "chemistry", "math", "biology"}
+            valid_types = {"numerical", "derivation", "conceptual", "mcq", "theory"}
+            subject = s if s in valid_subjects else "physics"
+            qtype = t if t in valid_types else "numerical"
+    except Exception as exc:
+        logger.warning("Doubt LLM detector failed (%s); defaulting to physics/numerical", exc)
+
+    return subject, qtype
+
+
+# ── Model routing ──────────────────────────────────────────────────────────────
+
+GROQ_MODELS = {
+    "reasoning": "openai/gpt-oss-120b",
+    "math":      "qwen/qwen3-32b",
+    "general":   "llama-3.3-70b-versatile",
+    "detector":  "llama-3.1-8b-instant",
+}
+
+
+def _select_doubt_model(subject: str, question_type: str) -> str:
+    if subject == "math":
+        return GROQ_MODELS["math"]
+    if question_type in ("numerical", "derivation", "graph", "organic"):
+        return GROQ_MODELS["reasoning"]
+    return GROQ_MODELS["general"]
+
+
+def _parse_reasoning_response(raw: str) -> dict:
+    """Strip DeepSeek/QwQ think blocks then parse JSON. Returns dict always."""
+    cleaned = _strip_think_blocks(raw).strip()
+
+    json_match = re.search(r'```json\s*(.*?)\s*```', cleaned, re.DOTALL)
+    if json_match:
+        cleaned = json_match.group(1)
+    else:
+        json_match2 = re.search(r'```\s*(.*?)\s*```', cleaned, re.DOTALL)
+        if json_match2:
+            cleaned = json_match2.group(1)
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {
+            "brief": {"answer": "See full solution"},
+            "detailed": {
+                "solution": cleaned,
+                "final_answer": "",
+                "verification": "",
+                "key_concept": "",
+            },
+        }
+
+
 # Per-subject rules injected into the solver system prompt at runtime.
 # Kept compact (<200 tokens each) so total request stays under 6 000 TPM.
 _SUBJECT_RULES: dict[str, str] = {
@@ -1557,63 +1724,55 @@ def resolve_doubt(request):
     else:
         combined_question = question_text
 
-    # ── Step 1: Classify subject and question type (llama-3.1-8b-instant, ~300 ms) ──
-    subject, qtype = "physics", "numerical"
-    try:
-        detect_result = get_llm().complete(
-            system_prompt=_DOUBT_DETECTOR_SYSTEM,
-            user_prompt=f"Classify this question:\n\n{combined_question[:800]}",
-            model="llama-3.1-8b-instant",
-            temperature=0.0,
-            max_tokens=60,
-            json_mode=True,
-            institute_id=institute_id,
-        )
-        detect_data = detect_result.get("content", {})
-        if isinstance(detect_data, str):
-            m = _re.search(r'\{[^}]+\}', detect_data)
-            if m:
-                try:
-                    detect_data = json.loads(m.group())
-                except json.JSONDecodeError:
-                    pass
-        if isinstance(detect_data, dict):
-            s = (detect_data.get("subject") or "physics").lower().strip()
-            t = (detect_data.get("type") or "numerical").lower().strip()
-            valid_subjects = {"physics", "chemistry", "math", "biology"}
-            valid_types = {"numerical", "derivation", "conceptual", "mcq", "theory"}
-            subject = s if s in valid_subjects else "physics"
-            qtype = t if t in valid_types else "numerical"
-    except Exception as exc:
-        logger.warning("Doubt detector failed (%s); defaulting to physics/numerical", exc)
+    # ── Step 1: Classify subject and question type ────────────────────────────
+    # Keyword detection runs first (free, instant). LLM runs only as fallback
+    # for image-only questions or when zero keywords matched.
+    subject, qtype = _detect_subject_and_type_for_doubt(
+        combined_question, has_image=bool(image_description), institute_id=institute_id,
+    )
 
-    # ── Step 2: Build subject-specific system prompt and solve ────────────────
+    # ── Step 2: Route to correct model, build prompt, solve ───────────────────
+    model = _select_doubt_model(subject, qtype)
+    print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model}")
+
     solver_system = _build_solver_system_prompt(subject, qtype)
-    # /no_think tells qwen/qwen3-32b to skip its internal <think> block and go
-    # straight to the answer. This is a model-level instruction (trained into Qwen3),
-    # not an API parameter — so Groq does not reject it.
     user_prompt = (
-        f"/no_think\n\n"
         f"Topic: {data.get('topicId', 'general')}\n\n"
         f"Question:\n{combined_question}"
     )
 
+    is_reasoning_model = model in {"openai/gpt-oss-120b", "qwen/qwen3-32b"}
+
     try:
-        solve_result = get_llm().complete(
-            system_prompt=solver_system,
-            user_prompt=user_prompt,
-            model="qwen/qwen3-32b",
-            temperature=0.1,
-            max_tokens=4096,
-            json_mode=True,
-            json_mode_suffix="",
-            institute_id=institute_id,
-        )
+        if is_reasoning_model:
+            # Reasoning models output <think> blocks — use text mode and parse manually.
+            solve_result = get_llm().complete(
+                system_prompt=solver_system,
+                user_prompt=user_prompt,
+                model=model,
+                temperature=0.1,
+                max_tokens=4096,
+                json_mode=False,
+                institute_id=institute_id,
+            )
+            raw_content = solve_result["content"]
+            parsed = _parse_reasoning_response(
+                raw_content if isinstance(raw_content, str) else str(raw_content)
+            )
+        else:
+            solve_result = get_llm().complete(
+                system_prompt=solver_system,
+                user_prompt=user_prompt,
+                model=model,
+                temperature=0.1,
+                max_tokens=4096,
+                json_mode=True,
+                json_mode_suffix="",
+                institute_id=institute_id,
+            )
+            parsed = solve_result["content"] if isinstance(solve_result["content"], dict) else {}
     except RuntimeError as e:
         return JsonResponse({"error": str(e)}, status=502)
-
-    # json_mode=True guarantees solve_result["content"] is already a parsed dict
-    parsed = solve_result["content"] if isinstance(solve_result["content"], dict) else {}
     brief_obj: dict = parsed.get("brief") or {}
     detailed_obj: dict = parsed.get("detailed") or {}
 
