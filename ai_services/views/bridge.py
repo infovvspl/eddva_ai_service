@@ -1273,7 +1273,14 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
     # 1.5s gap between chunks keeps each call well under 6,000 TPM.
     partial_notes: list[str] = []
     failed_chunks = 0
+    _t0_generate = _time.perf_counter()
+    _MAX_GEN_TIME = 600  # 10 minutes absolute max for the chunk phase
+    
     for i, chunk in enumerate(chunks):
+        if _time.perf_counter() - _t0_generate > _MAX_GEN_TIME:
+            logger.warning("Chunk generation timed out after %.1f seconds. Using %d/%d partial chunks.", _time.perf_counter() - _t0_generate, len(partial_notes), n)
+            break
+            
         try:
             notes = _generate_chunk_notes(
                 chunk, topic_id, language, institute_id, i + 1, n, max_tokens=section_tokens,
@@ -1523,7 +1530,7 @@ def _parse_reasoning_response(raw: str) -> dict:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         return {
-            "brief": {"answer": "See full solution"},
+            "brief": {"answer": cleaned[:400] + ("..." if len(cleaned) > 400 else "")},
             "detailed": {
                 "solution": cleaned,
                 "final_answer": "",
@@ -1605,17 +1612,35 @@ def _build_solver_system_prompt(subject: str, qtype: str) -> str:
         "4. NEVER try multiple formulas — identify the correct one first, apply it once\n\n"
         f"{rules}\n\n"
         "OUTPUT — respond with ONLY the following JSON object. No markdown, no preamble, no trailing text.\n\n"
-        '{\n'
-        '  "brief": {\n'
-        '    "answer": "NUMERICALS: numbered steps with explicit arithmetic + Final Answer with units. Example: Step 1: M = 12+35.5+2(1)+2(16) = 94.5 g/mol. Step 2: n = 9.45/94.5 = 0.1 mol. Final Answer: 0.372 K. THEORY: 1-3 direct sentences only, no sub-steps."\n'
-        '  },\n'
-        '  "detailed": {\n'
-        '    "solution": "Step N — [action]: [explicit calculation]. Reason: [one phrase why]. Each arithmetic on its own line. End with Final Answer.",\n'
-        '    "final_answer": "value with units",\n'
-        '    "verification": "substitute answer back into original equation and confirm LHS = RHS",\n'
-        '    "key_concept": "one-line formula or principle to remember"\n'
-        '  }\n'
-        '}'
+        + (
+            # Numerical / Derivation schema
+            '{\n'
+            '  "brief": {\n'
+            '    "answer": "Concise numbered step-by-step solution. Format exactly like: Step 1: [state formula or given values with units]. Step 2: [substitution with explicit numbers]. Step 3: [arithmetic result with units]. Final Answer: [value with units]. No lengthy prose - only numbered steps and the final answer.",\n'
+            '    "question_nature": "numerical"\n'
+            '  },\n'
+            '  "detailed": {\n'
+            '    "solution": "Complete step-by-step solution. For EACH step write Step N - [Action]: [formula and substitution with numbers+units]. Reason: [one phrase explaining why]. Show every arithmetic on its own line. End with Final Answer: [value with units].",\n'
+            '    "final_answer": "Exact numerical value with correct SI units. Example: 0.372 K or 2.5 m/s^2",\n'
+            '    "verification": "Substitute the final answer back into the original equation and confirm LHS = RHS with explicit numbers.",\n'
+            '    "key_concept": "One-line formula or principle students must remember for this type of question"\n'
+            '  }\n'
+            '}'
+            if is_numerical else
+            # Theory / Conceptual / Biology schema
+            '{\n'
+            '  "brief": {\n'
+            '    "answer": "Direct short answer in 1-2 sentences only. State the key fact or definition immediately without bullet lists or sub-headings. Give the core answer a student needs for quick revision.",\n'
+            '    "question_nature": "theory"\n'
+            '  },\n'
+            '  "detailed": {\n'
+            '    "solution": "Comprehensive explanation in 4 parts - (1) Definition/Statement: Define the concept precisely. (2) Mechanism/Reasoning: Explain step by step how or why it works in numbered points. (3) Example/Analogy: Give a concrete example or real-world analogy. (4) Exam Connection: How this concept appears in JEE/NEET questions. Separate each part with its heading.",\n'
+            '    "final_answer": "One concise sentence that directly answers the question",\n'
+            '    "verification": "List 1-2 common misconceptions about this topic and how to avoid them in the exam",\n'
+            '    "key_concept": "The single most important fact, definition, or formula to remember"\n'
+            '  }\n'
+            '}'
+        )
     )
 
 
@@ -1707,12 +1732,33 @@ def resolve_doubt(request):
     # Image support: base64 data URL (from NestJS) or raw HTTPS URL
     image_description = ""
     image_source = (data.get("questionImageBase64") or data.get("questionImageUrl") or "").strip()
-    if image_source:
-        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT)
-        if not image_description:
-            logger.warning("Vision API returned empty for doubt image")
+    has_image = bool(image_source)
 
-    if not question_text and not image_description:
+    if image_source:
+        logger.info("[DOUBT] Image detected, attempting Groq vision... url_len=%d", len(image_source))
+        # Primary: Groq Llama 4 Scout vision
+        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT)
+        if image_description:
+            logger.info("[DOUBT] Groq vision succeeded: %d chars", len(image_description))
+        else:
+            logger.warning("[DOUBT] Groq vision returned empty. Trying EasyOCR fallback...")
+            # Fallback: EasyOCR (local, no network dependency)
+            try:
+                image_description = _extract_text_from_image_url(image_source)
+                if image_description:
+                    logger.info("[DOUBT] EasyOCR extracted: %d chars", len(image_description))
+                else:
+                    logger.warning("[DOUBT] EasyOCR also returned empty.")
+            except Exception as ocr_err:
+                logger.warning("[DOUBT] EasyOCR fallback crashed: %s", ocr_err)
+
+        # Last resort: if all extraction failed, use a placeholder so the LLM
+        # still attempts to answer based on any question_text provided alongside the image.
+        if not image_description:
+            image_description = "[Student uploaded an image of their question. The image content could not be automatically extracted. Please answer based on any text description provided, or ask the student to type their question.]"
+            logger.warning("[DOUBT] All image extraction failed — using placeholder text.")
+
+    if not question_text and not has_image:
         return Response({"error": "Missing questionText or readable image"}, status=400)
 
     institute_id = getattr(request, "institute_id", "default")
@@ -1720,7 +1766,7 @@ def resolve_doubt(request):
     if image_description and question_text:
         combined_question = f"{question_text}\n\n[Image content]\n{image_description}"
     elif image_description:
-        combined_question = f"[Student uploaded an image]\n{image_description}"
+        combined_question = f"[Student uploaded an image of their question]\n{image_description}"
     else:
         combined_question = question_text
 
@@ -1840,7 +1886,8 @@ _groq_vision_clients: dict = {}
 
 
 def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
-    """Groq Llama 4 Scout vision — shared for doubt and grading. Returns '' on failure (caller may OCR-fallback)."""
+    """Groq vision — tries Llama 4 Scout first, then Llama 3.2 Vision as fallback.
+    Returns '' on complete failure (caller adds EasyOCR or placeholder fallback)."""
     try:
         from groq import Groq
     except ImportError:
@@ -1855,34 +1902,56 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
         logger.warning("No GROQ API keys in rotation; vision OCR skipped")
         return ""
 
+    # Vision models to try in order
+    vision_models = [
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "llama-3.2-11b-vision-preview",
+        "llama-3.2-90b-vision-preview",
+    ]
+
     for api_key in keys:
-        try:
-            if api_key not in _groq_vision_clients:
-                _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=45.0)
-            client = _groq_vision_clients[api_key]
-            response = client.chat.completions.create(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": image_url},
-                            },
-                        ],
-                    }
-                ],
-                max_tokens=1024,
-                temperature=0.0,
-            )
-            out = (response.choices[0].message.content or "").strip()
-            if out:
-                return out
-        except Exception as exc:
-            logger.warning("Vision (Groq) failed for image OCR: %s", exc)
-            continue
+        for model_name in vision_models:
+            try:
+                if api_key not in _groq_vision_clients:
+                    _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=45.0)
+                client = _groq_vision_clients[api_key]
+                logger.info("[VISION] Trying model=%s url_prefix=%s", model_name, image_url[:60])
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": user_prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": image_url},
+                                },
+                            ],
+                        }
+                    ],
+                    max_tokens=1024,
+                    temperature=0.0,
+                )
+                out = (response.choices[0].message.content or "").strip()
+                if out:
+                    logger.info("[VISION] Model=%s succeeded: %d chars", model_name, len(out))
+                    return out
+                else:
+                    logger.warning("[VISION] Model=%s returned empty content", model_name)
+            except Exception as exc:
+                exc_str = str(exc)
+                # If it's a model-not-found / unsupported error, try next model immediately
+                if any(kw in exc_str.lower() for kw in ["not found", "not supported", "invalid model", "does not exist", "404"]):
+                    logger.warning("[VISION] Model=%s not available: %s — trying next model", model_name, exc_str[:120])
+                    break  # break inner loop (models), move to next key
+                # Rate limit — try next key
+                elif "rate" in exc_str.lower() or "429" in exc_str:
+                    logger.warning("[VISION] Model=%s rate-limited, rotating key", model_name)
+                    break
+                else:
+                    logger.warning("[VISION] Model=%s failed: %s", model_name, exc_str[:200])
+                    continue  # try next model with same key
 
     return ""
 
@@ -2474,9 +2543,12 @@ def generate_quiz_questions(request):
     except (TypeError, ValueError):
         num_questions = 5
 
+    logger.info("generate_quiz_questions: input numQuestions=%r -> parsed as %d", data.get("numQuestions"), num_questions)
+
     institute_id = getattr(request, "institute_id", "default")
     lecture_title = data.get("lectureTitle", "Lecture")
     topic_id = data.get("topicId", "")
+    course_level = data.get("courseLevel", "General")
 
     # If falling back to raw transcript, cap it — transcripts are very long and
     # tokenize at ~2 chars/token for Hindi/math, which overflows the 6K TPM limit.
@@ -2519,6 +2591,7 @@ def generate_quiz_questions(request):
             chunk_idx=i + 1,
             total_chunks=n_chunks,
             content=chunk,
+            course_level=course_level,
         )
         tasks.append({
             "system_prompt": template.system,
@@ -2545,6 +2618,8 @@ def generate_quiz_questions(request):
         raw = result["content"] if isinstance(result["content"], str) else str(result["content"])
         parsed = _parse_quiz_json(raw)
         chunk_qs = parsed.get("questions", [])
+
+        logger.info("generate_quiz_questions: chunk %d/%d requested %d questions, received %d questions", chunk_idx, n_chunks, q_count, len(chunk_qs))
 
         # Clamp triggerAtPercent to the chunk's range
         for q in chunk_qs:
@@ -2661,48 +2736,44 @@ _CONTENT_TYPE_PROMPTS = {
     "study_guide":         "Generate a crisp, exam-ready summary of this topic in Markdown. Use bullet points and short paragraphs. Cover every exam-important concept.",
     "key_concepts":        "Generate a structured list of ALL key formulas and must-know concepts for this topic in Markdown. For each: name, definition, units (if applicable), one-line use-case.",
     "practice_questions":  (
-        "Generate a Daily Practice Problem (DPP) set for this topic in Markdown. "
+        "Generate a {exam_target} practice problem set for this topic in Markdown. "
         "Include exactly 10 questions with a mix of difficulty (3 easy, 5 medium, 2 hard). "
+        "Strictly follow the {exam_target} question style as specified in the exam constraint above. "
         "For each question:\n"
-        "- Number it (Q1, Q2 â€¦)\n"
-        "- Write the question clearly (MCQ with 4 options labelled A-D, or numerical/short-answer)\n"
-        "- After all questions, add a ## Answers section with: answer letter/value and a 2-3 line explanation for each.\n"
+        "- Number it (Q1, Q2 ...)\n"
+        "- Write the question clearly (use the question styles specified in the exam constraint)\n"
+        "- After all questions, add a ## Answers section with answer + 2-3 line explanation.\n"
         "Ensure questions test understanding, not just recall."
     ),
-    # â"€â"€ DPP â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     "dpp": (
-        "Generate a high-quality Daily Practice Problem (DPP) sheet for this topic in Markdown, "
-        "exactly as a top coaching institute would give students.\n\n"
+        "Generate a high-quality Daily Practice Problem (DPP) sheet for {exam_target} in Markdown, "
+        "exactly as a top {exam_target} coaching institute would give students.\n\n"
         "Format:\n"
-        "# DPP -- {topic_name}\n"
+        "# {exam_target} DPP -- {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name} | **Date:** ______\n\n"
         "## Section A -- Multiple Choice (1 mark each)\n"
-        "Generate 8 MCQ questions, each with 4 options (A-D). Mix easy and medium difficulty.\n\n"
-        "## Section B -- Assertion-Reason (1 mark each)\n"
-        "Generate 3 assertion-reason type questions.\n\n"
-        "## Section C -- Numericals / Short Answer (3 marks each)\n"
-        "Generate 4 numerical or short-answer problems.\n\n"
+        "Generate 8 MCQ questions in {exam_target} style, each with 4 options (A-D). "
+        "Mix easy and medium difficulty. Follow the question styles specified in the exam constraint.\n\n"
+        "## Section B -- Numericals / Short Answer (3 marks each)\n"
+        "Generate 4 numerical or short-answer problems appropriate for {exam_target}.\n\n"
         "## Answer Key\n"
         "List all correct answers and brief hints/solutions.\n\n"
-        "Questions must be syllabus-aligned, conceptually varied, and gradually increasing in difficulty."
+        "Questions must be syllabus-aligned, conceptually varied, and gradually increasing in difficulty. "
+        "Do NOT mix in question styles from other exams."
     ),
-    # â"€â"€ PYQ â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     "pyq": (
-        "Generate a Previous Year Question (PYQ) style practice set for this topic in Markdown. "
-        "Simulate the style of JEE Main / NEET questions from 2018-2024.\n\n"
+        "Generate a Previous Year Question (PYQ) style practice set for {exam_target} on this topic in Markdown. "
+        "Simulate authentic {exam_target} exam questions from 2018-2024.\n\n"
         "Format:\n"
-        "# PYQ Practice Set -- {topic_name}\n"
+        "# {exam_target} PYQ Practice Set -- {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
-        "## JEE Main Style Questions\n"
-        "Generate 6 questions in JEE Main MCQ style (single correct, 4 options A-D). "
-        "Note the exam year pattern each question is modelled on (e.g. 'Pattern: JEE Main 2022 Jan').\n\n"
-        "## NEET Style Questions\n"
-        "Generate 5 questions in NEET MCQ style (single correct, 4 options).\n\n"
-        "## Integer Type (JEE Advanced Style)\n"
-        "Generate 3 integer-type questions where the answer is a non-negative integer.\n\n"
+        "## {exam_target} Style Questions\n"
+        "Generate 10 questions strictly in {exam_target} question format (as specified in the exam constraint above). "
+        "For each question, note the year/session pattern it models (e.g. 'Pattern: {exam_target} 2022').\n\n"
         "## Detailed Solutions\n"
         "Provide full step-by-step solutions for every question.\n\n"
-        "Questions must be authentic in difficulty and style. Avoid trivial or textbook-definition questions."
+        "Questions must be authentic in difficulty and style. "
+        "Do NOT include questions from other exams."
     ),
 }
 
@@ -2711,6 +2782,71 @@ _DIFFICULTY_DESC = {
     "intermediate": "standard curriculum depth, JEE/NEET Mains level",
     "advanced":     "advanced level, JEE Advanced / NEET PG competitive exam depth",
 }
+
+# Hard exam-specific constraints injected as the FIRST block in the system prompt.
+# These prevent the model from mixing question styles across exam targets.
+_EXAM_TARGET_RULES: dict[str, str] = {
+    "jee": (
+        "TARGET EXAM: JEE (Joint Entrance Examination)\n"
+        "STRICT CONSTRAINTS — NEVER VIOLATE:\n"
+        "- Allowed question styles: Single-correct MCQ, Multi-correct MCQ, Integer-type numericals, Match-the-column\n"
+        "- Subjects in scope: Physics, Chemistry, Mathematics ONLY\n"
+        "- ZERO biology content. ZERO NEET-style assertion-reason questions.\n"
+        "- Difficulty: JEE Main = moderate multi-step, JEE Advanced = deep conceptual + multi-step\n"
+        "- Numericals must require formula application and explicit multi-step calculation\n"
+        "- Wrong-answer traps must be physics/chemistry/math conceptual errors, not biology facts"
+    ),
+    "neet": (
+        "TARGET EXAM: NEET (National Eligibility cum Entrance Test)\n"
+        "STRICT CONSTRAINTS — NEVER VIOLATE:\n"
+        "- Allowed question styles: Single-correct MCQ, Assertion-Reason, Statement-based (True/False combos)\n"
+        "- Subjects in scope: Physics, Chemistry, Botany, Zoology\n"
+        "- ZERO integer-type numericals. ZERO multi-correct MCQs. ZERO JEE-style matrix match.\n"
+        "- Every question must be directly derivable from NCERT Class 11-12 textbooks\n"
+        "- Biology questions must use correct scientific/taxonomic names (italicised)\n"
+        "- Physics/Chemistry: NEET pattern — conceptual recall over heavy derivation"
+    ),
+    "class_12": (
+        "TARGET: Class 12 Board Exam (CBSE)\n"
+        "STRICT CONSTRAINTS — NEVER VIOLATE:\n"
+        "- Question styles: 1-mark MCQ/assertion, 2-mark short answer, 3-mark derivation, 5-mark long answer, case-study\n"
+        "- Strictly NCERT Class 12 syllabus — every definition and example from NCERT\n"
+        "- DO NOT generate JEE advanced multi-step or NEET trap questions\n"
+        "- Difficulty: Board exam moderate level — test conceptual understanding, not tricks"
+    ),
+    "class_11": (
+        "TARGET: Class 11 Board Exam (CBSE)\n"
+        "STRICT CONSTRAINTS — NEVER VIOLATE:\n"
+        "- Same board pattern as Class 12 but strictly Class 11 syllabus only\n"
+        "- NCERT Class 11 aligned — definitions, basic numericals, conceptual recall\n"
+        "- Do not use Class 12 topics. Do not use competitive exam pattern."
+    ),
+    "class_10": (
+        "TARGET: Class 10 Board Exam (CBSE)\n"
+        "STRICT CONSTRAINTS — NEVER VIOLATE:\n"
+        "- Question styles: MCQ, 2-mark, 3-mark, 5-mark\n"
+        "- CBSE Class 10 NCERT aligned — simple foundational concepts\n"
+        "- Simple language. No advanced derivations. No competitive exam traps."
+    ),
+}
+
+
+def _resolve_exam_rule(exam_target: str) -> str:
+    """Normalise raw examTarget string and return the matching rule block."""
+    t = (exam_target or "").lower().strip()
+    if not t:
+        return ""
+    if "jee" in t:
+        return _EXAM_TARGET_RULES["jee"]
+    if "neet" in t:
+        return _EXAM_TARGET_RULES["neet"]
+    if "12" in t:
+        return _EXAM_TARGET_RULES["class_12"]
+    if "11" in t:
+        return _EXAM_TARGET_RULES["class_11"]
+    if "10" in t:
+        return _EXAM_TARGET_RULES["class_10"]
+    return ""
 
 _LENGTH_WORDS = {
     "brief":    "~300 words",
@@ -2728,7 +2864,23 @@ def generate_topic_content(request):
     content_type  = data.get("contentType", "lesson")
     difficulty    = data.get("difficulty", "intermediate")
     length        = data.get("length", "standard")
+    exam_target   = (data.get("examTarget") or data.get("exam_target") or "").strip()
+    course_name   = (data.get("courseName") or data.get("course_name") or "").strip()
     extra_context = data.get("extraContext", "").strip()
+
+    # If exam_target not supplied, try to infer from course name
+    if not exam_target and course_name:
+        cn = course_name.lower()
+        if "neet" in cn:
+            exam_target = "NEET"
+        elif "jee" in cn:
+            exam_target = "JEE"
+        elif "class 12" in cn or "12th" in cn:
+            exam_target = "Class 12"
+        elif "class 11" in cn or "11th" in cn:
+            exam_target = "Class 11"
+        elif "class 10" in cn or "10th" in cn:
+            exam_target = "Class 10"
 
     if not topic_name:
         return Response({"error": "Missing topicName"}, status=400)
@@ -2737,22 +2889,45 @@ def generate_topic_content(request):
         content_type,
         _CONTENT_TYPE_PROMPTS["lesson"],
     ).replace("{topic_name}", topic_name).replace("{subject_name}", subject_name).replace("{chapter_name}", chapter_name)
+
+    # Patch exam-specific placeholders in DPP / PYQ templates
+    # Default to JEE (not "JEE/NEET") when exam target is truly unknown
+    exam_upper = exam_target.upper() if exam_target else "JEE"
+    type_instruction = type_instruction.replace("{exam_target}", exam_upper)
     diff_desc  = _DIFFICULTY_DESC.get(difficulty, _DIFFICULTY_DESC["intermediate"])
     word_limit = _LENGTH_WORDS.get(length, _LENGTH_WORDS["standard"])
 
+    # Build exam-specific constraint block — injected first in system prompt
+    exam_rule = _resolve_exam_rule(exam_target)
+
     system_prompt = (
-        "You are an expert educational content creator specialising in Indian competitive exam preparation "
-        "(JEE, NEET, CBSE, ICSE). You write accurate, engaging, curriculum-aligned educational content in Markdown."
+        (
+            f"EXAM CONSTRAINT — READ AND FOLLOW STRICTLY:\n{exam_rule}\n\n"
+            if exam_rule else ""
+        )
+        + "You are an expert educational content creator for Indian exams. "
+        "Write accurate, engaging, curriculum-aligned educational content in Markdown. "
+        + (
+            "Strictly follow the exam constraint above. Never mix question styles or content patterns from other exams. "
+            if exam_rule else ""
+        )
     )
 
-    user_prompt = (
-        f"Subject: {subject_name}\n"
-        f"Chapter: {chapter_name}\n"
-        f"Topic: {topic_name}\n"
-        f"Content type: {content_type}\n"
-        f"Difficulty: {diff_desc}\n"
-        f"Target length: {word_limit}\n"
-    )
+    # Build user prompt with course + exam prominently at the top
+    user_prompt_parts = []
+    if course_name:
+        user_prompt_parts.append(f"Course: {course_name}")
+    if exam_target:
+        user_prompt_parts.append(f"Exam Target: {exam_target.upper()}")
+    user_prompt_parts += [
+        f"Subject: {subject_name}",
+        f"Chapter: {chapter_name}",
+        f"Topic: {topic_name}",
+        f"Content type: {content_type}",
+        f"Difficulty: {diff_desc}",
+        f"Target length: {word_limit}",
+    ]
+    user_prompt = "\n".join(user_prompt_parts) + "\n"
     if extra_context:
         user_prompt += f"Additional instructions: {extra_context}\n"
     user_prompt += (
@@ -2761,12 +2936,16 @@ def generate_topic_content(request):
     )
 
     institute_id = getattr(request, "institute_id", "default")
+    logger.info(
+        "generate_topic_content | course=%s | exam=%s | subject=%s | topic=%s | type=%s",
+        course_name or "—", exam_target or "—", subject_name or "—", topic_name[:40], content_type,
+    )
     try:
         llm_result = get_llm().complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model="llama-3.1-8b-instant",
-            temperature=0.5,
+            model="llama-3.3-70b-versatile",
+            temperature=0.7,
             max_tokens=4096,
             json_mode=False,
             institute_id=institute_id,

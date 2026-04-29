@@ -882,12 +882,16 @@ TEMPLATES: Dict[str, PromptTemplate] = {
         user_template=(
             "Lecture Title: {lecture_title}\n"
             "Topic/Subject: {topic_id}\n"
-            "Generate exactly {num_questions} question(s). triggerAtPercent must be between {start_pct} and {end_pct}.\n\n"
+            "Target Exam/Course Level: {course_level}\n"
+            "Generate EXACTLY {num_questions} question(s). You MUST return exactly {num_questions} questions in the JSON array.\n"
+            "triggerAtPercent must be between {start_pct} and {end_pct}.\n\n"
             "=== LECTURE NOTES (Section {chunk_idx}/{total_chunks}) ===\n"
             "{content}\n"
             "=== END ===\n\n"
-            "Generate exactly {num_questions} quiz checkpoint question(s) STRICTLY based on the above notes only. "
-            "Do not reference any topic, fact, or formula not present in the notes above."
+            "Generate EXACTLY {num_questions} quiz checkpoint question(s) STRICTLY based on the above notes only.\n"
+            "CRITICAL: The questions MUST strictly align with the difficulty, scope, and pattern of {course_level}. "
+            "Do not generate simplistic questions for advanced competitive exams (like JEE/NEET) and do not generate out-of-syllabus questions for school-level courses.\n"
+            "Do not reference any topic, fact, or formula not present in the notes above. You MUST output exactly {num_questions} objects in the array."
         ),
     ),
 

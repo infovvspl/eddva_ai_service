@@ -44,7 +44,7 @@ CACHE_TTL = {
 
     # ── Long cache — deterministic, stable content (bridge endpoints) ─────────
     "quiz_generate":     86400,  # 24h — same transcript always produces same questions
-    "content_generate":  86400,  # 24h — same topic+difficulty always produces same content
+    "content_generate":  0,      # never cache — teachers expect fresh content on every generate
 
     # ── Medium cache ──────────────────────────────────────────────────────────
     "test_generate":     21600,  # 6h  — topic MCQs are stable within a day
