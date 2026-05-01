@@ -1992,19 +1992,19 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             "1. NO PREAMBLE: Respond ONLY with JSON.\n"
             "2. PERFORM ACTUAL MATH: Step 1, Step 2... format.\n"
             "3. PRECISION: Carry 4 decimal places.\n"
-            "4. MATH FORMATTING: MANDATORY: Wrap EVERY symbol, number, variable, or equation in '$'. NO PLAIN TEXT MATH.\n"
+            "4. MATH FORMATTING: Wrap ONLY mathematical variables, numbers, and equations in '$' (e.g., $x = 2$, $H_2O$). Do NOT wrap plain English sentences or step headers in '$'.\n"
             "5. FINAL ANSWER: End with 'Final Answer: [summary]'.\n\n"
             "OUTPUT SCHEMA:\n"
             '{\n'
             '  "brief": {\n'
-            '    "answer": "Perform ACTUAL MATH (Max 5 steps). Format: Step 1: [Result]. Step 2: [Result]... Final Answer: [Summary].",\n'
+            '    "answer": "Step 1: [Plain Text Explanation].\\n$Math Equation$\\nFinal Answer: [Summary].",\n'
             '    "question_nature": "numerical"\n'
             '  },\n'
             '  "detailed": {\n'
-            '    "solution": "Full derivation. Step 1 to N. MUST SHOW EVERY NUMBER CALCULATION.",\n'
+            '    "solution": "Step 1: [Plain Text Header]\\n$Detailed Equation$\\nStep 2: ...",\n'
             '    "final_answer": "Final result with units.",\n'
-            '    "verification": "Cross-check the logic.",\n'
-            '    "key_concept": "The primary principle."\n'
+            '    "verification": "Cross-check logic.",\n'
+            '    "key_concept": "Primary principle."\n'
             '  }\n'
             '}'
         )
