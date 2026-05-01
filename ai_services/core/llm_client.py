@@ -52,6 +52,13 @@ _GROQ_KEYS_RAW = [
     os.getenv("GROQ_API_KEY_11", ""),
     os.getenv("GROQ_API_KEY_12", ""),
     os.getenv("GROQ_API_KEY_13", ""),
+    os.getenv("GROQ_API_KEY_14", ""),
+    os.getenv("GROQ_API_KEY_15", ""),
+    os.getenv("GROQ_API_KEY_16", ""),
+    os.getenv("GROQ_API_KEY_17", ""),
+    os.getenv("GROQ_API_KEY_18", ""),
+    os.getenv("GROQ_API_KEY_19", ""),
+    os.getenv("GROQ_API_KEY_20", ""),
 ]
 GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
@@ -62,10 +69,19 @@ _GROQ_ALLOWED_MODELS = {
     "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
     "llama-3.1-70b-versatile",
+    "gemma2-9b-it",
+    "llama-3.2-11b-vision-preview",
+    "llama-3.2-90b-vision-preview",
     "quiz",
+    "qwen/qwen3-32b",
+    "openai/gpt-oss-120b",
 }
 _GROQ_MODEL_ALIAS = {
-    "quiz": "llama-3.1-8b-instant",
+    "quiz": "llama-3.3-70b-versatile",
+    "qwen/qwen3-32b": "qwen/qwen3-32b",
+    "openai/gpt-oss-120b": "openai/gpt-oss-120b",
+    "math": "qwen/qwen3-32b",
+    "reasoning": "openai/gpt-oss-120b",
 }
 
 
@@ -394,3 +410,39 @@ class LLMClient:
             f"LLM call failed after 3 rounds across all {len(GROQ_API_KEYS)} keys "
             f"(check dead/exhausted keys in .env): {last_error}"
         )
+
+    def parallel_complete_many(
+        self,
+        tasks: list[dict],
+        model: str = None,
+        temperature: float = 0.3,
+        json_mode: bool = False,
+        institute_id: str = "default",
+    ) -> list[dict]:
+        """
+        Execute multiple LLM completion tasks in parallel.
+        Each task is a dict: {"system_prompt": str, "user_prompt": str, "max_tokens": int}
+        Uses different keys for each task to maximize parallel TPM capacity.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        n_tasks = len(tasks)
+        if n_tasks == 0:
+            return []
+
+        def _worker(task_idx):
+            task = tasks[task_idx]
+            return self.complete(
+                system_prompt=task["system_prompt"],
+                user_prompt=task["user_prompt"],
+                model=model,
+                temperature=temperature,
+                max_tokens=task.get("max_tokens", 4096),
+                json_mode=json_mode,
+                institute_id=institute_id,
+            )
+
+        with ThreadPoolExecutor(max_workers=n_tasks) as executor:
+            results = list(executor.map(_worker, range(n_tasks)))
+
+        return results
