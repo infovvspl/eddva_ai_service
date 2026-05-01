@@ -14,6 +14,12 @@ xgboost
 scikit-learn
 torch
 networkx
+sympy
+scipy
+matplotlib
+rdkit
+pint
+pubchempy
 
 transformers==4.41.2
 tokenizers==0.19.1

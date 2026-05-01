@@ -9,6 +9,10 @@ from ai_services.core.groq_keys import get_rotated_groq_keys
 from PIL import Image
 import easyocr
 import numpy as np
+from app.scientific_solver import scientific_solver
+import logging
+
+logger = logging.getLogger("ai_services.doubt_resolve")
 
 router = APIRouter(prefix="/doubt", tags=["Doubt Resolution"], redirect_slashes=False)
 
@@ -29,7 +33,9 @@ class ResolveDoubtRequest(BaseModel):
 
 
 class ResolveDoubtResponse(BaseModel):
-    explanation: str
+    explanation: Optional[str] = None
+    brief: Optional[Dict[str, Any]] = None
+    detailed: Optional[Dict[str, Any]] = None
     conceptLinks: list[str] = []
 
 class OcrImageRequest(BaseModel):
@@ -40,7 +46,50 @@ class OcrImageResponse(BaseModel):
     text: str
 
 
-def _build_prompt(req: ResolveDoubtRequest) -> str:
+def _build_theory_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
+    topic_hint = f" The topic is: {req.topicId}." if req.topicId else ""
+    question_text = (req.questionText or "").strip()
+    
+    system = (
+        "SYSTEM ROLE: You are an expert CBSE/NEET answer generator v3 specialized in THEORY questions.\n"
+        "TASK: Generate exam-ready answers strictly following CBSE/NEET marking schemes.\n\n"
+        "STEP 1: STRUCTURE (MANDATORY)\n"
+        "- Follow exact subparts from the question: (i), (ii), (iii), etc.\n"
+        "- Use ONLY bullet points (•) or numbered points.\n"
+        "- DO NOT use sub-headers like 'Definition', 'Mechanism', 'Example', 'Explanation'.\n"
+        "- NO extra sections (No intro, no conclusion, no exam tips, no misconceptions).\n\n"
+        "STEP 2: KEYWORD ENFORCEMENT (CRITICAL)\n"
+        "- Include ALL important NCERT keywords and **bold** them.\n"
+        "- Use textbook terminology. Prioritize scoring terms.\n\n"
+        "STEP 3: MODE HANDLING\n"
+        "- If MODE = 'brief': Give 3-4 high-quality scoring points per subpart.\n"
+        "- If MODE = 'detailed': Give 6-8 comprehensive points per subpart.\n\n"
+        "STEP 4: STYLE\n"
+        "- Clean, exam-ready format. Each point = 1 mark style. No emojis. No long paragraphs.\n\n"
+        "JSON STRUCTURE:\n"
+        '{"subject": "Biology|Chemistry|Physics|Maths", "type": "Theory", '
+        '"brief": {"question_nature": "theoretical", "steps": [{"text": "bullet"}], "final_answer": "(i) ... (ii) ..."}, '
+        '"detailed": {"explanation": "Labeled bullet points with **keywords**", "final_answer": "(i) ... (ii) ...", "verification": "...", "key_concept": "..."}, '
+        '"key_concepts": ["concept1"]}'
+    )
+    user = f"Question: {question_text}\n{topic_hint}\nMODE: {req.mode}"
+    return system, user
+
+def _build_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
+    question_text = (req.questionText or "").strip()
+    system = (
+        "You are an expert scientific tutor. Provide structured responses in JSON.\n"
+        "1. ADDRESS ALL SUB-PARTS: Use labels (a), (b) or (i), (ii) explicitly.\n"
+        "2. MANDATORY LABELING: The 'final_answer' MUST be a labeled list.\n"
+        "3. NO TRAILING BACKSLASHES.\n"
+        "JSON STRUCTURE:\n"
+        '{"subject": "...", "type": "...", '
+        '"brief": {"question_nature": "numerical", "steps": [{"text": "..."}], "final_answer": "..."}, '
+        '"detailed": {"explanation": "...", "final_answer": "...", "verification": "...", "key_concept": "..."}, '
+        '"key_concepts": ["..."]}'
+    )
+    user = f"Question: {question_text}\nMODE: {req.mode}"
+    return system, user
     length = "concise (2-3 sentences)" if req.mode == "short" else "detailed and step-by-step"
     topic_hint = f" The topic is: {req.topicId}." if req.topicId else ""
     question_text = (req.questionText or "").strip()
@@ -52,15 +101,21 @@ def _build_prompt(req: ResolveDoubtRequest) -> str:
         else ""
     )
     return (
-        f"You are an expert tutor. A student has asked the following question.{topic_hint}\n\n"
+        f"You are an expert scientific tutor. A student has asked the following question.{topic_hint}\n\n"
         f"Question text: {question_text}\n"
         f"{image_hint}\n"
         f"If this came from a screenshot or book photo, rely on extracted text and solve the exact asked problem.\n"
-        f"For mathematical/derivation questions, use equation-first formatting with minimal prose.\n"
-        f"Show symbolic steps clearly and end with a final result line.\n"
-        f"Provide a {length} explanation. Also list 2-3 key concept names as a JSON array in 'key_concepts'.\n\n"
-        f"Respond in this exact JSON format:\n"
-        f'{{"explanation": "...", "key_concepts": ["concept1", "concept2"]}}'
+        f"CONTENT RULES:\n"
+        f"1. ADDRESS ALL SUB-PARTS: Use labels like (a), (b), (i), (ii) explicitly in explanation AND final_answer.\n"
+        f"2. MANDATORY LABELING: The 'final_answer' MUST be a labeled list, e.g., '(a)(i) ... (a)(ii) ... (b) ...'. NEVER omit labels.\n"
+        f"3. BRIEF VIEW (Quick Steps): Math/results ONLY. No prose.\n"
+        f"4. DETAILED VIEW: Full prose explanations + math.\n"
+        f"5. NO TRAILING BACKSLASHES: Do not end lines with '\\'.\n\n"
+        f"JSON STRUCTURE:\n"
+        f'{{"subject": "...", "type": "...", '
+        f'"brief": {{"question_nature": "numerical", "steps": [{{"text": "Math only step"}}], "final_answer": "(a) ... (b) ..."}}, '
+        f'"detailed": {{"explanation": "Full prose", "final_answer": "(a) ... (b) ...", "verification": "...", "key_concept": "..."}}, '
+        f'"key_concepts": ["concept1", "concept2"]}}'
     )
 
 
@@ -114,29 +169,34 @@ async def ocr_image(req: OcrImageRequest):
         raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
 
 
-async def _call_groq(prompt: str, api_key: str) -> dict:
+async def _call_groq(system_prompt: str, user_prompt: str, api_key: str) -> dict:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": "llama3-8b-8192",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "response_format": {"type": "json_object"},
-            },
-        )
+        resp = await client.post(url, headers=headers, json={
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        })
     if resp.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Groq error: {resp.text}")
     content = resp.json()["choices"][0]["message"]["content"]
     return json.loads(content)
 
 
-async def _call_gemini(prompt: str, api_key: str) -> dict:
+async def _call_gemini(system_prompt: str, user_prompt: str, api_key: str) -> dict:
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+    full_prompt = f"SYSTEM: {system_prompt}\n\nUSER: {user_prompt}"
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(url, json={
-            "contents": [{"parts": [{"text": prompt}]}],
+            "contents": [{"parts": [{"text": full_prompt}]}],
             "generationConfig": {"responseMimeType": "application/json"},
         })
     if resp.status_code != 200:
@@ -172,7 +232,29 @@ async def resolve_doubt(req: ResolveDoubtRequest):
             studentContext=req.studentContext,
         )
 
-    prompt = _build_prompt(req_for_prompt)
+    # Detection logic
+    q_lower = (req_for_prompt.questionText or "").lower()
+    theory_keywords = ["define", "explain", "why", "how", "difference", "process", "mechanism", "steps", "reason", "theory", "concept", "principle", "state", "list", "mention", "describe", "distinguish", "compare", "what is"]
+    numerical_keywords = ["solve", "calculate", "plot", "graph", "formula", "integral", "derivative", "value of", "compute", "evaluate"]
+    symbols = ["+", "=", "^", "\\"] # Reduced symbols to avoid OCR noise
+
+    # If it contains clear theory keywords, prioritize TheoryMode
+    is_theory = any(kw in q_lower for kw in theory_keywords)
+    is_numerical = (any(kw in q_lower for kw in numerical_keywords) or any(sym in (req_for_prompt.questionText or "") for sym in symbols)) and not is_theory
+
+    if is_theory:
+        system, user = _build_theory_prompt(req_for_prompt)
+        logger.info(f"Routing to TheoryMode v3: {q_lower[:50]}...")
+    elif is_numerical:
+        try:
+            logger.info(f"Routing to ScientificSolver: {q_lower[:50]}...")
+            scientific_res = await scientific_solver.solve(req_for_prompt.questionText, req.mode)
+            return scientific_res
+        except Exception as e:
+            logger.error(f"ScientificSolver failed: {str(e)}. Falling back to standard LLM.")
+            system, user = _build_prompt(req_for_prompt)
+    else:
+        system, user = _build_prompt(req_for_prompt)
 
     try:
         if groq_keys:
@@ -180,7 +262,7 @@ async def resolve_doubt(req: ResolveDoubtRequest):
             result = None
             for i, groq_key in enumerate(groq_keys):
                 try:
-                    result = await _call_groq(prompt, groq_key)
+                    result = await _call_groq(system, user, groq_key)
                     break
                 except HTTPException as e:
                     last_groq_error = e
@@ -192,15 +274,13 @@ async def resolve_doubt(req: ResolveDoubtRequest):
             if result is None and last_groq_error:
                 raise last_groq_error
         else:
-            result = await _call_gemini(prompt, gemini_key)
+            result = await _call_gemini(system, user, gemini_key)
 
-        explanation = result.get("explanation", "")
-        concepts = result.get("key_concepts", result.get("conceptLinks", []))
-
-        if not explanation:
-            raise HTTPException(status_code=500, detail="AI returned empty explanation")
-
-        return {"explanation": explanation, "conceptLinks": concepts}
+        # Ensure conceptLinks is populated from either key_concepts or conceptLinks
+        if "key_concepts" in result and "conceptLinks" not in result:
+            result["conceptLinks"] = result["key_concepts"]
+        
+        return result
 
     except HTTPException:
         raise

@@ -1684,7 +1684,11 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
 # Step-1 detector: lightweight classification (subject + question type)
 _DOUBT_DETECTOR_SYSTEM = (
     "You are a high-precision academic classifier for JEE/NEET. Categorize the question into Subject and Type.\\n"
-    "Subjects: physics, chemistry, math, biology (Genetics, cell biology, and biochemistry processes like Transcription/Translation belong to BIOLOGY).\\n"
+    "Subjects:\\n"
+    "- biology: Human health, diseases, immune system, allergy, genetics, cell biology, plant/animal physiology.\\n"
+    "- chemistry: Reactions, bonding, molarity, organic/inorganic compounds, thermodynamics.\\n"
+    "- physics: Mechanics, optics, electricity, magnetism, modern physics.\\n"
+    "- math: Calculus, algebra, geometry, probability.\\n"
     "Types: numerical, derivation, conceptual, mcq, theory\\n"
     "Respond with ONLY a valid JSON object.\\n"
     'Format: {"subject": "<subject>", "type": "<type>"}\\n'
@@ -1700,7 +1704,7 @@ CHEMISTRY_KEYWORDS = ['mole', 'molarity', 'molality', 'ka', 'kb', 'ksp', 'ph', '
 
 MATH_KEYWORDS = ['integrate', 'differentiate', 'derivative', 'matrix', 'determinant', 'probability', 'parabola', 'ellipse', 'hyperbola', 'complex number', 'binomial', 'permutation', 'combination', 'limit', 'series', 'sequence', 'polynomial', 'quadratic', 'trigonometric identity', 'inverse trigonometric', 'definite integral', 'indefinite integral', 'integral', 'differential equation', 'coordinate geometry', 'straight line', 'locus', 'conic section', 'arithmetic progression', 'geometric progression', 'harmonic progression', 'logarithm', 'exponential', 'inequality', 'modulus', 'function', 'domain', 'range', 'one-to-one', 'onto', 'composite function', 'continuity', 'differentiability', 'mean value theorem', 'maxima', 'minima', 'tangent', 'normal', 'area under curve', 'vector algebra', 'dot product', 'cross product', 'scalar triple product', '3d geometry', 'plane', 'direction cosines', 'statistics', 'mean', 'median', 'variance', 'standard deviation', 'bayes theorem', 'random variable', 'bernoulli trials', 'mathematical induction', 'set theory', 'relation', 'logic', 'truth table']
 
-BIOLOGY_KEYWORDS = ['cell', 'mitosis', 'meiosis', 'photosynthesis', 'dna', 'rna', 'transcription', 'translation', 'replication', 'eukaryote', 'prokaryote', 'enzyme', 'hormone', 'ecosystem', 'genetics', 'neuron', 'chromosome', 'protein', 'ribosome', 'chloroplast', 'mitochondria', 'evolution', 'respiration', 'digestion', 'excretion', 'reproduction', 'immunity', 'biodiversity', 'food chain', 'biomolecule', 'nitrogen cycle', 'krebs cycle', 'calvin cycle', 'glycolysis', 'atp', 'adp', 'nadh', 'allele', 'genotype', 'phenotype', 'dominant', 'recessive', 'mendel', 'plant', 'animal', 'kingdom', 'phylum', 'species', 'genus', 'class', 'order', 'family', 'taxonomy', 'biological classification', 'monera', 'protista', 'fungi', 'plantae', 'animalia', 'virus', 'viroid', 'lichen', 'morphology', 'anatomy', 'tissue', 'circulatory', 'nervous', 'endocrine', 'excretory', 'skeletal', 'muscular', 'neural', 'chemical coordination', 'photosystem', 'c3 cycle', 'c4 cycle', 'cam plant', 'photorespiration', 'growth regulator', 'auxin', 'gibberellin', 'cytokinin', 'abscisic acid', 'ethylene', 'ecology', 'population', 'community', 'succession', 'environment', 'pollution', 'biotechnology', 'cloning', 'pcr', 'restriction enzyme', 'plasmid', 'recombinant dna']
+BIOLOGY_KEYWORDS = ['cell', 'mitosis', 'meiosis', 'photosynthesis', 'dna', 'rna', 'transcription', 'translation', 'replication', 'eukaryote', 'prokaryote', 'enzyme', 'hormone', 'ecosystem', 'genetics', 'neuron', 'chromosome', 'protein', 'ribosome', 'chloroplast', 'mitochondria', 'evolution', 'respiration', 'digestion', 'excretion', 'reproduction', 'immunity', 'biodiversity', 'food chain', 'biomolecule', 'nitrogen cycle', 'krebs cycle', 'calvin cycle', 'glycolysis', 'atp', 'adp', 'nadh', 'allele', 'genotype', 'phenotype', 'dominant', 'recessive', 'mendel', 'plant', 'animal', 'kingdom', 'phylum', 'species', 'genus', 'class', 'order', 'family', 'taxonomy', 'biological classification', 'monera', 'protista', 'fungi', 'plantae', 'animalia', 'virus', 'viroid', 'lichen', 'morphology', 'anatomy', 'tissue', 'circulatory', 'nervous', 'endocrine', 'excretory', 'skeletal', 'muscular', 'neural', 'chemical coordination', 'photosystem', 'c3 cycle', 'c4 cycle', 'cam plant', 'photorespiration', 'growth regulator', 'auxin', 'gibberellin', 'cytokinin', 'abscisic acid', 'ethylene', 'ecology', 'population', 'community', 'succession', 'environment', 'pollution', 'biotechnology', 'cloning', 'pcr', 'restriction enzyme', 'plasmid', 'recombinant dna', 'allergy', 'allergen', 'allergic', 'mast cell', 'histamine', 'antibody', 'antigen', 'pathogen', 'health', 'disease', 'infection', 'immune system', 'response']
 
 
 
@@ -1786,10 +1790,8 @@ def _detect_type_by_keyword(question: str) -> str:
 
 
     # 6. Conceptual / theory - catch-all
-    if any(w in q for w in ['explain', 'why does', 'why is', 'what is', 'define', 'describe', 'state']):
-        return 'conceptual'
-
-
+    if any(w in q for w in ['explain', 'why does', 'why is', 'what is', 'define', 'describe', 'state', 'write', 'suggest', 'list', 'mention']):
+        return 'theory'
 
     # 7. Default for JEE/NEET
     return 'numerical'
@@ -1977,50 +1979,62 @@ _SUBJECT_RULES: dict[str, str] = {
 def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed") -> str:
     """
     CLEANED & RE-PRIORITIZED SOLVER PROMPT.
-    Focuses on the JEE/NEET Gold Rules first.
     """
     subject_rules = _SUBJECT_RULES.get(subject, "")
-    is_numerical = qtype in ("numerical", "derivation")
+    is_numerical = qtype.lower() in ("numerical", "derivation")
     
-    return (
-        f"You are EDVA AI (Logic v3.0). Subject: {subject.upper()}. Type: {qtype}.\n\n"
-        "MANDATORY JEE/NEET GOLD RULES (FAILING THESE IS UNACCEPTABLE):\n"
-        f"{subject_rules}\n\n"
-        "UNIVERSAL RIGOR RULES:\n"
-        "1. NO PREAMBLE: Respond ONLY with JSON. No 'Here is your solution'.\n"
-        "2. PERFORM ACTUAL MATH: Step 1, Step 2... format. Show every number calculation.\n"
-        "3. PRECISION: Carry 4 decimal places. Never round intermediate steps.\n"
-        "4. MATH FORMATTING: MANDATORY: Wrap EVERY symbol, number, variable, or equation in '$'. This applies to ALL fields (brief, solution, final_answer, verification). NO PLAIN TEXT MATH.\n"
-        "5. FINAL ANSWER: End with 'Final Answer: [summary]' at the bottom of the 'solution' and 'answer' fields.\n\n"
-        "OUTPUT SCHEMA — respond with ONLY this JSON object:\n"
-        + (
+    if is_numerical:
+        return (
+            f"You are EDVA AI (Logic v3.0). Subject: {subject.upper()}. Type: {qtype}.\n\n"
+            "MANDATORY JEE/NEET GOLD RULES:\n"
+            f"{subject_rules}\n\n"
+            "UNIVERSAL RIGOR RULES:\n"
+            "1. NO PREAMBLE: Respond ONLY with JSON.\n"
+            "2. PERFORM ACTUAL MATH: Step 1, Step 2... format.\n"
+            "3. PRECISION: Carry 4 decimal places.\n"
+            "4. MATH FORMATTING: MANDATORY: Wrap EVERY symbol, number, variable, or equation in '$'. NO PLAIN TEXT MATH.\n"
+            "5. FINAL ANSWER: End with 'Final Answer: [summary]'.\n\n"
+            "OUTPUT SCHEMA:\n"
             '{\n'
             '  "brief": {\n'
-            '    "answer": "Perform ACTUAL MATH (Max 5 steps). Format: Step 1: [Result]. Step 2: [Result]... Final Answer: [Summary]. No prose.",\n'
+            '    "answer": "Perform ACTUAL MATH (Max 5 steps). Format: Step 1: [Result]. Step 2: [Result]... Final Answer: [Summary].",\n'
             '    "question_nature": "numerical"\n'
             '  },\n'
             '  "detailed": {\n'
-            '    "solution": "Full derivation. Step 1 to N. MUST SHOW EVERY NUMBER CALCULATION. No describing steps—DO THEM.",\n'
+            '    "solution": "Full derivation. Step 1 to N. MUST SHOW EVERY NUMBER CALCULATION.",\n'
             '    "final_answer": "Final result with units.",\n'
             '    "verification": "Cross-check the logic.",\n'
             '    "key_concept": "The primary principle."\n'
             '  }\n'
             '}'
-            if is_numerical else
+        )
+    else:
+        return (
+            f"SYSTEM ROLE: You are a Senior CBSE/NEET Subject Matter Expert. Subject: {subject.upper()}. Respond strictly in JSON format.\n"
+            "TASK: Generate structured, high-depth academic answers.\n\n"
+            "RULES:\n"
+            "1. MANDATORY HEADERS: You MUST use **Bold Headers** to separate parts of the answer. \n"
+            "   - If the question has sub-parts like (i), (ii), use them as headers: **(i) [Sub-part Title]**.\n"
+            "   - If NO sub-parts exist, create your own **Bold Categorical Headers**.\n"
+            "2. NO PARAGRAPHS: You MUST use bullet points (•). Continuous paragraphs are FORBIDDEN.\n"
+            "3. POINT COUNT: Provide 3-4 points per header in 'Brief' mode and 4-5 deep points per header in 'Detailed' mode.\n"
+            "4. EXPLAIN HOW: In 'Detailed' mode, each bullet point MUST be a 2-3 sentence explanation of the mechanism or impact.\n"
+            "5. NO MARKDOWN BLOCKS: Do NOT use triple backticks (```).\n"
+            "6. BOLDING: Use **bold** for all NCERT keywords.\n\n"
+            "OUTPUT SCHEMA (JSON):\n"
             '{\n'
             '  "brief": {\n'
-            '    "answer": "High-precision 2-4 sentence summary using NCERT keywords.",\n'
+            '    "answer": "**(i) Header**\\n• Point 1\\n• Point 2\\n\\n**(ii) Header**\\n• Point 3\\n• Point 4",\n'
             '    "question_nature": "theory"\n'
             '  },\n'
             '  "detailed": {\n'
-            '    "solution": "Deep explanation with headers: (1) Definition, (2) Mechanism, (3) Example, (4) Exam Connection. No bolding.",\n'
-            '    "final_answer": "One concise sentence.",\n'
-            '    "verification": "Common misconceptions.",\n'
-            '    "key_concept": "Primary fact."\n'
+            '    "solution": "**(i) Header**\\n• Deep point 1 (2-3 sentences)\\n• Deep point 2 (2-3 sentences)\\n\\n**(ii) Header**\\n• Deep point 3 (2-3 sentences)\\n• Deep point 4 (2-3 sentences)",\n'
+            '    "final_answer": "Summary sentence.",\n'
+            '    "verification": "None",\n'
+            '    "key_concept": "None"\n'
             '  }\n'
             '}'
         )
-    )
 
 
 
@@ -2266,6 +2280,28 @@ def resolve_doubt(request):
     else:
         answer = detailed_obj.get("final_answer") or brief_obj.get("answer") or ""
         explanation = detailed_obj.get("solution") or brief_obj.get("answer") or ""
+
+    # Defensive: Ensure all returned values are strings and stripped of formatting artifacts
+    def _safe_str(v):
+        if v is None: return ""
+        if isinstance(v, (list, dict, tuple)):
+            import json as _json2
+            s = _json2.dumps(v) if isinstance(v, dict) else "\n".join(map(str, v))
+        else:
+            s = str(v)
+        
+        # Aggressively remove code blocks and leading/trailing whitespace per line
+        import re as _re3
+        s = _re3.sub(r'```[a-z]*', '', s) # Remove opening backticks
+        s = s.replace('```', '')         # Remove closing backticks
+        lines = [l.strip() for l in s.split('\n')]
+        return "\n".join(lines).strip()
+
+    answer = _safe_str(answer)
+    explanation = _safe_str(explanation)
+    # Also clean the deep objects
+    for k, v in brief_obj.items(): brief_obj[k] = _safe_str(v)
+    for k, v in detailed_obj.items(): detailed_obj[k] = _safe_str(v)
 
 
 
