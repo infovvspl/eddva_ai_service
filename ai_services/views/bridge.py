@@ -1728,15 +1728,18 @@ def _detect_subject_by_keyword(question: str):
 
 
 def _detect_type_by_keyword(question: str) -> str:
-    """Returns question type string. Defaults to 'numerical' for JEE/NEET.
-    Priority order matters: numerical/derivation indicators are checked FIRST so that
-    common action verbs like 'find', 'determine', 'evaluate', 'check', 'compute'
-    (very common in image-extracted question text) do NOT fall through to the
-    conceptual catch-all.
-    """
+    """Returns question type string. Defaults to 'numerical' for JEE/NEET."""
     q = question.lower()
 
-
+    # 0. MCQ / Objective - Checked FIRST as per user priority
+    if any(w in q for w in [
+        'correct option', 'correct answer', 'which of the following', 'choose the correct',
+        'select the correct', 'identify the correct', 'pick the correct', 'best answer',
+        'most appropriate', 'incorrect statement', 'true/false', 'match the following',
+        'assertion and reason', 'statement i and ii', 'sequence of events', 'arrange in order',
+        'fill in the blanks', '____'
+    ]):
+        return 'mcq'
 
     # 1. Derivation / proof
     if any(w in q for w in [
@@ -1982,8 +1985,33 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
     """
     subject_rules = _SUBJECT_RULES.get(subject, "")
     is_numerical = qtype.lower() in ("numerical", "derivation")
+    is_mcq = qtype.lower() == "mcq"
     
-    if is_numerical:
+    if is_mcq:
+        return (
+            f"SYSTEM ROLE: You are a Senior Subject Expert. Subject: {subject.upper()}. Respond strictly in JSON format.\n"
+            "TASK: Solve the MCQ/Objective question.\n\n"
+            "RULES:\n"
+            "1. FORMAT: Your answer must follow this exact structure inside the 'solution' field:\n"
+            "   Correct Answer: <Option/Value>\n"
+            "   Justification: <2-3 lines explanation using **bold** NCERT keywords>\n"
+            "2. NO PREAMBLE: Respond ONLY with JSON.\n"
+            "3. BOLDING: Use **bold** for all key academic terms.\n\n"
+            "OUTPUT SCHEMA (JSON):\n"
+            '{\n'
+            '  "brief": {\n'
+            '    "answer": "Correct Answer: <Option>\\nJustification: <1-2 lines>.",\n'
+            '    "question_nature": "mcq"\n'
+            '  },\n'
+            '  "detailed": {\n'
+            '    "solution": "Correct Answer: <Option>\\nJustification: <2-3 lines with **bold** keywords>.",\n'
+            '    "final_answer": "Correct Option: <Option>",\n'
+            '    "verification": "None",\n'
+            '    "key_concept": "None"\n'
+            '  }\n'
+            '}'
+        )
+    elif is_numerical:
         return (
             f"You are EDVA AI (Logic v3.0). Subject: {subject.upper()}. Type: {qtype}.\n\n"
             "MANDATORY JEE/NEET GOLD RULES:\n"
@@ -2013,22 +2041,20 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             f"SYSTEM ROLE: You are a Senior CBSE/NEET Subject Matter Expert. Subject: {subject.upper()}. Respond strictly in JSON format.\n"
             "TASK: Generate structured, high-depth academic answers.\n\n"
             "RULES:\n"
-            "1. MANDATORY HEADERS: You MUST use **Bold Headers** to separate parts of the answer. \n"
-            "   - If the question has sub-parts like (i), (ii), use them as headers: **(i) [Sub-part Title]**.\n"
-            "   - If NO sub-parts exist, create your own **Bold Categorical Headers**.\n"
-            "2. NO PARAGRAPHS: You MUST use bullet points (•). Continuous paragraphs are FORBIDDEN.\n"
-            "3. POINT COUNT: Provide 3-4 points per header in 'Brief' mode and 4-5 deep points per header in 'Detailed' mode.\n"
-            "4. EXPLAIN HOW: In 'Detailed' mode, each bullet point MUST be a 2-3 sentence explanation of the mechanism or impact.\n"
+            "1. MATCH QUESTION STRUCTURE: You MUST match the number of sub-parts in the question exactly. If the question has 4 parts (a, b, c, d) or (i, ii, iii, iv), you MUST provide 4 corresponding bold headers.\n"
+            "2. HEADERS: Use **(i) [Title]**, **(ii) [Title]**, etc., as headers. If no labels exist, create your own **Bold Categorical Headers**.\n"
+            "3. NO PARAGRAPHS: Use bullet points (•) for all content. 3-4 points per part for Brief, 4-5 deep points for Detailed.\n"
+            "4. EXPLAIN HOW: In 'Detailed' mode, each point MUST be a 2-3 sentence explanation.\n"
             "5. NO MARKDOWN BLOCKS: Do NOT use triple backticks (```).\n"
             "6. BOLDING: Use **bold** for all NCERT keywords.\n\n"
             "OUTPUT SCHEMA (JSON):\n"
             '{\n'
             '  "brief": {\n'
-            '    "answer": "**(i) Header**\\n• Point 1\\n• Point 2\\n\\n**(ii) Header**\\n• Point 3\\n• Point 4",\n'
+            '    "answer": "**(i) Header**\\n• Point...\\n\\n**(ii) Header**\\n• Point... (Continue for all sub-parts i, ii, iii, iv...)",\n'
             '    "question_nature": "theory"\n'
             '  },\n'
             '  "detailed": {\n'
-            '    "solution": "**(i) Header**\\n• Deep point 1 (2-3 sentences)\\n• Deep point 2 (2-3 sentences)\\n\\n**(ii) Header**\\n• Deep point 3 (2-3 sentences)\\n• Deep point 4 (2-3 sentences)",\n'
+            '    "solution": "**(i) Header**\\n• Deep point...\\n\\n**(ii) Header**\\n• Deep point... (Provide all sub-parts requested in the question)",\n'
             '    "final_answer": "Summary sentence.",\n'
             '    "verification": "None",\n'
             '    "key_concept": "None"\n'
