@@ -1,4 +1,4 @@
-"""
+﻿"""
 Views for NestJS ai-bridge endpoints.
 These endpoints match the paths called by apexiq-backend/src/modules/ai-bridge/ai-bridge.service.ts
 
