@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional, Any, Dict
+from typing import Optional, Any
 import os
 import httpx
 import json
@@ -119,107 +119,6 @@ def _build_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
     )
 
 
-def _build_true_false_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
-    topic_hint = f" The topic is: {req.topicId}." if req.topicId else ""
-    question_text = (req.questionText or "").strip()
-    system = (
-        "You are an expert CBSE/NEET answer generator specialized in TRUE/FALSE questions.\n"
-        "TASK: Determine whether the statement is True or False and justify it.\n\n"
-        "RULES:\n"
-        "- answer: exactly 'True' or 'False'\n"
-        "- justification: 2-3 lines max using bold **NCERT keywords**. No extra sections.\n\n"
-        "JSON STRUCTURE:\n"
-        '{"subject": "Biology|Chemistry|Physics|Maths", "type": "true_false", '
-        '"brief": {"answer": "True/False", "justification": "2-3 line justification with **keywords**"}, '
-        '"detailed": {"answer": "True/False", "justification": "2-3 line justification with **keywords**"}, '
-        '"key_concepts": ["concept1"]}'
-    )
-    user = f"Question: {question_text}\n{topic_hint}\nMODE: {req.mode}"
-    return system, user
-
-
-def _build_fitb_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
-    topic_hint = f" The topic is: {req.topicId}." if req.topicId else ""
-    question_text = (req.questionText or "").strip()
-    system = (
-        "You are an expert CBSE/NEET answer generator specialized in FILL IN THE BLANKS questions.\n"
-        "TASK: Identify the correct word/phrase for the blank and justify it.\n\n"
-        "RULES:\n"
-        "- answer: the exact word or phrase that fills the blank\n"
-        "- justification: 2-3 lines max using bold **NCERT keywords**. No extra sections.\n\n"
-        "JSON STRUCTURE:\n"
-        '{"subject": "Biology|Chemistry|Physics|Maths", "type": "fill_in_blank", '
-        '"brief": {"answer": "<exact answer>", "justification": "2-3 line justification with **keywords**"}, '
-        '"detailed": {"answer": "<exact answer>", "justification": "2-3 line justification with **keywords**"}, '
-        '"key_concepts": ["concept1"]}'
-    )
-    user = f"Question: {question_text}\n{topic_hint}\nMODE: {req.mode}"
-    return system, user
-
-
-def _build_assertion_reason_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
-    topic_hint = f" The topic is: {req.topicId}." if req.topicId else ""
-    question_text = (req.questionText or "").strip()
-    system = (
-        "You are an expert CBSE/NEET answer generator specialized in ASSERTION-REASON questions.\n"
-        "Standard options: (A) Both A and R true, R explains A. (B) Both A and R true, R does NOT explain A. "
-        "(C) A true, R false. (D) A false, R true.\n\n"
-        "TASK: Evaluate assertion and reason, pick the correct option, and explain concisely.\n\n"
-        "RULES:\n"
-        "- answer: correct option letter only (A/B/C/D)\n"
-        "- assertion_status: 'Correct' or 'Incorrect'\n"
-        "- reason_status: 'Correct' or 'Incorrect'\n"
-        "- explanation: 1-2 lines stating whether Reason correctly explains Assertion. Use **NCERT keywords**.\n\n"
-        "JSON STRUCTURE:\n"
-        '{"subject": "Biology|Chemistry|Physics|Maths", "type": "assertion_reason", '
-        '"brief": {"answer": "Option X", "assertion_status": "Correct/Incorrect", "reason_status": "Correct/Incorrect", "explanation": "1-2 line explanation"}, '
-        '"detailed": {"answer": "Option X", "assertion_status": "Correct/Incorrect", "reason_status": "Correct/Incorrect", "explanation": "1-2 line explanation with **keywords**"}, '
-        '"key_concepts": ["concept1"]}'
-    )
-    user = f"Question: {question_text}\n{topic_hint}\nMODE: {req.mode}"
-    return system, user
-
-
-def _build_sequence_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
-    topic_hint = f" The topic is: {req.topicId}." if req.topicId else ""
-    question_text = (req.questionText or "").strip()
-    system = (
-        "You are an expert CBSE/NEET answer generator specialized in SEQUENCE-BASED MCQ questions.\n"
-        "TASK: Identify the correct order/sequence and select the matching option.\n\n"
-        "RULES:\n"
-        "- answer: correct option letter only (A/B/C/D)\n"
-        "- sequence: steps joined by → arrows (e.g. Step 1 → Step 2 → Step 3 → Step 4)\n"
-        "- key_logic: 1-2 lines explaining the ordering principle using **NCERT keywords**\n\n"
-        "JSON STRUCTURE:\n"
-        '{"subject": "Biology|Chemistry|Physics|Maths", "type": "sequence_mcq", '
-        '"brief": {"answer": "Option X", "sequence": "Step 1 → Step 2 → Step 3 → Step 4", "key_logic": "1-2 line logic"}, '
-        '"detailed": {"answer": "Option X", "sequence": "Step 1 → Step 2 → Step 3 → Step 4", "key_logic": "1-2 line logic with **keywords**"}, '
-        '"key_concepts": ["concept1"]}'
-    )
-    user = f"Question: {question_text}\n{topic_hint}\nMODE: {req.mode}"
-    return system, user
-
-
-def _build_multi_correct_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
-    topic_hint = f" The topic is: {req.topicId}." if req.topicId else ""
-    question_text = (req.questionText or "").strip()
-    system = (
-        "You are an expert CBSE/NEET answer generator specialized in MULTI-CORRECT MCQ questions.\n"
-        "TASK: Identify ALL correct options and justify each one with a keyword-based reason.\n\n"
-        "RULES:\n"
-        "- answers: array of all correct option letters (e.g. ['A', 'C', 'D'])\n"
-        "- reasons: array of objects, one per correct option, each with 'option' and 'reason' (1 line, **bold keywords**)\n"
-        "- incorrect_note: optional 1 line explaining why wrong options fail\n\n"
-        "JSON STRUCTURE:\n"
-        '{"subject": "Biology|Chemistry|Physics|Maths", "type": "multi_correct", '
-        '"brief": {"answers": ["A", "C"], "reasons": [{"option": "A", "reason": "correct because **keyword**"}, {"option": "C", "reason": "correct because **keyword**"}], "incorrect_note": ""}, '
-        '"detailed": {"answers": ["A", "C"], "reasons": [{"option": "A", "reason": "correct because **keyword**"}, {"option": "C", "reason": "correct because **keyword**"}], "incorrect_note": "B and D are incorrect because ..."}, '
-        '"key_concepts": ["concept1"]}'
-    )
-    user = f"Question: {question_text}\n{topic_hint}\nMODE: {req.mode}"
-    return system, user
-
-
 _ocr_reader: Optional[easyocr.Reader] = None
 
 
@@ -335,43 +234,15 @@ async def resolve_doubt(req: ResolveDoubtRequest):
 
     # Detection logic
     q_lower = (req_for_prompt.questionText or "").lower()
-    q_raw = req_for_prompt.questionText or ""
-
-    assertion_keywords = ["assertion", "statement a", "statement r", "assertion and reason", "(a) and (r)"]
-    sequence_keywords = ["correct sequence", "arrange in order", "correct order", "sequence of", "in the correct order", "in correct sequence"]
-    multi_correct_keywords = ["more than one correct", "select all that apply", "one or more correct", "multiple correct", "more than one option"]
-    true_false_keywords = ["true or false", "true/false", "state true or false", "is it true", "correct or incorrect"]
-    fitb_keywords = ["fill in the blank", "fill the blank", "complete the following", "complete the sentence"]
-
-    is_assertion_reason = any(kw in q_lower for kw in assertion_keywords)
-    is_sequence = any(kw in q_lower for kw in sequence_keywords)
-    is_multi_correct = any(kw in q_lower for kw in multi_correct_keywords)
-    is_true_false = any(kw in q_lower for kw in true_false_keywords)
-    is_fitb = any(kw in q_lower for kw in fitb_keywords) or "___" in q_raw
-
     theory_keywords = ["define", "explain", "why", "how", "difference", "process", "mechanism", "steps", "reason", "theory", "concept", "principle", "state", "list", "mention", "describe", "distinguish", "compare", "what is"]
     numerical_keywords = ["solve", "calculate", "plot", "graph", "formula", "integral", "derivative", "value of", "compute", "evaluate"]
     symbols = ["+", "=", "^", "\\"] # Reduced symbols to avoid OCR noise
 
+    # If it contains clear theory keywords, prioritize TheoryMode
     is_theory = any(kw in q_lower for kw in theory_keywords)
-    is_numerical = (any(kw in q_lower for kw in numerical_keywords) or any(sym in q_raw for sym in symbols)) and not is_theory
+    is_numerical = (any(kw in q_lower for kw in numerical_keywords) or any(sym in (req_for_prompt.questionText or "") for sym in symbols)) and not is_theory
 
-    if is_assertion_reason:
-        system, user = _build_assertion_reason_prompt(req_for_prompt)
-        logger.info(f"Routing to AssertionReason: {q_lower[:50]}...")
-    elif is_sequence:
-        system, user = _build_sequence_prompt(req_for_prompt)
-        logger.info(f"Routing to SequenceMCQ: {q_lower[:50]}...")
-    elif is_multi_correct:
-        system, user = _build_multi_correct_prompt(req_for_prompt)
-        logger.info(f"Routing to MultiCorrect: {q_lower[:50]}...")
-    elif is_true_false:
-        system, user = _build_true_false_prompt(req_for_prompt)
-        logger.info(f"Routing to TrueFalse: {q_lower[:50]}...")
-    elif is_fitb:
-        system, user = _build_fitb_prompt(req_for_prompt)
-        logger.info(f"Routing to FillInBlank: {q_lower[:50]}...")
-    elif is_theory:
+    if is_theory:
         system, user = _build_theory_prompt(req_for_prompt)
         logger.info(f"Routing to TheoryMode v3: {q_lower[:50]}...")
     elif is_numerical:

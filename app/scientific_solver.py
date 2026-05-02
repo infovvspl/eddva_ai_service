@@ -15,8 +15,127 @@ from rdkit.Chem import Descriptors, AllChem
 import pint
 import pubchempy as pcp
 import httpx
+import subprocess
 from typing import Any, Dict, Optional, List
 from ai_services.core.llm_client import get_llm
+from app.formula_retriever import formula_retriever
+
+try:
+    from openbabel import openbabel as ob
+except ImportError:
+    ob = None
+
+class RuleBasedChiralDetector:
+    """Helper to detect and explain chiral centers using RDKit."""
+    @staticmethod
+    def detect(mol: Any) -> List[Dict[str, Any]]:
+        if not mol: return []
+        # Ensure hydrogens are present for accurate chirality detection
+        mol_with_hs = Chem.AddHs(mol)
+        AllChem.AssignStereochemistry(mol_with_hs, force=True, cleanIt=True)
+        centers = Chem.FindMolChiralCenters(mol_with_hs, includeUnassigned=True)
+        
+        results = []
+        for idx, label in centers:
+            atom = mol_with_hs.GetAtomWithIdx(idx)
+            neighbors = []
+            for n in atom.GetNeighbors():
+                neighbors.append({
+                    "symbol": n.GetSymbol(),
+                    "atomic_num": n.GetAtomicNum(),
+                    "degree": n.GetDegree()
+                })
+            
+            results.append({
+                "atom_index": idx,
+                "label": label, # 'R', 'S', or '?'
+                "atom_symbol": atom.GetSymbol(),
+                "neighbors": neighbors,
+                "explanation": f"Atom {atom.GetSymbol()} at index {idx} is a chiral center with {len(neighbors)} attachments."
+            })
+        return results
+
+class MathStepValidator:
+    """Helper to verify mathematical equivalence between steps using SymPy."""
+    @staticmethod
+    def validate_steps(steps: List[str]) -> List[Dict[str, Any]]:
+        results = []
+        parsed_steps = []
+        
+        for step in steps:
+            try:
+                # Basic LaTeX to SymPy conversion (very simplified)
+                clean_step = step.replace("$", "").replace("\\", "").strip()
+                # If it's an equation, split it
+                if "=" in clean_step:
+                    lhs, rhs = clean_step.split("=", 1)
+                    parsed = sp.simplify(f"({lhs}) - ({rhs})")
+                else:
+                    parsed = sp.simplify(clean_step)
+                parsed_steps.append(parsed)
+            except Exception as e:
+                parsed_steps.append(None)
+        
+        for i in range(1, len(parsed_steps)):
+            prev = parsed_steps[i-1]
+            curr = parsed_steps[i]
+            if prev is not None and curr is not None:
+                # Check if curr - prev simplifies to 0 (equivalence)
+                # Or if it's an equation, check if they represent the same set of solutions (harder, so we check expression difference)
+                is_valid = sp.simplify(curr - prev) == 0
+                results.append({
+                    "from_step": i-1,
+                    "to_step": i,
+                    "is_valid": is_valid,
+                    "note": "Equivalent" if is_valid else "Potential logical jump or error"
+                })
+            else:
+                results.append({
+                    "from_step": i-1,
+                    "to_step": i,
+                    "is_valid": False,
+                    "note": "Could not parse steps for verification"
+                })
+        return results
+
+class OpenBabelFallback:
+    """Wrapper for Open Babel functionality with fallback to subprocess CLI."""
+    @staticmethod
+    def convert(input_data: str, in_fmt: str, out_fmt: str) -> str:
+        if ob:
+            obmol = ob.OBMol()
+            obconversion = ob.OBConversion()
+            obconversion.SetInAndOutFormats(in_fmt, out_fmt)
+            obconversion.ReadString(obmol, input_data)
+            return obconversion.WriteString(obmol)
+        else:
+            # Try subprocess
+            try:
+                res = subprocess.run(
+                    ["obabel", f"-i{in_fmt}", f"-o{out_fmt}"],
+                    input=input_data.encode(),
+                    capture_output=True,
+                    check=True
+                )
+                return res.stdout.decode()
+            except Exception:
+                return "Open Babel not available (neither library nor CLI)."
+
+class MaximaFallback:
+    """Wrapper for Maxima functionality via subprocess."""
+    @staticmethod
+    def evaluate(expression: str) -> str:
+        try:
+            # Simple maxima call
+            cmd = f"print(expand({expression}));"
+            res = subprocess.run(
+                ["maxima", "--very-quiet", "-r", cmd],
+                capture_output=True,
+                check=True
+            )
+            return res.stdout.decode().strip()
+        except Exception:
+            return "Maxima not available via CLI."
 
 logger = logging.getLogger("ai_services.scientific_solver")
 ureg = pint.UnitRegistry()
@@ -36,6 +155,10 @@ class ScientificSolver:
             "AllChem": AllChem,
             "pcp": pcp,
             "ureg": ureg,
+            "ChiralDetector": RuleBasedChiralDetector,
+            "StepValidator": MathStepValidator,
+            "OpenBabel": OpenBabelFallback,
+            "Maxima": MaximaFallback,
         }
 
     async def fetch_nist_data(self, name: str) -> str:
@@ -67,6 +190,7 @@ class ScientificSolver:
             "import pint\n"
             "import pubchempy as pcp\n"
             "ureg = pint.UnitRegistry()\n"
+            "from app.scientific_solver import RuleBasedChiralDetector as ChiralDetector, MathStepValidator as StepValidator, OpenBabelFallback as OpenBabel, MaximaFallback as Maxima\n"
             "\n"
         ) + code
         
@@ -128,7 +252,15 @@ class ScientificSolver:
     async def solve(self, question: str, mode: str = "detailed") -> Dict[str, Any]:
         """Main entry point: Generate code -> Execute -> Synthesize answer."""
         
-        # Step 1: Generate Solution Code
+        # Step 1.1: Retrieve relevant formulas from Knowledge Base (PDFs)
+        kb_formulas = formula_retriever.retrieve(question)
+        formula_context = ""
+        if kb_formulas:
+            formula_context = "\n\nVERIFIED FORMULAS FROM KNOWLEDGE BASE:\n"
+            for f in kb_formulas:
+                formula_context += f"- {f['text']} (Source: {f['source']})\n"
+        
+        # Step 1.2: Generate Solution Code
         system_prompt = (
             "You are a Scientific Code Generator for a JEE/NEET/CBSE tutor app. "
             "Your goal is to write Python code that solves a scientific or mathematical question with 100% accuracy.\n\n"
@@ -141,10 +273,14 @@ class ScientificSolver:
             "- pcp: PubChemPy\n"
             "- ureg: Pint UnitRegistry\n\n"
             "RULES:\n"
-            "1. Focus on accuracy. Use SymPy for derivations if possible.\n"
-            "2. If a plot is helpful, use plt.plot() etc. Do NOT use plt.show().\n"
-            "3. Store the final answer in a variable named 'final_answer'.\n"
-            "4. Respond ONLY with valid Python code. No markdown fences. No explanation."
+            "1. Focus on accuracy. Use SymPy (sp) for complex derivations and equation solving.\n"
+            "2. Use RDKit (Chem, AllChem) for advanced chemistry. Use ChiralDetector.detect(mol) for rule-based chirality analysis.\n"
+            "3. Use StepValidator.validate_steps([step1, step2, ...]) to verify mathematical logic if helpful.\n"
+            "4. Use OpenBabel.convert(data, in_fmt, out_fmt) or Maxima.evaluate(expr) as fallbacks if primary tools (RDKit/SymPy) are insufficient.\n"
+            "5. If a plot is helpful, use plt.plot() etc. Do NOT use plt.show().\n"
+            "6. Store the final answer in a variable named 'final_answer'.\n"
+            "7. Respond ONLY with valid Python code. No markdown fences. No explanation.\n\n"
+            f"{formula_context}"
         )
         
         user_prompt = f"Question: {question}\n\nWrite the Python code to solve this."
@@ -177,11 +313,12 @@ class ScientificSolver:
             "Your task is to provide a highly detailed, accurate response in a structured JSON format.\n\n"
             "CONTENT RULES:\n"
             "1. ADDRESS ALL SUB-PARTS: Use labels like (a), (b), (i), (ii) explicitly in the explanation AND the final_answer.\n"
-            "2. MANDATORY LABELING: The 'final_answer' MUST be a labeled list of results, e.g., '(a)(i) Rate increases 4-fold; (a)(ii) Order is 2; (b) Time is 99.6 min'. NEVER omit the labels (a), (b), etc.\n"
-            "3. BRIEF VIEW (Quick Steps): Use math/results ONLY. Minimal to no prose. (e.g., '$x = 5$').\n"
-            "4. DETAILED VIEW: Use full prose explanations along with math derivations.\n"
-            "5. NO TRAILING BACKSLASHES: Never end a line with a literal backslash '\\'.\n"
-            "6. MATH FORMATTING: Use KaTeX ($...$ or $$...$$). NEVER use plain text for math symbols.\n\n"
+            "2. MANDATORY LABELING: The 'final_answer' MUST be a labeled list of results.\n"
+            "3. INCORPORATE VALIDATION: If the code used ChiralDetector or StepValidator, include those insights in the 'explanation' or 'verification' fields to reassure the student of the accuracy.\n"
+            "4. BRIEF VIEW (Quick Steps): Use math/results ONLY. Minimal to no prose.\n"
+            "5. DETAILED VIEW: Use full prose explanations along with math derivations.\n"
+            "6. NO TRAILING BACKSLASHES: Never end a line with a literal backslash '\\'.\n"
+            "7. MATH FORMATTING: Use KaTeX ($...$ or $$...$$).\n\n"
             "JSON STRUCTURE:\n"
             "{\n"
             "  \"subject\": \"...\",\n"
