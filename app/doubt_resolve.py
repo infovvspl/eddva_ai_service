@@ -10,6 +10,7 @@ from PIL import Image
 import easyocr
 import numpy as np
 from app.scientific_solver import scientific_solver
+from ai_services.core.llm_client import get_llm
 import logging
 
 logger = logging.getLogger("ai_services.doubt_resolve")
@@ -57,15 +58,16 @@ def _build_theory_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
         "- Follow exact subparts from the question: (i), (ii), (iii), etc.\n"
         "- Use ONLY bullet points (•) or numbered points.\n"
         "- DO NOT use sub-headers like 'Definition', 'Mechanism', 'Example', 'Explanation'.\n"
-        "- NO extra sections (No intro, no conclusion, no exam tips, no misconceptions).\n\n"
+        "- NO extra sections (No intro, no conclusion, no exam tips, no misconceptions).\n"
+"- NO internal reasoning or <think> tags.\n\n"
         "STEP 2: KEYWORD ENFORCEMENT (CRITICAL)\n"
         "- Include ALL important NCERT keywords and **bold** them.\n"
         "- Use textbook terminology. Prioritize scoring terms.\n\n"
         "STEP 3: MODE HANDLING\n"
-        "- If MODE = 'brief': Give 3-4 high-quality scoring points per subpart.\n"
-        "- If MODE = 'detailed': Give 6-8 comprehensive points per subpart.\n\n"
+        "- If MODE = 'brief': Provide a COMPLETE but concise answer. Ensure all key points are covered without truncation.\n"
+        "- If MODE = 'detailed': Provide a COMPLETE and comprehensive answer. No word limits.\n\n"
         "STEP 4: STYLE\n"
-        "- Clean, exam-ready format. Each point = 1 mark style. No emojis. No long paragraphs.\n\n"
+        "- Clean, exam-ready format. Each point = 1 mark style. No emojis. No long paragraphs. Ensure the answer reaches a natural conclusion.\n\n"
         "JSON STRUCTURE:\n"
         '{"subject": "Biology|Chemistry|Physics|Maths", "type": "Theory", '
         '"brief": {"question_nature": "theoretical", "steps": [{"text": "bullet"}], "final_answer": "(i) ... (ii) ..."}, '
@@ -81,7 +83,9 @@ def _build_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
         "You are an expert scientific tutor. Provide structured responses in JSON.\n"
         "1. ADDRESS ALL SUB-PARTS: Use labels (a), (b) or (i), (ii) explicitly.\n"
         "2. MANDATORY LABELING: The 'final_answer' MUST be a labeled list.\n"
-        "3. NO TRAILING BACKSLASHES.\n"
+        "3. COMPLETENESS: DO NOT truncate. Provide the full solution until the final answer is reached for both brief and detailed views.\n"
+        "4. NO INTERNAL REASONING: Do not include <think> tags or reasoning blocks.\n"
+        "5. NO TRAILING BACKSLASHES.\n"
         "JSON STRUCTURE:\n"
         '{"subject": "...", "type": "...", '
         '"brief": {"question_nature": "numerical", "steps": [{"text": "..."}], "final_answer": "..."}, '
@@ -108,9 +112,11 @@ def _build_prompt(req: ResolveDoubtRequest) -> tuple[str, str]:
         f"CONTENT RULES:\n"
         f"1. ADDRESS ALL SUB-PARTS: Use labels like (a), (b), (i), (ii) explicitly in explanation AND final_answer.\n"
         f"2. MANDATORY LABELING: The 'final_answer' MUST be a labeled list, e.g., '(a)(i) ... (a)(ii) ... (b) ...'. NEVER omit labels.\n"
-        f"3. BRIEF VIEW (Quick Steps): Math/results ONLY. No prose.\n"
-        f"4. DETAILED VIEW: Full prose explanations + math.\n"
-        f"5. NO TRAILING BACKSLASHES: Do not end lines with '\\'.\n\n"
+        f"3. BRIEF VIEW (Quick Steps): COMPLETE mathematical solution. Math/results ONLY. No prose. DO NOT truncate.\n"
+        f"4. DETAILED VIEW: COMPLETE step-by-step prose explanation + math. DO NOT truncate.\n"
+        f"5. NO WORD LIMITS: Ensure the answer is complete for both views.\n"
+        f"6. NO INTERNAL REASONING: Do not include <think> tags.\n"
+        f"7. NO TRAILING BACKSLASHES: Do not end lines with '\\'.\n\n"
         f"JSON STRUCTURE:\n"
         f'{{"subject": "...", "type": "...", '
         f'"brief": {{"question_nature": "numerical", "steps": [{{"text": "Math only step"}}], "final_answer": "(a) ... (b) ..."}}, '
@@ -169,26 +175,16 @@ async def ocr_image(req: OcrImageRequest):
         raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
 
 
-async def _call_groq(system_prompt: str, user_prompt: str, api_key: str) -> dict:
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, headers=headers, json={
-            "model": "llama-3.3-70b-versatile",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        })
-    if resp.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Groq error: {resp.text}")
-    content = resp.json()["choices"][0]["message"]["content"]
-    return json.loads(content)
+async def _call_groq_v2(system_prompt: str, user_prompt: str, mode: str = "detailed") -> dict:
+    llm = get_llm()
+    resp = llm.complete(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model="llama-3.3-70b-versatile",
+        json_mode=True,
+        max_tokens=4096
+    )
+    return resp["content"]
 
 
 async def _call_gemini(system_prompt: str, user_prompt: str, api_key: str) -> dict:
@@ -258,21 +254,8 @@ async def resolve_doubt(req: ResolveDoubtRequest):
 
     try:
         if groq_keys:
-            last_groq_error = None
-            result = None
-            for i, groq_key in enumerate(groq_keys):
-                try:
-                    result = await _call_groq(system, user, groq_key)
-                    break
-                except HTTPException as e:
-                    last_groq_error = e
-                    text = str(e.detail).lower()
-                    key_like_error = any(x in text for x in ("rate limit", "quota", "too many requests", "invalid api key", "authentication"))
-                    if key_like_error and i < len(groq_keys) - 1:
-                        continue
-                    raise
-            if result is None and last_groq_error:
-                raise last_groq_error
+            # LLMClient handles rotation and retries automatically
+            result = await _call_groq_v2(system, user, req.mode)
         else:
             result = await _call_gemini(system, user, gemini_key)
 

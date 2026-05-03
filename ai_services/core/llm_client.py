@@ -101,7 +101,9 @@ _ANTI_HALLUCINATION_PREFIX = (
     "You are EDVA AI, an expert Indian education assistant "
     "for JEE, NEET, and CBSE (Class 10-12).\n"
     "Only answer what is asked. Stay on topic. "
-    "Use correct scientific facts only.\n\n"
+    "Use correct scientific facts only.\n"
+    "CRITICAL: Do NOT include internal reasoning, chain-of-thought, or <think> tags. "
+    "DO NOT THINK. START YOUR RESPONSE DIRECTLY WITH '{'.\n\n"
 )
 
 _JSON_MODE_SUFFIX = "\n\nRespond with ONLY a JSON object. No markdown. No code fences. No explanation."
@@ -114,14 +116,35 @@ _JSON_MODE_TUTOR_SUFFIX = (
 
 
 def _extract_json(raw: str) -> str:
+    import re
+    # 1. Aggressively remove <think> blocks (including unclosed ones)
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL | re.IGNORECASE)
+    raw = re.sub(r"<think>.*", "", raw, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 2. Strip markdown fences
     stripped = raw.strip()
     if stripped.startswith("```"):
         lines = stripped.splitlines()
         lines = lines[1:] if lines[0].startswith("```") else lines
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
-        return "\n".join(lines).strip()
+        stripped = "\n".join(lines).strip()
+    
+    # 3. Find the first '{' and the last '}' to isolate the JSON object
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return stripped[start : end + 1]
+        
     return stripped
+
+def strip_think_tags(text: str) -> str:
+    import re
+    # Remove closed blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove unclosed blocks
+    text = re.sub(r"<think>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text.strip()
 
 
 def get_llm() -> "LLMClient":
@@ -252,7 +275,7 @@ class LLMClient:
         user_prompt: str,
         model: str,
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int = 3500,
         json_mode: bool = True,
         institute_id: Optional[str] = None,
         json_mode_suffix: Optional[str] = None,
@@ -346,6 +369,7 @@ class LLMClient:
                     }
 
                     if not json_mode:
+                        raw = strip_think_tags(raw)
                         logger.info(
                             "LLM (text) | key=%d/%d model=%s latency=%.0fms",
                             actual_key_num, n, effective_model, latency_ms,
@@ -437,7 +461,7 @@ class LLMClient:
                 user_prompt=task["user_prompt"],
                 model=model,
                 temperature=temperature,
-                max_tokens=task.get("max_tokens", 4096),
+                max_tokens=task.get("max_tokens", 3500),
                 json_mode=json_mode,
                 institute_id=institute_id,
             )

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Views for NestJS ai-bridge endpoints.
 These endpoints match the paths called by apexiq-backend/src/modules/ai-bridge/ai-bridge.service.ts
 
@@ -1889,7 +1889,9 @@ def _parse_reasoning_response(raw: str) -> dict:
     """Extracts brief/detailed fields using regex to handle malformed LLM JSON output."""
     import re as _re
     import json as _json
+    # 1. Aggressively remove <think> blocks (including unclosed ones)
     cleaned = _re.sub(r'<think>.*?</think>', '', raw, flags=_re.DOTALL | _re.IGNORECASE).strip()
+    cleaned = _re.sub(r'<think>.*', '', cleaned, flags=_re.DOTALL | _re.IGNORECASE).strip()
     
     def get_field(target, field):
         # Find "field": "content" (handles escaped quotes and newlines)
@@ -2017,11 +2019,17 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             "MANDATORY JEE/NEET GOLD RULES:\n"
             f"{subject_rules}\n\n"
             "UNIVERSAL RIGOR RULES:\n"
+            "0. DO NOT THINK: Do NOT use <think> tags. Start response directly with '{'.\n"
             "1. NO PREAMBLE: Respond ONLY with JSON.\n"
             "2. PERFORM ACTUAL MATH: Step 1, Step 2... format.\n"
             "3. PRECISION: Carry 4 decimal places.\n"
             "4. MATH FORMATTING: Wrap ONLY mathematical variables, numbers, and equations in '$' (e.g., $x = 2$, $H_2O$). Do NOT wrap plain English sentences or step headers in '$'.\n"
             "5. FINAL ANSWER: End with 'Final Answer: [summary]'.\n\n"
+            "SCIENTIFIC TRAP DETECTION (MANDATORY):\n"
+            "1. INTEGRAL EQUATIONS: Check for constant solutions (f(t)=k). Verify domains/singularities.\n"
+            "2. EXTREMA TRAPS: Use Leibniz Rule for differentiation under the integral sign—DO NOT brute force integrate if (x-t) is present. Perform sign analysis.\n"
+            "3. PHYSICS CONCEPTS: a=-kx+c is shifted SHM. If a=kt, DO NOT use SUVAT.\n"
+            "4. DOMAIN VALIDITY: Check for extraneous roots in radicals and log domains.\n\n"
             "OUTPUT SCHEMA:\n"
             '{\n'
             '  "brief": {\n'
@@ -2070,8 +2078,9 @@ def _strip_think_blocks(text: str) -> str:
     """Strip <think>...</think> reasoning traces and extract ONLY the JSON object.
     Prioritizes content between the first '{' and the last '}' to ignore preambles/trailing text."""
     import re as _re
-    # Remove reasoning blocks first
+    # Remove reasoning blocks (including unclosed ones)
     cleaned = _re.sub(r'<think>.*?</think>', '', text, flags=_re.DOTALL | _re.IGNORECASE).strip()
+    cleaned = _re.sub(r'<think>.*', '', cleaned, flags=_re.DOTALL | _re.IGNORECASE).strip()
     
     # Aggressively find the outermost JSON object
     m = _re.search(r'(\{[\s\S]*\})', cleaned, flags=_re.DOTALL)
@@ -2259,7 +2268,7 @@ def resolve_doubt(request):
                 user_prompt=user_prompt,
                 model=model,
                 temperature=0.1,
-                max_tokens=4096,
+                max_tokens=3500,
                 json_mode=False,
                 institute_id=institute_id,
             )
@@ -2273,7 +2282,7 @@ def resolve_doubt(request):
                 user_prompt=user_prompt,
                 model=model,
                 temperature=0.1,
-                max_tokens=4096,
+                max_tokens=3500,
                 json_mode=True,
                 json_mode_suffix="",
                 institute_id=institute_id,

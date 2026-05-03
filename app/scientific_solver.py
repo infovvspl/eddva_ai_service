@@ -55,8 +55,19 @@ class RuleBasedChiralDetector:
             })
         return results
 
-class MathStepValidator:
+class StepValidator:
     """Helper to verify mathematical equivalence between steps using SymPy."""
+    @staticmethod
+    def verify_substitution(original, candidate):
+        """Mathematically verify a substitution using SymPy simplification."""
+        try:
+            # Assume original and candidate are SymPy expressions or strings
+            diff = sp.simplify(original - candidate)
+            is_valid = (diff == 0)
+            return {"valid": is_valid, "diff": str(diff)}
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
     @staticmethod
     def validate_steps(steps: List[str]) -> List[Dict[str, Any]]:
         results = []
@@ -156,7 +167,7 @@ class ScientificSolver:
             "pcp": pcp,
             "ureg": ureg,
             "ChiralDetector": RuleBasedChiralDetector,
-            "StepValidator": MathStepValidator,
+            "StepValidator": StepValidator,
             "OpenBabel": OpenBabelFallback,
             "Maxima": MaximaFallback,
         }
@@ -190,7 +201,7 @@ class ScientificSolver:
             "import pint\n"
             "import pubchempy as pcp\n"
             "ureg = pint.UnitRegistry()\n"
-            "from app.scientific_solver import RuleBasedChiralDetector as ChiralDetector, MathStepValidator as StepValidator, OpenBabelFallback as OpenBabel, MaximaFallback as Maxima\n"
+            "from app.scientific_solver import RuleBasedChiralDetector as ChiralDetector, StepValidator, OpenBabelFallback as OpenBabel, MaximaFallback as Maxima\n"
             "\n"
         ) + code
         
@@ -278,8 +289,21 @@ class ScientificSolver:
             "3. Use StepValidator.validate_steps([step1, step2, ...]) to verify mathematical logic if helpful.\n"
             "4. Use OpenBabel.convert(data, in_fmt, out_fmt) or Maxima.evaluate(expr) as fallbacks if primary tools (RDKit/SymPy) are insufficient.\n"
             "5. If a plot is helpful, use plt.plot() etc. Do NOT use plt.show().\n"
-            "6. Store the final answer in a variable named 'final_answer'.\n"
-            "7. Respond ONLY with valid Python code. No markdown fences. No explanation.\n\n"
+            "6. FINAL_RESULT VARIABLE: You MUST store the ultimate final numerical or symbolic answer in a variable named 'FINAL_RESULT'. Solve until the LAST target is reached.\n"
+            "7. CALCULUS RIGOR (CRITICAL):\n"
+            "   - NEVER change powers while substituting (e.g., $(x-t)^5$ stays power 5).\n"
+            "   - NEVER invent new factors or coefficients.\n"
+            "   - ALWAYS derive $g'(x)$ using FTC/Leibniz Rule.\n"
+            "   - SOLVE $g'(x)=0$ for extrema, NOT $g(x)=0$.\n"
+            "8. SUBSTITUTION VALIDATOR: Use 'StepValidator.verify_substitution(original, candidate)' to prove your algebra is correct before moving to the next step.\n"
+            "9. Respond ONLY with valid Python code. No markdown fences. No explanation.\n\n"
+            "SCIENTIFIC TRAP DETECTION (MANDATORY CHECKS):\n"
+            "1. INTEGRAL EQUATIONS: Check for constant solutions (f(t)=k). Verify domains/singularities (denominators ≠ 0). Enforce consistency of integral constants (C = ∫f(t)dt).\n"
+            "2. EXTREMA TRAPS: Use Leibniz Rule for differentiation under the integral sign—DO NOT brute force integrate if (x-t) is present. Perform sign analysis on odd vs even powers.\n"
+            "3. VECTOR LOGIC: Distinguish Scaling vs Rotation vs Reflection. v₁·v₂=0 means 90° rotation.\n"
+            "4. CHEMISTRY CHIRALITY: Check for symmetry (identical groups = NOT chiral). Check side-chains and rings for hidden centers.\n"
+            "5. PHYSICS CONCEPTS: a=-kx+c is shifted SHM, not simple SHM. If acceleration is variable (a=kt), DO NOT use constant acceleration (SUVAT) formulas.\n"
+            "6. DOMAIN VALIDITY: Check for extraneous roots in radicals (√(x-1)=x-3) and enforce log domains (ln(u) → u>0).\n\n"
             f"{formula_context}"
         )
         
@@ -306,61 +330,79 @@ class ScientificSolver:
             logger.error(f"Scientific execution failed: {exec_res['error']}")
             # Fallback or retry? For now, we'll return the error to the synthesizer
         
-        # Step 3: Synthesize Final Explanation
-        synth_system = (
-            "You are an expert scientific tutor. You will be given a question, "
-            "the Python code used to solve it, and the execution results (output, variables).\n"
-            "Your task is to provide a highly detailed, accurate response in a structured JSON format.\n\n"
-            "CONTENT RULES:\n"
-            "1. ADDRESS ALL SUB-PARTS: Use labels like (a), (b), (i), (ii) explicitly in the explanation AND the final_answer.\n"
-            "2. MANDATORY LABELING: The 'final_answer' MUST be a labeled list of results.\n"
-            "3. INCORPORATE VALIDATION: If the code used ChiralDetector or StepValidator, include those insights in the 'explanation' or 'verification' fields to reassure the student of the accuracy.\n"
-            "4. BRIEF VIEW (Quick Steps): Use math/results ONLY. Minimal to no prose.\n"
-            "5. DETAILED VIEW: Use full prose explanations along with math derivations.\n"
-            "6. NO TRAILING BACKSLASHES: Never end a line with a literal backslash '\\'.\n"
-            "7. MATH FORMATTING: Use KaTeX ($...$ or $$...$$).\n\n"
+        # Step 3: Split Synthesis (Parallel Brief/Detailed generation)
+        brief_system = (
+            "You are an expert scientific tutor. Create the 'BRIEF' part of a response.\n"
+            "CRITICAL: DO NOT THINK. DO NOT USE <think> TAGS. START DIRECTLY WITH '{'.\n"
+            "1. BRIEF VIEW (Quick Steps): COMPLETE mathematical solution. Address ALL parts of the question. DO NOT stop at intermediate steps. Reach the ULTIMATE final answer.\n"
+            "2. FINAL_RESULT: Use the 'FINAL_RESULT' from the execution results to provide the ultimate answer.\n"
+            "3. MATH FORMATTING: Use KaTeX ($...$ or $$...$$).\n\n"
             "JSON STRUCTURE:\n"
             "{\n"
             "  \"subject\": \"...\",\n"
             "  \"type\": \"...\",\n"
             "  \"brief\": {\n"
             "    \"question_nature\": \"numerical | theoretical\",\n"
-            "    \"steps\": [{\"text\": \"Math/Result only step (no prose)\"}, ...],\n"
-            "    \"final_answer\": \"(a) ... (b) ... (summary of all parts with labels)\"\n"
-            "  },\n"
+            "    \"steps\": [{\"text\": \"Math/Result only step\"}, ...],\n"
+            "    \"final_answer\": \"(a) ... (b) ...\"\n"
+            "  }\n"
+            "}"
+        )
+        
+        detailed_system = (
+            "You are an expert scientific tutor. Create the 'DETAILED' part of a response.\n"
+            "CRITICAL: DO NOT THINK. DO NOT USE <think> TAGS. START DIRECTLY WITH '{'.\n"
+            "1. DETAILED VIEW: COMPLETE step-by-step prose explanation + math derivations for EVERY part of the question. DO NOT skip the final calculation.\n"
+            "2. TOTAL COMPLETION: Explicitly solve for $f(x)$, $g(x)$, and the final requested value (e.g., $|p+q|$).\n"
+            "3. NO INTERNAL REASONING: Do not include <think> tags.\n"
+            "4. MATH FORMATTING: Use KaTeX.\n\n"
+            "JSON STRUCTURE:\n"
+            "{\n"
             "  \"detailed\": {\n"
-            "    \"explanation\": \"Full step-by-step prose explanation with part labels (a), (b), etc.\",\n"
-            "    \"final_answer\": \"(a) ... (b) ... (formal summary)\",\n"
+            "    \"explanation\": \"Full prose with derivations\",\n"
+            "    \"final_answer\": \"Summary\",\n"
             "    \"verification\": \"...\",\n"
             "    \"key_concept\": \"...\"\n"
             "  },\n"
             "  \"key_concepts\": [...]\n"
             "}"
         )
-        
+
         res_summary = json.dumps({
-            "stdout": exec_res["stdout"],
-            "variables": exec_res["results"],
-            "error": exec_res["error"]
+            "stdout": exec_res["stdout"][:1000] if exec_res["stdout"] else "",
+            "variables": {k: str(v)[:500] for k, v in list(exec_res["results"].items())[:20]},
+            "error": str(exec_res["error"])[:500] if exec_res["error"] else None
         }, default=str)
         
-        synth_user = (
+        common_user = (
             f"Question: {question}\n\n"
             f"Executed Code:\n{code}\n\n"
             f"Results:\n{res_summary}\n\n"
-            f"Graphs generated: {len(exec_res['graphs'])} graphs.\n"
-            f"Provide the complete structured response addressing all parts of the question."
+            f"Provide the requested JSON section."
         )
+
+        tasks = [
+            {"system_prompt": brief_system, "user_prompt": common_user, "max_tokens": 1536},
+            {"system_prompt": detailed_system, "user_prompt": common_user, "max_tokens": 3072}
+        ]
         
-        final_resp = self.llm.complete(
-            system_prompt=synth_system,
-            user_prompt=synth_user,
+        results = self.llm.parallel_complete_many(
+            tasks=tasks,
             model="llama-3.3-70b-versatile",
-            json_mode=True,
-            json_mode_suffix="\n\nRespond with a JSON object following the structure above."
+            json_mode=True
         )
         
-        content = final_resp["content"]
+        brief_resp = results[0]["content"]
+        detailed_resp = results[1]["content"]
+        
+        # Merge results
+        content = {
+            "subject": brief_resp.get("subject", "Science"),
+            "type": brief_resp.get("type", "Numerical"),
+            "brief": brief_resp.get("brief", {}),
+            "detailed": detailed_resp.get("detailed", {}),
+            "key_concepts": detailed_resp.get("key_concepts", [])
+        }
         
         # Step 4: Post-process to replace placeholders with actual base64 in all fields
         def replace_placeholders(text: Any) -> Any:
