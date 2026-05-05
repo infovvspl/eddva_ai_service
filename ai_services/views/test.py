@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
 from ai_services.core.batch_processor import BatchProcessor
+from ai_services.core.cache import question_bank
 from .base import ai_call, get_llm
 
 # ── Text cleaning ─────────────────────────────────────────────────────────────
@@ -387,39 +388,12 @@ def generate_practice_test(request):
                 formula = "D = 0.30C + 0.10S + 0.05M + 0.15T + 0.40X"
                 exam_rules = "Prefer statement-based or assertion-reason, conceptual clarity, high trickiness."
 
-            heuristic_block = f"""
-----------------------------------------
-DIFFICULTY MODEL
-Variables:
-C = Concept level (1-10) [1=Direct formula, 5=Concept application, 10=Multi-concept deep understanding]
-S = Steps required (1-10) [1=1-2 steps, 5=3-5 steps, 10=6+ steps]
-M = Calculation level (1-10) [1=Basic math, 5=Algebra/moderate, 10=Heavy calculus/vector]
-T = Time required (1-10) [1=<1 min, 5=1-2 min, 10=3+ min]
-X = Trickiness (1-10) [1=Direct, 10=Confusing exceptions/statements]
-
-Target Exam: {exam_key.upper()}
-Difficulty Formula: {formula}
-Exam Rules: {exam_rules}
-Subject Rules:
-- Physics/Math: prioritize multi-step reasoning and calculation
-- Physical Chemistry: calculation-heavy
-- Organic Chemistry: reaction mechanisms and multi-step conversions
-- Inorganic Chemistry: NCERT facts, exceptions, memory traps
-- Biology (NEET): statement-based, conceptual clarity, high trickiness
-
-Targets:
-- Easy -> Target Final D <= 3
-- Medium -> Target 4 <= Final D <= 7
-- Hard -> Target Final D >= 8
-
-STRICT RULES (VERY IMPORTANT):
-- Use the difficulty model internally.
-- DO NOT display C, S, M, T, X, or D in the question.
-- DO NOT show any calculations of difficulty.
-- Ensure the question matches the target difficulty strictly ({difficulty}).
-- Include a '_meta' object with C, S, M, T, X, D inside each question JSON to report your scores.
-----------------------------------------
-"""
+            heuristic_block = (
+                f"DIFFICULTY SCORING (internal, do not display): {exam_key.upper()} | Formula: {formula} | "
+                f"Easy→D≤3, Medium→4≤D≤7, Hard→D≥8. "
+                f"Include '_meta': {{C, S, M, T, X, D}} in each question JSON. "
+                f"Target difficulty: {difficulty}.\n"
+            )
 
     # ── Exam-aware difficulty description (matches the heuristic block above) ──
     if exam_target:
@@ -790,47 +764,18 @@ STRICT RULES (VERY IMPORTANT):
         et = exam_target.lower()
         if "advance" in et:
             exam_banner = (
-                "🎯 TARGET EXAM: **JEE ADVANCED** (IIT entrance — toughest engineering exam in India).\n"
-                "  HARD TIER means: the question requires combining 2+ concepts AND 4+ reasoning/calculation steps,\n"
-                "  has a non-obvious trap or twist, and a top-1% student should need 4+ minutes to solve.\n"
-                "  Examples of acceptable HARD JEE Advanced questions:\n"
-                "    • A 4-step kinematics-energy-rotation combined problem with a non-trivial constraint\n"
-                "    • A reaction mechanism asking the major product after 3 sequential transformations\n"
-                "    • A definite integral that requires substitution + partial fractions + reduction formula\n"
-                "  REJECT and rewrite if your draft question:\n"
-                "    ✗ Could appear in a Class 9/10 NCERT exercise\n"
-                "    ✗ Asks for a single-formula plug-in (e.g. 'apply v=u+at')\n"
-                "    ✗ Tests only definition recall (e.g. 'What is colligative property?')\n"
-                "    ✗ Has a single-step calculation\n\n"
+                "🎯 TARGET EXAM: JEE ADVANCED — multi-concept, 4+ step problems, non-obvious traps. "
+                "Hard = top-1% student needs 4+ min. Reject single-formula plug-ins, definition recalls, 1-step calculations.\n\n"
             )
         elif "main" in et:
             exam_banner = (
-                "🎯 TARGET EXAM: **JEE MAIN** (NTA, undergraduate engineering entrance).\n"
-                "  HARD TIER means: 3-4 reasoning/calculation steps, requires applying a concept to a non-standard situation,\n"
-                "  and an above-average JEE-prep student should need 2-3 minutes to solve. NOT board/CBSE/school level.\n"
-                "  Examples of acceptable HARD JEE Main questions:\n"
-                "    • A 3-step physics calculation requiring identification + formula application + algebra\n"
-                "    • A chemistry question requiring two-step product prediction with stereochemistry hint\n"
-                "    • A maths problem combining 2 standard techniques (e.g. integration by substitution + parts)\n"
-                "  REJECT and rewrite if your draft question:\n"
-                "    ✗ Is a direct NCERT line/formula recall\n"
-                "    ✗ Has only 1 step or 1 concept\n"
-                "    ✗ Could be solved in under 30 seconds by a Class 11 student\n"
-                "    ✗ Asks 'state the law' or 'define X' (board-style)\n\n"
+                "🎯 TARGET EXAM: JEE MAIN — 3-4 step problems applying concepts to non-standard situations. "
+                "Hard = above-average student needs 2-3 min. Reject direct NCERT recall and board-style questions.\n\n"
             )
         elif "neet" in et:
             exam_banner = (
-                "🎯 TARGET EXAM: **NEET-UG** (NTA medical entrance).\n"
-                "  HARD TIER means: NCERT-deep statement-based or assertion-reason testing edge cases, exceptions,\n"
-                "  or composite facts spanning multiple paragraphs of NCERT. NOT board-style recall.\n"
-                "  Examples of acceptable HARD NEET questions:\n"
-                "    • Statement-based: 4 statements where 2 are subtly wrong NCERT facts\n"
-                "    • Assertion-reason where R is correct but does not actually explain A\n"
-                "    • A multi-fact integration (e.g. one organism, multiple kingdoms-level traits)\n"
-                "  REJECT and rewrite if your draft question:\n"
-                "    ✗ Asks 'define X' or 'what is Y' (board-style)\n"
-                "    ✗ Has all options obviously different (no NCERT-trap)\n"
-                "    ✗ Could be solved by reading any one NCERT line\n\n"
+                "🎯 TARGET EXAM: NEET-UG — NCERT-deep statement-based / assertion-reason questions with tricky distractors. "
+                "Hard = multi-fact edge cases across NCERT paragraphs. Reject 'define X' and obvious single-line answers.\n\n"
             )
 
     # ── VARIETY RULE — prevents the model from clustering on the easiest sub-topic ──
@@ -880,23 +825,8 @@ STRICT RULES (VERY IMPORTANT):
             )
 
     formatting_rule = (
-        "FORMATTING RULES — STRICT (READ CAREFULLY):\n"
-        "  • DO NOT use LaTeX delimiters anywhere — no $...$, no $$...$$, no \\( \\), no \\[ \\].\n"
-        "  • DO NOT use LaTeX commands like \\text{}, \\frac{}{}, \\sqrt{}, \\;, \\,, \\quad.\n"
-        "  • Write all math in plain text using Unicode symbols:\n"
-        "      multiplication = ×    division = ÷    plus/minus = ±    degrees = °\n"
-        "      square root = √(x)    fraction = (a/b)    powers = x²,x³,xⁿ    subscripts = H₂O, CO₂\n"
-        "      Greek letters as Unicode: π, θ, α, β, λ, μ, Ω, Δ\n"
-        "      arrows: → ← ⇌ (chemistry equilibrium)    relations: ≤ ≥ ≠ ≈\n"
-        "  • Examples of CORRECT formatting:\n"
-        "      'What is the volume of 0.1 mol of an ideal gas at STP?'  ✓\n"
-        "      '2H₂ + O₂ → 2H₂O'  ✓\n"
-        "      'v = u + at where a = 9.8 m/s²'  ✓\n"
-        "  • Examples of WRONG formatting (DO NOT DO THIS):\n"
-        "      'What is the volume of $0.1 \\text{mol}$ of...'  ✗  (uses $ and \\text)\n"
-        "      '$v = u + at$'  ✗  (uses $)\n"
-        "      'H_2O' or 'H^2'  ✗  (use H₂O / H²)\n"
-        "  • Units always go in plain text after the number with one space: '22.4 L', '9.8 m/s²', '273 K'.\n\n"
+        "FORMATTING: No LaTeX ($, $$, \\frac, \\text, etc.). "
+        "Use plain Unicode only: × ÷ ± ° √() x² H₂O π θ α β λ → ⇌ ≤ ≥ ≠ ≈\n\n"
     )
 
     user_prompt = (
@@ -935,14 +865,15 @@ STRICT RULES (VERY IMPORTANT):
 
     # Each question needs ~400-450 tokens (text + 4 options + explanation + scope_check + subtopic + chapter + JSON overhead).
     # Add 600 buffer so the closing braces/brackets are never cut off mid-generation.
-    max_output_tokens = min(6000, max(1500, num_questions * 450 + 600))
+    # gemma2-9b-it has 15K TPM — cap at 8000 to leave headroom for prompt tokens.
+    max_output_tokens = min(8000, max(1500, num_questions * 450 + 600))
 
     try:
-        # Use 8b-instant — ~10x faster than 70b. Quality is equivalent for structured MCQ JSON.
+        # 70b-versatile: handles the full prompt size (>6K tokens). 8b-instant has a 6K per-request TPM cap.
         result = get_llm().complete(
             system_prompt=template.system,
             user_prompt=user_prompt,
-            model="llama-3.1-8b-instant",
+            model="llama-3.3-70b-versatile",
             temperature=0.4,
             max_tokens=max_output_tokens,
             json_mode=True,
@@ -950,6 +881,14 @@ STRICT RULES (VERY IMPORTANT):
         )
     except RuntimeError as e:
         logger.error("LLM complete failed: %s", e)
+        # Try question bank fallback before returning error
+        cached = question_bank.get_random(subject, chapter, difficulty, qtype, num_questions)
+        if cached:
+            logger.info("LLM failed — serving %d cached questions from question bank", len(cached))
+            return JsonResponse({
+                "questions": cached,
+                "_meta": {"source": "cache", "institute": institute_id, "type": qtype, "style": style or None},
+            })
         return JsonResponse({"error": str(e)}, status=502)
 
     parsed = parse_ai_result(result, topic, difficulty, qtype, style)
@@ -961,6 +900,10 @@ STRICT RULES (VERY IMPORTANT):
         "type": qtype,
         "style": style or None,
     }
+
+    # Save successfully generated questions to the question bank for future fallback
+    if parsed.get("questions"):
+        question_bank.save(subject, chapter, difficulty, qtype, parsed["questions"])
 
     logger.info(
         "generate_practice_test: OK | type=%s | style=%s | returned=%d questions",

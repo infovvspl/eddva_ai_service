@@ -17,6 +17,7 @@ import os
 import json
 import hashlib
 import logging
+import random
 import time
 from collections import OrderedDict
 from threading import Lock
@@ -220,3 +221,100 @@ class ResponseCache:
                         break
             except Exception:
                 pass
+
+
+class QuestionBankCache:
+    """
+    Stores successfully generated questions by (subject, chapter, difficulty, qtype).
+    On LLM failure, returns a random previously-seen question from the bank.
+
+    Storage:
+      - Redis LIST (RPUSH/LTRIM) when REDIS_URL is set — survives restarts, shared across workers
+      - Module-level dict fallback when Redis is unavailable — in-memory only, lost on restart
+        (still useful for demo: bank fills up during the session)
+    """
+
+    _BANK_TTL = 60 * 60 * 24 * 7   # 7 days
+    _MAX_PER_KEY = 50               # max questions stored per bucket
+
+    def __init__(self):
+        self._redis = None
+        self._memory: dict[str, list] = {}
+        self._lock = Lock()
+        self._init_redis()
+
+    def _init_redis(self):
+        redis_url = os.getenv("REDIS_URL", "")
+        if not redis_url:
+            return
+        try:
+            import redis
+            self._redis = redis.from_url(redis_url, decode_responses=True, socket_timeout=1)
+            self._redis.ping()
+            logger.info("QuestionBank: Redis connected")
+        except Exception as e:
+            logger.warning("QuestionBank: Redis unavailable (%s), using in-memory fallback", e)
+            self._redis = None
+
+    def _key(self, subject: str, chapter: str, difficulty: str, qtype: str) -> str:
+        parts = [
+            (subject or "").lower().strip()[:40],
+            (chapter or "").lower().strip()[:40],
+            (difficulty or "").lower().strip(),
+            (qtype or "").lower().strip(),
+        ]
+        return "qbank:" + ":".join(parts)
+
+    def save(self, subject: str, chapter: str, difficulty: str, qtype: str, questions: list):
+        """Append successfully generated questions into the bank."""
+        if not questions:
+            return
+        key = self._key(subject, chapter, difficulty, qtype)
+
+        # In-memory store (always written)
+        with self._lock:
+            bucket = self._memory.get(key, [])
+            bucket.extend(questions)
+            if len(bucket) > self._MAX_PER_KEY:
+                bucket = bucket[-self._MAX_PER_KEY:]
+            self._memory[key] = bucket
+
+        # Redis store (bounded list)
+        if self._redis:
+            try:
+                pipe = self._redis.pipeline()
+                for q in questions:
+                    pipe.rpush(key, json.dumps(q, ensure_ascii=False))
+                pipe.ltrim(key, -self._MAX_PER_KEY, -1)
+                pipe.expire(key, self._BANK_TTL)
+                pipe.execute()
+            except Exception as e:
+                logger.warning("QuestionBank Redis write failed: %s", e)
+
+    def get_random(self, subject: str, chapter: str, difficulty: str, qtype: str, n: int = 1) -> list:
+        """Return up to n random cached questions. Returns [] if the bank is empty."""
+        key = self._key(subject, chapter, difficulty, qtype)
+        questions: list = []
+
+        # Try Redis first
+        if self._redis:
+            try:
+                raw_list = self._redis.lrange(key, 0, -1)
+                if raw_list:
+                    questions = [json.loads(r) for r in raw_list]
+            except Exception:
+                pass
+
+        # Fallback to in-memory
+        if not questions:
+            with self._lock:
+                questions = list(self._memory.get(key, []))
+
+        if not questions:
+            return []
+
+        random.shuffle(questions)
+        return questions[:n]
+
+
+question_bank = QuestionBankCache()
