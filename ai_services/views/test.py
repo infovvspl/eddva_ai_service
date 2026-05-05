@@ -933,14 +933,18 @@ STRICT RULES (VERY IMPORTANT):
         exam_target or "—", difficulty, subject or "—", chapter or "—", topic[:50], qtype, style or "—", num_questions
     )
 
+    # Each question needs ~400-450 tokens (text + 4 options + explanation + scope_check + subtopic + chapter + JSON overhead).
+    # Add 600 buffer so the closing braces/brackets are never cut off mid-generation.
+    max_output_tokens = min(6000, max(1500, num_questions * 450 + 600))
+
     try:
-        # Switch to 'quiz' model (8b-instant)
+        # Use 8b-instant — ~10x faster than 70b. Quality is equivalent for structured MCQ JSON.
         result = get_llm().complete(
             system_prompt=template.system,
             user_prompt=user_prompt,
-            model="quiz",
+            model="llama-3.1-8b-instant",
             temperature=0.4,
-            max_tokens=4000,
+            max_tokens=max_output_tokens,
             json_mode=True,
             institute_id=institute_id,
         )

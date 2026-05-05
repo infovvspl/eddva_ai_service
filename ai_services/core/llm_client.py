@@ -305,18 +305,17 @@ class LLMClient:
 
         last_error: Optional[str] = None
 
-        def _parse_retry_after(msg: str, default: float = 65.0) -> float:
-            """Parse 'Please try again in 1m46.5s' → seconds.
-            Capped at 75s: Groq TPM windows are 60s, so 75s is always enough to reset.
-            Never wait longer — a longer Groq-suggested time means TPD (daily) exhaustion
-            on that specific key, but other keys will be available in round 2."""
+        def _parse_retry_after(msg: str, default: float = 15.0) -> float:
+            """Parse 'Please try again in Xs' from Groq rate-limit error.
+            Cap at 20s — if Groq says wait longer it means TPD exhaustion on that key,
+            so we should move to the next key quickly rather than blocking the request."""
             import re as _re
             m = _re.search(r"(\d+)m(\d+\.?\d*)s", msg or "")
             if m:
-                return min(int(m.group(1)) * 60 + float(m.group(2)) + 2, 75.0)
+                return min(int(m.group(1)) * 60 + float(m.group(2)) + 1, 20.0)
             m = _re.search(r"(\d+\.?\d*)s", msg or "")
             if m:
-                return min(float(m.group(1)) + 2, 75.0)
+                return min(float(m.group(1)) + 1, 20.0)
             return default
 
         def _is_permanently_bad_key_error(msg: str) -> bool:
@@ -420,10 +419,9 @@ class LLMClient:
                         actual_key_num, n, last_error,
                     )
 
-            # All keys failed this round — wait before next round.
-            # 75s cap guarantees any TPM window (60s) is fully reset before we retry.
+            # All keys failed this round — short wait then try again.
             if round_num < 2:
-                wait_s = _parse_retry_after(last_error or "", default=65.0)
+                wait_s = _parse_retry_after(last_error or "", default=15.0)
                 logger.warning(
                     "All %d LLM keys failed (round %d) -- waiting %.0fs before retry",
                     n, round_num + 1, wait_s,
