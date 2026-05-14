@@ -37,9 +37,9 @@ jobs:
           DB_PORT: ${{ secrets.AI_DB_PORT }}
           CORS_ALLOWED_ORIGINS: ${{ secrets.DEV_AI_CORS_ORIGINS }}
         with:
-          host: ${{ secrets.AI_EC2_HOST }}
-          username: ${{ secrets.AI_EC2_USER }}
-          key: ${{ secrets.AI_EC2_SSH_KEY }}
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 25m
           envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS
           script: |
