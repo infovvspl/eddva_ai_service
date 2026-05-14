@@ -1,0 +1,101 @@
+name: Deploy AI Service (DEV)
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  deploy:
+    name: Deploy AI Service (DEV)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to AI EC2 (DEV)
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          DJANGO_SECRET_KEY: ${{ secrets.DEV_DJANGO_SECRET_KEY }}
+          ALLOWED_HOSTS: ${{ secrets.DEV_AI_ALLOWED_HOSTS }}
+          AI_API_KEY: ${{ secrets.DEV_AI_API_KEY }}
+          WHISPER_MODEL: "base"
+          WHISPER_DEVICE: "cpu"
+          WHISPER_COMPUTE_TYPE: "int8"
+          DJANGO_DEBUG: "true"
+          DB_ENGINE: ${{ secrets.AI_DB_ENGINE }}
+          DB_NAME: ${{ secrets.DEV_AI_DB_NAME }}
+          DB_USER: ${{ secrets.AI_DB_USER }}
+          DB_PASSWORD: ${{ secrets.AI_DB_PASSWORD }}
+          DB_HOST: ${{ secrets.AI_DB_HOST }}
+          DB_PORT: ${{ secrets.AI_DB_PORT }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 20m
+          envs: GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT
+          script: |
+            set -e
+            AI_DIR=/home/ubuntu/eddva_ai_service_dev
+
+            # First-time: clone dev branch if directory doesn't exist
+            if [ ! -d "$AI_DIR/.git" ]; then
+              git clone -b dev https://github.com/infovvspl/AI_Study.git $AI_DIR
+              cd $AI_DIR
+              python3.11 -m venv venv
+            fi
+
+            # Write .env
+            cat > $AI_DIR/.env <<EOF
+            GROQ_API_KEY=$GROQ_API_KEY
+            GEMINI_API_KEY=$GEMINI_API_KEY
+            SERPAPI_KEY=$SERPAPI_KEY
+            DJANGO_SECRET_KEY=$DJANGO_SECRET_KEY
+            ALLOWED_HOSTS=$ALLOWED_HOSTS
+            AI_API_KEY=$AI_API_KEY
+            WHISPER_MODEL=$WHISPER_MODEL
+            WHISPER_DEVICE=$WHISPER_DEVICE
+            WHISPER_COMPUTE_TYPE=$WHISPER_COMPUTE_TYPE
+            DJANGO_DEBUG=$DJANGO_DEBUG
+            DB_ENGINE=$DB_ENGINE
+            DB_NAME=$DB_NAME
+            DB_USER=$DB_USER
+            DB_PASSWORD=$DB_PASSWORD
+            DB_HOST=$DB_HOST
+            DB_PORT=$DB_PORT
+            EOF
+
+            # Pull latest dev branch
+            cd $AI_DIR
+            git fetch origin dev
+            git checkout -- .
+            git pull origin dev
+
+            # Install dependencies
+            venv/bin/pip install -r requirements.txt --quiet
+
+            # Run migrations
+            venv/bin/python manage.py migrate --noinput
+            venv/bin/python manage.py collectstatic --noinput
+
+            # Start or restart PM2 dev process on port 8001
+            if pm2 list | grep -q ai-service-dev; then
+              pm2 restart ai-service-dev
+            else
+              pm2 start \
+                "venv/bin/gunicorn ai_study_project.wsgi:application --bind 0.0.0.0:8001 --workers 2 --timeout 120" \
+                --name ai-service-dev \
+                --interpreter none \
+                --log /home/ubuntu/logs/ai-dev.log
+            fi
+            pm2 save
+
+            echo "✓ DEV AI Service deployed on port 8001 at $(date)"
+
+      - name: Notify success
+        if: success()
+        run: echo "✓ DEV AI Service deployed successfully"
