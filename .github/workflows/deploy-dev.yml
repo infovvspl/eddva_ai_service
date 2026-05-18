@@ -8,6 +8,7 @@ jobs:
   deploy:
     name: Deploy AI Service (DEV)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -16,86 +17,92 @@ jobs:
       - name: Deploy to AI EC2 (DEV)
         uses: appleboy/ssh-action@v1.0.3
         env:
+          GH_PAT: ${{ secrets.GH_PAT }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DJANGO_SECRET_KEY: ${{ secrets.DEV_DJANGO_SECRET_KEY }}
           ALLOWED_HOSTS: ${{ secrets.DEV_AI_ALLOWED_HOSTS }}
           AI_API_KEY: ${{ secrets.DEV_AI_API_KEY }}
           WHISPER_MODEL: "base"
           WHISPER_DEVICE: "cpu"
           WHISPER_COMPUTE_TYPE: "int8"
-          DJANGO_DEBUG: "true"
+          DJANGO_DEBUG: "false"
           DB_ENGINE: ${{ secrets.AI_DB_ENGINE }}
           DB_NAME: ${{ secrets.DEV_AI_DB_NAME }}
           DB_USER: ${{ secrets.AI_DB_USER }}
           DB_PASSWORD: ${{ secrets.AI_DB_PASSWORD }}
           DB_HOST: ${{ secrets.AI_DB_HOST }}
           DB_PORT: ${{ secrets.AI_DB_PORT }}
+          CORS_ALLOWED_ORIGINS: ${{ secrets.DEV_AI_CORS_ORIGINS }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          command_timeout: 20m
-          envs: GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT
+          command_timeout: 25m
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS
           script: |
             set -e
-            AI_DIR=/home/ubuntu/eddva_ai_service_dev
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            AI_DIR=$HOME/eddva_ai_service_dev
 
-            # First-time: clone dev branch if directory doesn't exist
+            # Clone on first deploy (private repo — use GH_PAT)
             if [ ! -d "$AI_DIR/.git" ]; then
-              git clone -b dev https://github.com/infovvspl/AI_Study.git $AI_DIR
+              git clone -b dev https://$GH_PAT@github.com/infovvspl/eddva_ai_service.git $AI_DIR
               cd $AI_DIR
               python3.11 -m venv venv
             fi
 
-            # Write .env
-            cat > $AI_DIR/.env <<EOF
-            GROQ_API_KEY=$GROQ_API_KEY
-            GEMINI_API_KEY=$GEMINI_API_KEY
-            SERPAPI_KEY=$SERPAPI_KEY
-            DJANGO_SECRET_KEY=$DJANGO_SECRET_KEY
-            ALLOWED_HOSTS=$ALLOWED_HOSTS
-            AI_API_KEY=$AI_API_KEY
-            WHISPER_MODEL=$WHISPER_MODEL
-            WHISPER_DEVICE=$WHISPER_DEVICE
-            WHISPER_COMPUTE_TYPE=$WHISPER_COMPUTE_TYPE
-            DJANGO_DEBUG=$DJANGO_DEBUG
-            DB_ENGINE=$DB_ENGINE
-            DB_NAME=$DB_NAME
-            DB_USER=$DB_USER
-            DB_PASSWORD=$DB_PASSWORD
-            DB_HOST=$DB_HOST
-            DB_PORT=$DB_PORT
-            EOF
-
-            # Pull latest dev branch
+            # Pull latest code (hard reset avoids merge conflicts)
             cd $AI_DIR
-            git fetch origin dev
-            git checkout -- .
-            git pull origin dev
+            git fetch https://$GH_PAT@github.com/infovvspl/eddva_ai_service.git dev
+            git reset --hard FETCH_HEAD
 
-            # Install dependencies
+            # Write .env (printf avoids leading-whitespace issues from heredoc)
+            printf 'GROQ_API_KEY=%s\n' "$GROQ_API_KEY" > .env
+            printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY" >> .env
+            printf 'SERPAPI_KEY=%s\n' "$SERPAPI_KEY" >> .env
+            printf 'SARVAM_API_KEY=%s\n' "$SARVAM_API_KEY" >> .env
+            printf 'DJANGO_SECRET_KEY=%s\n' "$DJANGO_SECRET_KEY" >> .env
+            printf 'ALLOWED_HOSTS=%s\n' "$ALLOWED_HOSTS" >> .env
+            printf 'AI_API_KEY=%s\n' "$AI_API_KEY" >> .env
+            printf 'WHISPER_MODEL=%s\n' "$WHISPER_MODEL" >> .env
+            printf 'WHISPER_DEVICE=%s\n' "$WHISPER_DEVICE" >> .env
+            printf 'WHISPER_COMPUTE_TYPE=%s\n' "$WHISPER_COMPUTE_TYPE" >> .env
+            printf 'DJANGO_DEBUG=%s\n' "$DJANGO_DEBUG" >> .env
+            printf 'DB_ENGINE=%s\n' "$DB_ENGINE" >> .env
+            printf 'DB_NAME=%s\n' "$DB_NAME" >> .env
+            printf 'DB_USER=%s\n' "$DB_USER" >> .env
+            printf 'DB_PASSWORD=%s\n' "$DB_PASSWORD" >> .env
+            printf 'DB_HOST=%s\n' "$DB_HOST" >> .env
+            printf 'DB_PORT=%s\n' "$DB_PORT" >> .env
+            printf 'CORS_ALLOWED_ORIGINS=%s\n' "$CORS_ALLOWED_ORIGINS" >> .env
+
+            # Install dependencies (requirements.txt has gunicorn, groq, django-cors-headers)
             venv/bin/pip install -r requirements.txt --quiet
 
-            # Run migrations
+            # Django migrations
             venv/bin/python manage.py migrate --noinput
-            venv/bin/python manage.py collectstatic --noinput
 
-            # Start or restart PM2 dev process on port 8001
+            # Restart: delete + start so the fresh .env is picked up
+            mkdir -p $HOME/logs
             if pm2 list | grep -q ai-service-dev; then
-              pm2 restart ai-service-dev
-            else
-              pm2 start \
-                "venv/bin/gunicorn ai_study_project.wsgi:application --bind 0.0.0.0:8001 --workers 2 --timeout 120" \
-                --name ai-service-dev \
-                --interpreter none \
-                --log /home/ubuntu/logs/ai-dev.log
+              pm2 delete ai-service-dev
             fi
+            pm2 start $AI_DIR/venv/bin/gunicorn \
+              --name ai-service-dev \
+              --interpreter none \
+              --log $HOME/logs/ai-dev.log \
+              -- ai_study_project.wsgi:application \
+                 --bind 0.0.0.0:8001 \
+                 --workers 2 \
+                 --timeout 120
             pm2 save
 
-            echo "✓ DEV AI Service deployed on port 8001 at $(date)"
+            echo "AI Service deployed on port 8001 at $(date)"
 
       - name: Notify success
         if: success()
-        run: echo "✓ DEV AI Service deployed successfully"
+        run: echo "DEV AI Service deployed to dev-ai.eddva.in (port 8001)"
