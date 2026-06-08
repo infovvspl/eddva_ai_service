@@ -33,6 +33,9 @@ urlpatterns = [
     # AI #7c — YouTube video ID → fetch captions server-side → notes (production-safe)
     path("stt/notes-from-youtube", bridge.generate_notes_from_youtube),
 
+    # AI #7d — Regenerate a single note image in isolation
+    path("stt/regenerate-note-image", bridge.regenerate_single_note_image),
+
     # AI #8 — Student Feedback Engine
     path("feedback/generate", bridge.generate_feedback),
 
