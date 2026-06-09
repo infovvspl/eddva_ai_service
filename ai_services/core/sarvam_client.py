@@ -26,10 +26,11 @@ SARVAM_API_KEY  = os.getenv("SARVAM_API_KEY", "")
 SARVAM_ENDPOINT = "https://api.sarvam.ai/translate"
 SARVAM_MODEL    = "mayura:v1"
 SARVAM_CHUNK    = 900          # Sarvam hard limit is ~1 000 chars; use 900 for safety
-# Speech-to-text (used for Odia lecture transcription; Whisper handles en/hi)
 SARVAM_STT_ENDPOINT = os.getenv("SARVAM_STT_ENDPOINT", "https://api.sarvam.ai/speech-to-text")
 SARVAM_STT_MODEL = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
 SARVAM_STT_MODE = os.getenv("SARVAM_STT_MODE", "transcribe")
+SARVAM_CHAT_ENDPOINT = os.getenv("SARVAM_CHAT_ENDPOINT", "https://api.sarvam.ai/v1/chat/completions")
+SARVAM_CHAT_MODEL = os.getenv("SARVAM_CHAT_MODEL", "sarvam-105b")
 
 # ISO 639-1 short code → Sarvam BCP-47 code
 LANGUAGE_CODE_MAP: dict[str, str] = {
@@ -44,6 +45,10 @@ LANGUAGE_CODE_MAP: dict[str, str] = {
     "ml": "ml-IN",
     "pa": "pa-IN",
     "od": "od-IN",
+    "odia": "od-IN",
+    "or": "od-IN",
+    "od-in": "od-IN",
+    "or-in": "od-IN",
 }
 
 
@@ -51,7 +56,14 @@ LANGUAGE_CODE_MAP: dict[str, str] = {
 
 def _to_sarvam_code(lang: str) -> str:
     """Convert a short language code (e.g. 'hi') to a Sarvam BCP-47 code."""
-    return LANGUAGE_CODE_MAP.get(lang.lower(), f"{lang}-IN")
+    cleaned = str(lang or "").strip().lower()
+    if not cleaned:
+        return "unknown"
+    if cleaned == "auto":
+        return "unknown"
+    if "-" in cleaned and cleaned.endswith("-in"):
+        return LANGUAGE_CODE_MAP.get(cleaned, f"{cleaned.split('-', 1)[0]}-IN")
+    return LANGUAGE_CODE_MAP.get(cleaned, f"{cleaned}-IN")
 
 
 def _chunk_text(text: str, size: int = SARVAM_CHUNK) -> list[str]:
@@ -177,6 +189,120 @@ def translate(
             raise
 
     return " ".join(parts).strip()
+
+
+def chat_complete(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    model: str | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 2048,
+    reasoning_effort: str | None = None,
+    timeout: int = 90,
+) -> dict:
+    """
+    Generate text with Sarvam's OpenAI-compatible chat completion API.
+
+    Sarvam is used for Indian-language generation where Groq quality is weak.
+    Returns a small dict shaped similarly to the local LLM client:
+    {"content": str, "model": str, "usage": dict}
+    """
+    api_key = os.getenv("SARVAM_API_KEY", SARVAM_API_KEY)
+    if not api_key:
+        raise RuntimeError(
+            "SARVAM_API_KEY is not set -- add it to .env to enable Sarvam chat completion"
+        )
+
+    selected_model = (model or os.getenv("SARVAM_CHAT_MODEL", SARVAM_CHAT_MODEL) or "sarvam-105b").strip()
+    payload: dict = {
+        "model": selected_model,
+        "messages": [
+            {"role": "system", "content": str(system_prompt or "").strip()},
+            {"role": "user", "content": str(user_prompt or "").strip()},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+
+    headers = {
+        "api-subscription-key": api_key,
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = _requests.post(
+                SARVAM_CHAT_ENDPOINT,
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+            )
+            if resp.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                retry_after = resp.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after and retry_after.isdigit() else (2 ** attempt) * 2
+                logger.warning("Sarvam chat busy/rate-limited (%s); retrying in %.1fs", resp.status_code, wait)
+                time.sleep(wait)
+                continue
+            if resp.status_code != 200:
+                raise RuntimeError(f"Sarvam chat API error {resp.status_code}: {resp.text[:500]}")
+
+            data = resp.json()
+            choices = data.get("choices") or []
+            message = (choices[0].get("message") if choices and isinstance(choices[0], dict) else {}) or {}
+            raw_content = message.get("content")
+            if isinstance(raw_content, list):
+                content = "\n".join(
+                    str(part.get("text") or part.get("content") or "")
+                    for part in raw_content
+                    if isinstance(part, dict)
+                ).strip()
+            else:
+                content = str(raw_content or "").strip()
+            if not content and choices and isinstance(choices[0], dict):
+                content = str(choices[0].get("text") or "").strip()
+            if not content:
+                finish_reason = choices[0].get("finish_reason") if choices and isinstance(choices[0], dict) else None
+                logger.warning(
+                    "Sarvam chat returned empty content | model=%s | finish_reason=%s | usage=%s | body=%s",
+                    data.get("model") or selected_model,
+                    finish_reason,
+                    data.get("usage"),
+                    resp.text[:800],
+                )
+                if payload.pop("reasoning_effort", None) and attempt < 2:
+                    logger.info("Retrying Sarvam chat without reasoning_effort after empty content")
+                    time.sleep(1.0)
+                    continue
+                if finish_reason == "length" and attempt < 2:
+                    payload["max_tokens"] = 4096
+                    logger.info("Retrying Sarvam chat with larger max_tokens=%s after empty length finish", payload["max_tokens"])
+                    time.sleep(1.0)
+                    continue
+                raise RuntimeError("Sarvam chat returned an empty message.content field")
+            logger.info(
+                "Sarvam chat OK | model=%s | chars=%d | total_tokens=%s",
+                data.get("model") or selected_model,
+                len(content),
+                (data.get("usage") or {}).get("total_tokens"),
+            )
+            return {
+                "content": content,
+                "model": data.get("model") or selected_model,
+                "usage": data.get("usage") or {},
+            }
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep((2 ** attempt) * 1.5)
+                continue
+            break
+
+    raise RuntimeError(f"Sarvam chat failed: {last_error}") from last_error
 
 
 def transcribe_file(

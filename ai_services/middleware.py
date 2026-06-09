@@ -44,6 +44,9 @@ EXEMPT_PATHS = {
     "/favicon.ico",
 }
 EXEMPT_SUFFIXES = ("/health/",)
+EXEMPT_PREFIXES = (
+    "/generated-note-images/",
+)
 
 
 def _get_cached_institute_by_api_key(api_key: str):
@@ -231,6 +234,9 @@ class TenantAuthMiddleware:
             return True
         for suffix in EXEMPT_SUFFIXES:
             if path.endswith(suffix):
+                return True
+        for prefix in EXEMPT_PREFIXES:
+            if path.startswith(prefix):
                 return True
         if path.startswith("/admin/") or path == "/admin":
             return True

@@ -17,8 +17,15 @@ Including another URLconf
 
 from django.contrib import admin
 from django.urls import path, include
+from django.views.static import serve
+from ai_services.core.image_generation import image_generation_config
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path(
+        "generated-note-images/<path:path>",
+        serve,
+        {"document_root": image_generation_config()["output_dir"]},
+    ),
     path("", include("ai_services.urls")),
 ]

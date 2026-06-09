@@ -4423,11 +4423,29 @@ def generate_notes_from_transcript(request):
         logger.error("notes_from_transcript LLM failed (institute=%s): %s", institute_id, exc)
         return Response({"error": str(exc)}, status=502)
 
+    images = []
+    image_meta = {"enabled": False, "count": 0, "errors": []}
+    try:
+        from ai_services.core.llm_client import LLMClient
+        from ai_services.core.note_images import enrich_notes_with_images
+
+        notes_markdown, images, image_meta = enrich_notes_with_images(
+            notes_markdown,
+            topic_id,
+            language,
+            institute_id,
+            LLMClient(),
+        )
+    except Exception as exc:
+        logger.warning("notes_from_transcript image enrichment skipped: %s", exc)
+        image_meta = {"enabled": False, "count": 0, "errors": [str(exc)[:160]]}
+
 
 
     logger.info(
-        "notes_from_transcript done | %d chars notes | chunks=%d | took=%.1fs",
+        "notes_from_transcript done | %d chars notes | images=%d | chunks=%d | took=%.1fs",
         len(notes_markdown),
+        len(images),
         notes_meta.get("chunk_count", 0),
         _time.perf_counter() - _t0,
     )
@@ -4442,6 +4460,7 @@ def generate_notes_from_transcript(request):
         "keyConcepts": [],
         "formulas": [],
         "summary": "",
+        "images": images,
         "_meta": {
             "source": "youtube_transcript",
             "model": "edvaqwen",
@@ -4453,6 +4472,7 @@ def generate_notes_from_transcript(request):
             "markdown_polished": markdown_polished,
             "quality_flags": prep_meta.get("quality_flags", []),
             "repair_applied": prep_meta.get("repair_applied", False),
+            "image_generation": image_meta,
         },
     })
 
@@ -4781,4 +4801,62 @@ def ai_engine_health(request):
         "summary": summary,
         "keys": keys_status,
         "cached": not refresh,
+    })
+
+
+@api_view(["POST"])
+def regenerate_single_note_image(request):
+    data = request.data
+    topic_id = data.get("topicId", "General")
+    caption = data.get("caption", "")
+    visual_description = data.get("visualDescription", "")
+    evidence_quote = data.get("evidenceQuote", "")
+    section_heading = data.get("sectionHeading", "")
+    notes = data.get("notes", "")
+    language = data.get("language", "en")
+
+    if not caption or not visual_description:
+        return Response({"error": "Missing caption or visualDescription"}, status=400)
+
+    candidate = {
+        "caption": caption,
+        "visual_description": visual_description,
+        "evidence_quote": evidence_quote,
+        "section_heading": section_heading,
+    }
+
+    from ai_services.core.note_images import (
+        _build_image_prompt,
+        label_generated_note_image,
+    )
+    from ai_services.core.image_generation import (
+        generate_note_image,
+        can_generate_note_images,
+    )
+
+    if not can_generate_note_images():
+        return Response({"error": "Image generation is not enabled or configured"}, status=400)
+
+    image_prompt = _build_image_prompt(candidate, topic_id)
+    image_result = generate_note_image(image_prompt)
+    if not image_result.get("ok"):
+        return Response({"error": image_result.get("error") or "image_generation_failed"}, status=502)
+
+    overlay_labels, overlay_error = label_generated_note_image(image_result, candidate, notes, language)
+
+    return JsonResponse({
+        "url": image_result["url"],
+        "caption": candidate["caption"],
+        "visual_description": candidate["visual_description"],
+        "overlay_labels": overlay_labels,
+        "section_heading": candidate["section_heading"],
+        "evidence_quote": candidate["evidence_quote"],
+        "prompt": image_prompt,
+        "provider": image_result["provider"],
+        "model": image_result["model"],
+        "image_size": image_result["image_size"],
+        "aspect_ratio": image_result.get("aspect_ratio"),
+        "embedded_text_removed": image_result.get("embedded_text_removed", 0),
+        "embedded_text_strip_error": image_result.get("embedded_text_strip_error"),
+        "overlay_error": overlay_error,
     })
