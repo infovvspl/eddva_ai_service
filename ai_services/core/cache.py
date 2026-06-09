@@ -57,14 +57,19 @@ CACHE_TTL = {
     "performance_analyze": 3600, # 1h — scores change after new tests
     "feedback_analyze":    3600, # 1h
     "notes_analyze":       3600, # 1h
+    "evaluate_batch":      0,    # always re-evaluate — QA must reflect the exact current batch
 }
 
 DEFAULT_TTL = 3600  # 1 hour — for features not explicitly listed above
 
 
-def _make_cache_key(institute_id: str, feature: str, prompt_hash: str) -> str:
-    """Tenant-scoped cache key. Institute A and B get separate cache entries."""
-    return f"ai_svc:{institute_id}:{feature}:{prompt_hash}"
+def _make_cache_key(institute_id: str, feature: str, prompt_hash: str, vertical: str = "base") -> str:
+    """
+    Tenant- AND vertical-scoped cache key. Institute A and B get separate
+    entries, and a coaching answer is never served to a school request (and
+    vice-versa) even for the same prompt.
+    """
+    return f"ai_svc:{institute_id}:{vertical}:{feature}:{prompt_hash}"
 
 
 def _hash_prompt(prompt: str) -> str:
@@ -134,13 +139,13 @@ class ResponseCache:
             logger.warning("Redis unavailable (%s), using in-memory LRU fallback", e)
             self._redis = None
 
-    def get(self, institute_id: str, feature: str, user_prompt: str) -> Optional[dict]:
-        """Look up cached LLM response scoped to this tenant. Returns None on miss."""
+    def get(self, institute_id: str, feature: str, user_prompt: str, vertical: str = "base") -> Optional[dict]:
+        """Look up cached LLM response scoped to this tenant + vertical. Returns None on miss."""
         ttl = CACHE_TTL.get(feature, DEFAULT_TTL)
         if ttl == 0:
             return None  # feature opted out of caching
 
-        key = _make_cache_key(institute_id, feature, _hash_prompt(user_prompt))
+        key = _make_cache_key(institute_id, feature, _hash_prompt(user_prompt), vertical)
 
         # Try Redis first
         if self._redis:
@@ -158,13 +163,13 @@ class ResponseCache:
             logger.debug("Cache HIT (memory) %s", key)
         return result
 
-    def set(self, institute_id: str, feature: str, user_prompt: str, response: dict):
-        """Store LLM response in tenant-scoped cache."""
+    def set(self, institute_id: str, feature: str, user_prompt: str, response: dict, vertical: str = "base"):
+        """Store LLM response in tenant- + vertical-scoped cache."""
         ttl = CACHE_TTL.get(feature, DEFAULT_TTL)
         if ttl == 0:
             return
 
-        key = _make_cache_key(institute_id, feature, _hash_prompt(user_prompt))
+        key = _make_cache_key(institute_id, feature, _hash_prompt(user_prompt), vertical)
 
         # Write to both layers
         self._memory.set(key, response, ttl)
@@ -175,9 +180,9 @@ class ResponseCache:
             except Exception as e:
                 logger.warning("Redis write failed: %s", e)
 
-    def invalidate(self, institute_id: str, feature: str, user_prompt: str):
-        """Remove a specific cached response for a tenant."""
-        key = _make_cache_key(institute_id, feature, _hash_prompt(user_prompt))
+    def invalidate(self, institute_id: str, feature: str, user_prompt: str, vertical: str = "base"):
+        """Remove a specific cached response for a tenant + vertical."""
+        key = _make_cache_key(institute_id, feature, _hash_prompt(user_prompt), vertical)
         self._memory.delete(key)
         if self._redis:
             try:

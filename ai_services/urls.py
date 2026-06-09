@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     feedback, notes, content, test, career,
-    personalization, admin_api, bridge,
+    personalization, admin_api, bridge, evaluate,
 )
 
 urlpatterns = [
@@ -61,6 +61,10 @@ urlpatterns = [
     # AI Engine Health (teacher/admin panel)
     path("ai/health", bridge.ai_engine_health),
 
+    # Batch Question Evaluator (QA for AI-generated questions)
+    path("evaluate/batch", evaluate.evaluate_batch),
+    path("evaluate/health", evaluate.health),
+
     # ══════════════════════════════════════════════════════════════════════════
     #  Legacy Django endpoints (original ai_services views)
     # ══════════════════════════════════════════════════════════════════════════
@@ -86,6 +90,7 @@ urlpatterns = [
 
     # Career
     path("career/generate/", career.generate_career_plan),
+    path("career/guidance", career.career_guidance),
     path("career/health/", career.health),
 
     # Personalization

@@ -4,7 +4,7 @@ import os
 # Add parent directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.formula_retriever import formula_retriever
+from ai_services.solver.formula_retriever import formula_retriever
 
 def main():
     print("Starting formula indexing process...")

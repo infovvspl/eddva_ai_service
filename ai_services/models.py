@@ -17,9 +17,24 @@ class Institute(models.Model):
         ("enterprise", "Enterprise"),
     ]
 
+    VERTICAL_CHOICES = [
+        ("coaching", "Coaching (JEE/NEET/Competitive)"),
+        ("school", "School (Class 1-10)"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     slug = models.SlugField(unique=True, help_text="URL-safe identifier, e.g. 'allen-kota'")
+    vertical = models.CharField(
+        max_length=32,
+        choices=VERTICAL_CHOICES,
+        default="coaching",
+        db_index=True,
+        help_text=(
+            "Product vertical this tenant belongs to. Selects prompt/model variants. "
+            "Can be overridden per-request via the X-Vertical header."
+        ),
+    )
     api_key = models.CharField(
         max_length=64, unique=True, db_index=True,
         help_text="Sent via X-API-Key or Authorization: Bearer header",
@@ -90,6 +105,10 @@ class UsageLog(models.Model):
         help_text="Fallback string ID when Institute FK is not available",
     )
     feature = models.CharField(max_length=64, db_index=True)
+    vertical = models.CharField(
+        max_length=32, default="coaching", db_index=True,
+        help_text="Vertical this call was served under (for per-vertical usage/billing breakdown)",
+    )
     model_used = models.CharField(max_length=64)
     prompt_tokens = models.IntegerField(default=0)
     completion_tokens = models.IntegerField(default=0)

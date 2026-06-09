@@ -60,13 +60,25 @@ def usage_dashboard(request):
         .order_by("-total_tokens")
     )
 
+    vertical_breakdown = (
+        logs.values("vertical")
+        .annotate(
+            total_tokens=Sum("total_tokens"),
+            total_calls=Count("id"),
+            cache_hits=Count("id", filter=Q(cache_hit=True)),
+        )
+        .order_by("-total_tokens")
+    )
+
     return Response({
         "institute": institute_id,
         "plan": institute.plan if institute else "unknown",
+        "vertical": getattr(institute, "vertical", None) if institute else None,
         "today": today_summary,
         "period_days": days,
         "daily_breakdown": list(daily_breakdown),
         "feature_breakdown": list(feature_breakdown),
+        "vertical_breakdown": list(vertical_breakdown),
         "total_tokens": logs.aggregate(total=Sum("total_tokens"))["total"] or 0,
         "total_calls": logs.count(),
     })
@@ -99,6 +111,7 @@ def institute_info(request):
         "name": institute.name,
         "slug": institute.slug,
         "plan": institute.plan,
+        "vertical": institute.vertical,
         "daily_soft_cap": institute.daily_soft_cap,
         "daily_hard_cap": institute.daily_hard_cap,
         "max_concurrent_requests": institute.max_concurrent_requests,

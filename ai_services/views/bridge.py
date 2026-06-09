@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from typing import Optional
 
 
@@ -57,6 +58,14 @@ from rest_framework.response import Response
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
 from ai_services.core.groq_keys import get_groq_api_keys, get_rotated_groq_keys, is_key_exhausted_error
+from ai_services.core.gemini_keys import (
+    gemini_key_count,
+    get_rotated_gemini_keys,
+    has_gemini_api_key,
+    is_gemini_permanent_key_error,
+    is_gemini_retryable_error,
+    mark_gemini_key_disabled,
+)
 from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
 from .base import ai_call, ai_call_text, get_llm
 
@@ -479,8 +488,23 @@ def _download_audio(audio_url: str, tmpdir: str) -> str:
 
 
 
+def _normalize_lecture_language(language: str | None) -> str:
+    """Map language aliases to a canonical short code (od/hi/hinglish/en)."""
+    lang = str(language or "en").strip().lower()
+    if lang in ("odia", "od-in", "or", "or-in"):
+        return "od"
+    if lang in ("hindi", "hi-in"):
+        return "hi"
+    return lang or "en"
+
+
+def _is_odia_language(language: str | None) -> bool:
+    return _normalize_lecture_language(language) == "od"
+
+
 def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
     """
+    Odia:     Sarvam Speech-to-Text  (Whisper cannot transcribe Odia)
     Primary:  Groq Whisper API  (~2-3 sec, requires GROQ_API_KEY(_N), 25 MB limit)
     Fallback: local faster-whisper  (slow on CPU, no size limit)
     Supports YouTube URLs via yt-dlp.
@@ -518,6 +542,88 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
             audio_path = files[0]
         else:
             audio_path = _download_audio(audio_url, tmpdir)
+
+        # ── Odia: Sarvam Speech-to-Text (Whisper cannot transcribe Odia) ──────
+        if _is_odia_language(language):
+            try:
+                import subprocess
+                try:
+                    import imageio_ffmpeg
+                except ImportError:
+                    import sys
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "imageio-ffmpeg", "--quiet"])
+                    import imageio_ffmpeg
+                from ai_services.core.sarvam_client import transcribe_file as _sarvam_transcribe_file
+
+                ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+                chunk_seconds = int(os.getenv("SARVAM_STT_CHUNK_SECONDS", "25"))
+                chunk_seconds = max(10, min(chunk_seconds, 25))
+                chunk_pattern = os.path.join(tmpdir, "sarvam_chunk_%04d.mp3")
+                logger.info(
+                    "Chunking Odia audio for Sarvam STT | segment_time=%ss | lang=od-IN",
+                    chunk_seconds,
+                )
+                cmd = [
+                    ffmpeg_exe, "-y", "-i", audio_path,
+                    "-f", "segment", "-segment_time", str(chunk_seconds),
+                    "-c:a", "libmp3lame", "-ac", "1", "-ar", "16000", "-ab", "64k",
+                    "-vn", chunk_pattern,
+                ]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                chunks = sorted(_glob.glob(os.path.join(tmpdir, "sarvam_chunk_*.mp3")))
+                if not chunks:
+                    raise RuntimeError("FFMpeg generated no Sarvam audio chunks.")
+
+                def _split_sarvam_chunk(source_file: str, chunk_idx: int) -> list:
+                    sub_pattern = os.path.join(tmpdir, f"sarvam_chunk_{chunk_idx:04d}_part_%03d.mp3")
+                    cmd2 = [
+                        ffmpeg_exe, "-y", "-i", source_file,
+                        "-f", "segment", "-segment_time", "15", "-reset_timestamps", "1",
+                        "-c:a", "libmp3lame", "-ac", "1", "-ar", "16000", "-ab", "64k",
+                        "-vn", sub_pattern,
+                    ]
+                    subprocess.run(cmd2, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return sorted(_glob.glob(os.path.join(tmpdir, f"sarvam_chunk_{chunk_idx:04d}_part_*.mp3")))
+
+                transcript_parts: list = []
+                for idx, chunk_file in enumerate(chunks):
+                    logger.info("Sarvam Odia STT | chunk %d/%d", idx + 1, len(chunks))
+                    try:
+                        part = _sarvam_transcribe_file(chunk_file, language="od")
+                    except Exception as exc:
+                        msg = str(exc)
+                        if "duration exceeds the maximum limit" in msg.lower():
+                            logger.warning(
+                                "Sarvam Odia STT chunk %d/%d exceeded 30s; splitting into 15s subchunks",
+                                idx + 1, len(chunks),
+                            )
+                            sub_parts: list = []
+                            for sub_idx, sub_file in enumerate(_split_sarvam_chunk(chunk_file, idx + 1)):
+                                try:
+                                    sub_text = _sarvam_transcribe_file(sub_file, language="od")
+                                except Exception as sub_exc:
+                                    logger.warning(
+                                        "Sarvam Odia STT chunk %d.%d failed: %s",
+                                        idx + 1, sub_idx + 1, sub_exc,
+                                    )
+                                    sub_text = ""
+                                if sub_text:
+                                    sub_parts.append(sub_text)
+                            part = " ".join(sub_parts).strip()
+                        else:
+                            logger.warning("Sarvam Odia STT chunk %d/%d failed: %s", idx + 1, len(chunks), exc)
+                            part = ""
+                    if part:
+                        transcript_parts.append(part)
+
+                transcript = " ".join(transcript_parts).strip()
+                if not transcript:
+                    raise RuntimeError("Sarvam returned no Odia transcript text")
+                logger.info("Sarvam Odia transcription OK -- %d chars (from %d chunks)", len(transcript), len(chunks))
+                return transcript
+            except Exception as exc:
+                raise RuntimeError(f"Sarvam Odia transcription failed: {exc}") from exc
 
 
 
@@ -718,7 +824,7 @@ def _clean_transcript_text(text: str) -> str:
 
     cleaned = re.sub(r"\$+", " ", cleaned)
     cleaned = re.sub(r"`{3,}", " ", cleaned)
-    cleaned = re.sub(r"[^\x00-\x7F\u0900-\u097F\u03B1-\u03C9\u0391-\u03A9]+", lambda m: m.group(0) if len(m.group(0).strip()) <= 3 else " ", cleaned)
+    cleaned = re.sub(r"[^\x00-\x7F\u0900-\u097F\u0B00-\u0B7F\u03B1-\u03C9\u0391-\u03A9]+", lambda m: m.group(0) if len(m.group(0).strip()) <= 3 else " ", cleaned)
     cleaned = re.sub(r"([A-Za-z])([=<>+\-/*()])", r"\1 \2", cleaned)
     cleaned = re.sub(r"([=<>+\-/*()])([A-Za-z0-9])", r"\1 \2", cleaned)
     cleaned = re.sub(r"\b([A-Za-z])\s+\+\s+([A-Za-z])\b", r"\1 + \2", cleaned)
@@ -1213,7 +1319,7 @@ def _transcript_quality_flags(text: str) -> list[str]:
 
 
 
-    if re.search(r"[^\x00-\x7F\u0900-\u097F\u03B1-\u03C9\u0391-\u03A9]{8,}", sample):
+    if re.search(r"[^\x00-\x7F\u0900-\u097F\u0B00-\u0B7F\u03B1-\u03C9\u0391-\u03A9]{8,}", sample):
         flags.append("garbled_unicode")
     if sample.count("```") or sample.count("$") >= 4:
         flags.append("formatting_artifacts")
@@ -1283,17 +1389,29 @@ def _normalize_transcript_to_english(transcript: str, language: str, institute_i
 
 
 def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str, institute_id: str) -> tuple[str, dict]:
+    lang = _normalize_lecture_language(language)
+    is_odia = lang == "od"
+    is_hindi_hinglish = lang in ("hi", "hi-in", "hinglish")
+
     normalized = _normalize_transcript_to_english(transcript, language, institute_id)
     cleaned = _clean_transcript_text(normalized)
     cleaned = _strip_lecture_framing(cleaned)
     flags = _transcript_quality_flags(cleaned)
-    repaired = _repair_low_quality_transcript(cleaned, topic_id, language, institute_id, flags) if flags else cleaned
+    # Odia must NOT go through the English/Groq repair path — it can misclassify valid
+    # Odia script as noise and truncate a full transcript to a tiny repair input.
+    repaired = cleaned if is_odia else (_repair_low_quality_transcript(cleaned, topic_id, language, institute_id, flags) if flags else cleaned)
     final_text = _clean_transcript_text(repaired)
 
 
 
-    lang = (language or "en").strip().lower()
-    is_hindi_hinglish = lang in ("hi", "hi-in", "hinglish")
+    if is_odia:
+        # Gemini reads Odia natively; skip English word-repair and punctuation refinement.
+        return final_text, {
+            "quality_flags": flags,
+            "repair_applied": False,
+            "word_repair_applied": False, "word_repair_chunks": 0, "word_repair_chunks_accepted": 0,
+            "punct_refine_applied": False, "punct_refine_chunks": 0, "punct_refine_chunks_accepted": 0,
+        }
 
 
 
@@ -1336,6 +1454,17 @@ NOTES_MERGE_MAX_TOKENS = 1800
 # Adaptive formula ensures merge never overflows 6000 TPM regardless of chunk count:
 #   section_tokens = max(350, min(700, 3900 // N))   → N × section_tokens ≤ 3900 + 300 + 1800 ≤ 6000 ✅
 _MERGE_MAX_INPUT_CHARS = 15_500   # safety net: ~3900 English tokens × 4 chars/token
+
+# ── Odia notes via Gemini (Groq/llama are weak at Odia script) ───────────────
+GEMINI_ODIA_NOTES_ENABLED = os.getenv("GEMINI_ODIA_NOTES_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+GEMINI_ODIA_NOTES_MODEL = os.getenv("GEMINI_ODIA_NOTES_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"))
+GEMINI_ODIA_NOTES_CHUNK_CHARS = int(os.getenv("GEMINI_ODIA_NOTES_CHUNK_CHARS", "5000"))
+GEMINI_ODIA_NOTES_MAX_CHUNK_CHARS = int(os.getenv("GEMINI_ODIA_NOTES_MAX_CHUNK_CHARS", "5000"))
+GEMINI_ODIA_SECTION_MAX_TOKENS = int(os.getenv("GEMINI_ODIA_SECTION_MAX_TOKENS", "2200"))
+GEMINI_ODIA_MERGE_MAX_TOKENS = int(os.getenv("GEMINI_ODIA_MERGE_MAX_TOKENS", "3000"))
+GEMINI_ODIA_MERGE_INPUT_CHARS = int(os.getenv("GEMINI_ODIA_MERGE_INPUT_CHARS", "14000"))
+GEMINI_ODIA_DETERMINISTIC_MERGE = os.getenv("GEMINI_ODIA_DETERMINISTIC_MERGE", "true").strip().lower() not in {"0", "false", "no", "off"}
+GEMINI_ODIA_REQUEST_SPACING_SECONDS = float(os.getenv("GEMINI_ODIA_REQUEST_SPACING_SECONDS", "13"))
 
 
 
@@ -1517,8 +1646,383 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
 
 
 
+def _hard_split_text(text: str, max_chars: int) -> list[str]:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+    if len(cleaned) <= max_chars:
+        return [cleaned]
+
+    chunks: list[str] = []
+    start = 0
+    while start < len(cleaned):
+        end = min(start + max_chars, len(cleaned))
+        if end < len(cleaned):
+            boundary = max(
+                cleaned.rfind("\n", start, end),
+                cleaned.rfind(". ", start, end),
+                cleaned.rfind("। ", start, end),
+                cleaned.rfind(" ", start, end),
+            )
+            if boundary > start + int(max_chars * 0.55):
+                end = boundary + 1
+        chunk = cleaned[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end
+    return chunks
+
+
+def _cap_chunks(chunks: list[str], max_chars: int) -> list[str]:
+    capped: list[str] = []
+    for chunk in chunks:
+        if len(chunk) <= max_chars:
+            capped.append(chunk)
+        else:
+            capped.extend(_hard_split_text(chunk, max_chars))
+    return [chunk for chunk in capped if chunk.strip()]
+
+
+def _odia_script_ratio(text: str) -> float:
+    letters = [ch for ch in str(text or "") if ch.isalpha()]
+    if not letters:
+        return 0.0
+    odia_letters = sum(1 for ch in letters if "଀" <= ch <= "୿")
+    return odia_letters / max(len(letters), 1)
+
+
+def _looks_like_bad_odia_notes(notes: str) -> bool:
+    text = str(notes or "").strip()
+    if len(text) < 300:
+        return True
+    if _odia_script_ratio(text) < 0.35:
+        return True
+    malformed_bullets = re.findall(r"(?m)^\s*[-*•]\s*(?:[*()/\\|&A-Z]{1,12})\s*$", text)
+    if len(malformed_bullets) >= 2:
+        return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines:
+        weak_lines = sum(1 for line in lines if len(line) <= 8 and not line.startswith("#"))
+        if weak_lines >= max(4, len(lines) // 4):
+            return True
+    repeated = re.search(r"(\b[\w଀-୿]{1,20}\b)(?:\s+\1){4,}", text, re.IGNORECASE)
+    return bool(repeated)
+
+
+def _gemini_retry_delay_seconds(error: Exception, fallback: float) -> float:
+    text = str(error or "")
+    matches = re.findall(r"retry(?:\s+in|Delay['\"]?:\s*)\s*'?(\d+(?:\.\d+)?)\s*s", text, flags=re.IGNORECASE)
+    if matches:
+        try:
+            return min(float(matches[-1]) + 2.0, 90.0)
+        except ValueError:
+            pass
+    matches = re.findall(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s", text, flags=re.IGNORECASE)
+    if matches:
+        try:
+            return min(float(matches[-1]) + 2.0, 90.0)
+        except ValueError:
+            pass
+    return fallback
+
+
+def _gemini_odia_generate(system_prompt: str, user_prompt: str, *, max_tokens: int) -> str:
+    if not has_gemini_api_key():
+        raise RuntimeError("GEMINI_API_KEY is not set -- add it to .env to enable Gemini Odia notes")
+
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception as exc:
+        raise RuntimeError(f"google-genai is unavailable: {exc}") from exc
+
+    last_exc: Exception | None = None
+    response = None
+    for key_index, api_key in get_rotated_gemini_keys():
+        try:
+            client = genai.Client(api_key=api_key)
+            try:
+                response = client.models.generate_content(
+                    model=GEMINI_ODIA_NOTES_MODEL,
+                    contents=[user_prompt],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.0,
+                        max_output_tokens=max_tokens,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    ),
+                )
+            except TypeError:
+                response = client.models.generate_content(
+                    model=GEMINI_ODIA_NOTES_MODEL,
+                    contents=[user_prompt],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.0,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+            logger.info(
+                "Gemini Odia notes call OK | key=%d/%d | model=%s",
+                key_index, gemini_key_count(), GEMINI_ODIA_NOTES_MODEL,
+            )
+            break
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc)
+            if is_gemini_permanent_key_error(msg):
+                mark_gemini_key_disabled(api_key)
+                logger.warning("Gemini key %d/%d disabled for permanent error: %s", key_index, gemini_key_count(), msg[:180])
+                continue
+            if is_gemini_retryable_error(msg):
+                logger.warning("Gemini key %d/%d retryable error; rotating to next key: %s", key_index, gemini_key_count(), msg[:220])
+                continue
+            raise RuntimeError(f"Gemini Odia notes failed: {exc}") from exc
+    else:
+        raise RuntimeError(f"Gemini Odia notes failed across all {gemini_key_count()} key(s): {last_exc}") from last_exc
+
+    content = str(getattr(response, "text", "") or "").strip()
+    if not content:
+        raise RuntimeError("Gemini returned empty Odia notes")
+    content = re.sub(r"^```(?:markdown)?\s*", "", content, flags=re.IGNORECASE).strip()
+    content = re.sub(r"\s*```$", "", content).strip()
+    if _looks_like_bad_odia_notes(content):
+        raise RuntimeError("Gemini returned malformed or low-quality Odia notes")
+    content = _cleanup_odia_notes_markdown(content)
+    logger.info("Gemini Odia notes OK | model=%s | chars=%d", GEMINI_ODIA_NOTES_MODEL, len(content))
+    return content
+
+
+def _generate_gemini_odia_chunk_notes(chunk_text: str, topic_id: str, chunk_index: int, total_chunks: int) -> str:
+    system_prompt = (
+        "Write transcript-grounded Odia Markdown lecture notes only. Do not show reasoning, planning, analysis, or steps. "
+        "Use only the supplied transcript chunk. Do not use outside knowledge, even if correct. "
+        "If a term, fact, count, or number is not explicitly present in this chunk, omit it. "
+        "Ignore greetings, filler, repeated words, ASR noise, and non-academic chatter. "
+        "Keep formulas, abbreviations, and standard scientific names in English where natural. "
+        "Preserve each numeric value with its exact subject and unit; never transfer a number from one concept to another."
+    )
+    user_prompt = (
+        f"Lecture topic: {topic_id or 'General'}\n"
+        f"Transcript section: {chunk_index} of {total_chunks}\n\n"
+        "Return only final notes in Odia script. Use headings, short paragraphs, and useful bullets. "
+        "Preserve definitions, examples, comparisons, formulas, and exam points when present. "
+        "Do not include isolated tokens like AND, OR, *, /, or brackets. Do not add outside facts. "
+        "Do not infer standard textbook details that the teacher did not say in this chunk.\n\n"
+        f"Transcript:\n{chunk_text}"
+    )
+    return _gemini_odia_generate(system_prompt, user_prompt, max_tokens=GEMINI_ODIA_SECTION_MAX_TOKENS)
+
+
+def _normalize_odia_note_line_for_dedupe(line: str) -> str:
+    text = re.sub(r"^[#*\-\s•]+", "", str(line or "").strip())
+    text = re.sub(r"\*\*", "", text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[।.!:：\-–—]+$", "", text)
+    return text.strip().lower()
+
+
+def _cleanup_odia_notes_markdown(markdown: str) -> str:
+    text = str(markdown or "").replace("\\n", "\n").strip()
+    if not text:
+        return ""
+
+    text = re.sub(r"```(?:markdown)?", "", text, flags=re.IGNORECASE)
+    text = text.replace("```", "")
+    text = re.sub(r"(?m)^\s*(?:---\s*)?SECTION\s+\d+\s*(?:---)?\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?m)^\s*<!--.*?-->\s*$", "", text)
+    text = re.sub(r"(?m)^\s*[-*•]\s*(?:AND|OR|[*/()\\|&]+)\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?m)^([^\n#*\-•].{0,80})\s*:\s*$", r"## \1", text)
+    text = re.sub(r"(?m)^#{3,}\s+", "## ", text)
+
+    cleaned_lines: list[str] = []
+    seen_headings: set[str] = set()
+    recent_content: list[str] = []
+    for raw_line in text.splitlines():
+        line = re.sub(r"[ \t]+", " ", raw_line).strip()
+        if not line:
+            if cleaned_lines and cleaned_lines[-1] != "":
+                cleaned_lines.append("")
+            continue
+        line = re.sub(r"^\s*[•]\s*", "- ", line)
+        line = re.sub(r"^\s*[*]\s+(?=\S)", "- ", line)
+        line = re.sub(r"^-{2,}\s*$", "", line).strip()
+        if not line:
+            continue
+        norm = _normalize_odia_note_line_for_dedupe(line)
+        if not norm or len(norm) <= 2:
+            continue
+        if line.startswith("#"):
+            if norm in seen_headings:
+                continue
+            seen_headings.add(norm)
+            if cleaned_lines and cleaned_lines[-1] != "":
+                cleaned_lines.append("")
+            cleaned_lines.append(line)
+            cleaned_lines.append("")
+            continue
+        if len(norm) > 24 and norm in recent_content:
+            continue
+        recent_content.append(norm)
+        if len(recent_content) > 80:
+            recent_content = recent_content[-80:]
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r"(?m)^##\s+##\s+", "## ", cleaned)
+    cleaned = re.sub(r"(?m)^-\s*-\s+", "- ", cleaned)
+    return cleaned.strip()
+
+
+def _assemble_gemini_odia_notes(chunk_notes: list[str], topic_id: str) -> str:
+    sections = [_cleanup_odia_notes_markdown(section) for section in chunk_notes if str(section or "").strip()]
+    sections = [section for section in sections if section]
+    body = "\n\n".join(sections).strip()
+    title = "# ବ୍ୟାଖ୍ୟାନ ନୋଟ୍ସ"
+    if topic_id:
+        title = f"# ବ୍ୟାଖ୍ୟାନ ନୋଟ୍ସ\n\n<!-- topic: {topic_id} -->"
+    return _cleanup_odia_notes_markdown(f"{title}\n\n{body}")
+
+
+def _generate_gemini_odia_chunk_notes_with_retry(chunk_text: str, topic_id: str, chunk_index: int, total_chunks: int) -> str:
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            return _generate_gemini_odia_chunk_notes(chunk_text, topic_id, chunk_index, total_chunks)
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            if attempt < 2 and any(token in msg for token in ("503", "unavailable", "high demand", "rate", "timeout", "temporarily")):
+                wait = _gemini_retry_delay_seconds(exc, 2.0 * (attempt + 1))
+                logger.warning("Gemini Odia chunk %d/%d transient failure; retrying in %.1fs (%s)", chunk_index, total_chunks, wait, exc)
+                time.sleep(wait)
+                continue
+            break
+    raise RuntimeError(f"Gemini Odia chunk {chunk_index}/{total_chunks} failed after retries: {last_exc}") from last_exc
+
+
+def _merge_gemini_odia_notes(chunk_notes: list[str], topic_id: str) -> str:
+    combined_sections = "\n\n".join(
+        f"--- SECTION {idx + 1} ---\n{section.strip()}"
+        for idx, section in enumerate(chunk_notes)
+        if str(section).strip()
+    ).strip()
+    if not combined_sections:
+        return ""
+    if len(combined_sections) > GEMINI_ODIA_MERGE_INPUT_CHARS:
+        logger.warning(
+            "Gemini Odia merge input truncated %d -> %d chars",
+            len(combined_sections), GEMINI_ODIA_MERGE_INPUT_CHARS,
+        )
+        combined_sections = combined_sections[:GEMINI_ODIA_MERGE_INPUT_CHARS]
+
+    system_prompt = (
+        "Merge Odia section notes into final Odia Markdown lecture notes only. "
+        "Do not show reasoning, planning, analysis, or steps. Remove duplication and malformed bullets. "
+        "Preserve numeric values with their exact subject and unit; do not move a number from one concept to another."
+    )
+    user_prompt = (
+        f"Lecture topic: {topic_id or 'General'}\n\n"
+        "Return only the final notes in Odia script. Start with a title, organize logical sections, "
+        "keep transcript-grounded examples/formulas, and end with a concise summary.\n\n"
+        f"{combined_sections}"
+    )
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            return _gemini_odia_generate(system_prompt, user_prompt, max_tokens=GEMINI_ODIA_MERGE_MAX_TOKENS)
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            if attempt < 2 and any(token in msg for token in ("503", "unavailable", "high demand", "rate", "timeout", "temporarily")):
+                wait = _gemini_retry_delay_seconds(exc, 2.0 * (attempt + 1))
+                logger.warning("Gemini Odia merge transient failure; retrying in %.1fs (%s)", wait, exc)
+                time.sleep(wait)
+                continue
+            break
+    raise RuntimeError(f"Gemini Odia merge failed after retries: {last_exc}") from last_exc
+
+
+def _generate_gemini_odia_comprehensive_notes(transcript: str, topic_id: str) -> tuple[str, dict]:
+    if not GEMINI_ODIA_NOTES_ENABLED:
+        raise RuntimeError("Gemini Odia notes are disabled by GEMINI_ODIA_NOTES_ENABLED=false")
+
+    chunk_chars = max(1800, min(GEMINI_ODIA_NOTES_CHUNK_CHARS, GEMINI_ODIA_NOTES_MAX_CHUNK_CHARS))
+    chunks = _cap_chunks(
+        _chunk_transcript(transcript, chunk_size=chunk_chars, overlap=0),
+        chunk_chars,
+    )
+    if not chunks:
+        return "", {"chunk_count": 0, "provider": "gemini", "model": GEMINI_ODIA_NOTES_MODEL}
+
+    logger.info(
+        "Generating Gemini Odia notes | chunks=%d | chunk_chars=%d | transcript_chars=%d | model=%s | topic=%s",
+        len(chunks), chunk_chars, len(transcript), GEMINI_ODIA_NOTES_MODEL, topic_id,
+    )
+
+    if len(chunks) == 1:
+        notes = _generate_gemini_odia_chunk_notes_with_retry(chunks[0], topic_id, 1, 1)
+        return notes, {
+            "chunk_count": 1,
+            "merge_applied": False,
+            "provider": "gemini",
+            "model": GEMINI_ODIA_NOTES_MODEL,
+        }
+
+    partial_notes: list[str] = []
+    failed_chunks = 0
+    for i, chunk in enumerate(chunks):
+        try:
+            partial_notes.append(_generate_gemini_odia_chunk_notes_with_retry(chunk, topic_id, i + 1, len(chunks)))
+        except Exception as exc:
+            logger.warning("Gemini Odia chunk %d/%d failed (%s)", i + 1, len(chunks), exc)
+            failed_chunks += 1
+            partial_notes.append("")
+        if i < len(chunks) - 1 and GEMINI_ODIA_REQUEST_SPACING_SECONDS > 0:
+            logger.info("Waiting %.1fs before next Gemini Odia chunk to respect rate limits", GEMINI_ODIA_REQUEST_SPACING_SECONDS)
+            time.sleep(GEMINI_ODIA_REQUEST_SPACING_SECONDS)
+
+    non_empty = [p for p in partial_notes if p.strip()]
+    if failed_chunks:
+        raise RuntimeError(f"Gemini Odia notes incomplete: {failed_chunks}/{len(chunks)} transcript chunks failed")
+    if not non_empty:
+        return "", {
+            "chunk_count": len(chunks),
+            "failed_chunks": failed_chunks,
+            "provider": "gemini",
+            "model": GEMINI_ODIA_NOTES_MODEL,
+            "error": "all_chunks_failed",
+        }
+
+    if GEMINI_ODIA_DETERMINISTIC_MERGE:
+        merged = _assemble_gemini_odia_notes(non_empty, topic_id)
+        return merged, {
+            "chunk_count": len(chunks),
+            "failed_chunks": failed_chunks,
+            "merge_applied": False,
+            "merge_strategy": "deterministic_concat",
+            "provider": "gemini",
+            "model": GEMINI_ODIA_NOTES_MODEL,
+        }
+
+    merged = _merge_gemini_odia_notes(non_empty, topic_id)
+    return merged, {
+        "chunk_count": len(chunks),
+        "failed_chunks": failed_chunks,
+        "merge_applied": True,
+        "provider": "gemini",
+        "model": GEMINI_ODIA_NOTES_MODEL,
+    }
+
+
 def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str, institute_id: str) -> tuple[str, dict]:
     import time as _time
+
+
+
+    if _is_odia_language(language):
+        return _generate_gemini_odia_comprehensive_notes(transcript, topic_id)
 
 
 
@@ -1981,10 +2485,33 @@ _SUBJECT_RULES: dict[str, str] = {
 
 
 
-def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed") -> str:
+# Per-vertical framing for the doubt solver prompt. The scientific rigor rules
+# are shared; only the academic *context* (competitive vs school) changes.
+_DOUBT_VERTICAL_FRAMING = {
+    "coaching": {
+        "theory_role":     "CBSE/NEET Subject Matter Expert",
+        "numerical_rigor": "MANDATORY JEE/NEET GOLD RULES",
+    },
+    "school": {
+        "theory_role":     "CBSE/ICSE School Teacher for Classes 1-10",
+        "numerical_rigor": "MANDATORY SCHOOL-LEVEL (NCERT) CONCEPT RULES",
+    },
+}
+
+
+def _doubt_framing(vertical: str) -> dict:
+    """Resolve doubt-prompt framing for a vertical, falling back to coaching/base."""
+    return _DOUBT_VERTICAL_FRAMING.get(vertical or "coaching", _DOUBT_VERTICAL_FRAMING["coaching"])
+
+
+def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed", vertical: str = "coaching") -> str:
     """
     CLEANED & RE-PRIORITIZED SOLVER PROMPT.
+
+    `vertical` selects the academic framing (competitive exam vs school); the
+    underlying scientific/format rules are identical across verticals.
     """
+    framing = _doubt_framing(vertical)
     subject_rules = _SUBJECT_RULES.get(subject, "")
     is_numerical = qtype.lower() in ("numerical", "derivation")
     is_mcq = qtype.lower() == "mcq"
@@ -1998,7 +2525,7 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             "   Correct Answer: <Option/Value>\n"
             "   Justification: <2-3 lines explanation using **bold** NCERT keywords>\n"
             "2. NO PREAMBLE: Respond ONLY with JSON.\n"
-            "3. BOLDING: Use **bold** for all key academic terms.\n\n"
+            "3. BOLDING: Use **bold** for all key academic terms. ALWAYS double escape backslashes in JSON (e.g., \\\\frac, \\\\sqrt) so they parse correctly.\n\n"
             "OUTPUT SCHEMA (JSON):\n"
             '{\n'
             '  "brief": {\n'
@@ -2016,14 +2543,14 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
     elif is_numerical:
         return (
             f"You are EDVA AI (Logic v3.0). Subject: {subject.upper()}. Type: {qtype}.\n\n"
-            "MANDATORY JEE/NEET GOLD RULES:\n"
+            f"{framing['numerical_rigor']}:\n"
             f"{subject_rules}\n\n"
             "UNIVERSAL RIGOR RULES:\n"
             "0. DO NOT THINK: Do NOT use <think> tags. Start response directly with '{'.\n"
             "1. NO PREAMBLE: Respond ONLY with JSON.\n"
             "2. PERFORM ACTUAL MATH: Step 1, Step 2... format.\n"
             "3. PRECISION: Carry 4 decimal places.\n"
-            "4. MATH FORMATTING: Wrap ONLY mathematical variables, numbers, and equations in '$' (e.g., $x = 2$, $H_2O$). Do NOT wrap plain English sentences or step headers in '$'.\n"
+            "4. MATH FORMATTING: Wrap ONLY mathematical variables, numbers, and equations in '$' (e.g., $x = 2$, $H_2O$). ALWAYS double escape backslashes in JSON (e.g., \\\\frac, \\\\sqrt) so they parse correctly. Do NOT wrap plain English sentences or step headers in '$'.\n"
             "5. FINAL ANSWER: End with 'Final Answer: [summary]'.\n\n"
             "SCIENTIFIC TRAP DETECTION (MANDATORY):\n"
             "1. INTEGRAL EQUATIONS: Check for constant solutions (f(t)=k). Verify domains/singularities.\n"
@@ -2046,7 +2573,7 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
         )
     else:
         return (
-            f"SYSTEM ROLE: You are a Senior CBSE/NEET Subject Matter Expert. Subject: {subject.upper()}. Respond strictly in JSON format.\n"
+            f"SYSTEM ROLE: You are a Senior {framing['theory_role']}. Subject: {subject.upper()}. Respond strictly in JSON format.\n"
             "TASK: Generate structured, high-depth academic answers.\n\n"
             "RULES:\n"
             "1. MATCH QUESTION STRUCTURE: You MUST match the number of sub-parts in the question exactly. If the question has 4 parts (a, b, c, d) or (i, ii, iii, iv), you MUST provide 4 corresponding bold headers.\n"
@@ -2054,7 +2581,7 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             "3. NO PARAGRAPHS: Use bullet points (•) for all content. 3-4 points per part for Brief, 4-5 deep points for Detailed.\n"
             "4. EXPLAIN HOW: In 'Detailed' mode, each point MUST be a 2-3 sentence explanation.\n"
             "5. NO MARKDOWN BLOCKS: Do NOT use triple backticks (```).\n"
-            "6. BOLDING: Use **bold** for all NCERT keywords.\n\n"
+            "6. BOLDING: Use **bold** for all NCERT keywords. ALWAYS double escape backslashes in JSON (e.g., \\\\frac, \\\\sqrt) so they parse correctly.\n\n"
             "OUTPUT SCHEMA (JSON):\n"
             '{\n'
             '  "brief": {\n'
@@ -2246,9 +2773,10 @@ def resolve_doubt(request):
 
 
     # ── Step 2: Route to correct model, build prompt, solve ───────────────────
+    vertical = getattr(request, "vertical", "coaching")
     model = _select_doubt_model(subject, qtype)
-    print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model}")
-    solver_system = _build_solver_system_prompt(subject, qtype, mode)
+    print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model} | Vertical: {vertical}")
+    solver_system = _build_solver_system_prompt(subject, qtype, mode, vertical)
     user_prompt = (
         f"Topic: {data.get('topicId', 'general')}\n\n"
         f"Question:\n{combined_question}"
@@ -2260,36 +2788,54 @@ def resolve_doubt(request):
 
 
 
+    # Step 2a: Try the scientific solver (symbolic compute) for science/math doubts.
+    # It is exact when it works; on any failure we transparently fall back to the LLM.
     try:
-        if is_reasoning_model:
-            # Reasoning models output <think> blocks — use text mode and parse manually.
-            solve_result = get_llm().complete(
-                system_prompt=solver_system,
-                user_prompt=user_prompt,
-                model=model,
-                temperature=0.1,
-                max_tokens=3500,
-                json_mode=False,
-                institute_id=institute_id,
-            )
-            raw_content = solve_result["content"]
-            parsed = _parse_reasoning_response(
-                raw_content if isinstance(raw_content, str) else str(raw_content)
-            )
+        from asgiref.sync import async_to_sync
+        from ai_services.solver.scientific_solver import scientific_solver
+
+        if subject in ("physics", "chemistry", "mathematics", "math", "science"):
+            logger.info("[DOUBT RESOLVER] Routing to scientific solver for %s/%s", subject, qtype)
+            scientific_res = async_to_sync(scientific_solver.solve)(combined_question, mode)
+            if scientific_res and ("brief" in scientific_res or "detailed" in scientific_res):
+                parsed = scientific_res
+                solve_result = {"model": "scientific_solver"}
+            else:
+                raise RuntimeError("scientific_solver returned empty/invalid response")
         else:
-            solve_result = get_llm().complete(
-                system_prompt=solver_system,
-                user_prompt=user_prompt,
-                model=model,
-                temperature=0.1,
-                max_tokens=3500,
-                json_mode=True,
-                json_mode_suffix="",
-                institute_id=institute_id,
-            )
-            parsed = solve_result["content"] if isinstance(solve_result["content"], dict) else {}
-    except RuntimeError as e:
-        return JsonResponse({"error": str(e)}, status=502)
+            raise NotImplementedError("Subject not mapped to scientific solver")
+    except Exception as solver_err:
+        logger.warning("[DOUBT RESOLVER] Scientific solver bypassed/failed (%s). Using LLM.", solver_err)
+        try:
+            if is_reasoning_model:
+                # Reasoning models output <think> blocks — use text mode and parse manually.
+                solve_result = get_llm().complete(
+                    system_prompt=solver_system,
+                    user_prompt=user_prompt,
+                    model=model,
+                    temperature=0.1,
+                    max_tokens=3500,
+                    json_mode=False,
+                    institute_id=institute_id,
+                )
+                raw_content = solve_result["content"]
+                parsed = _parse_reasoning_response(
+                    raw_content if isinstance(raw_content, str) else str(raw_content)
+                )
+            else:
+                solve_result = get_llm().complete(
+                    system_prompt=solver_system,
+                    user_prompt=user_prompt,
+                    model=model,
+                    temperature=0.1,
+                    max_tokens=3500,
+                    json_mode=True,
+                    json_mode_suffix="",
+                    institute_id=institute_id,
+                )
+                parsed = solve_result["content"] if isinstance(solve_result["content"], dict) else {}
+        except RuntimeError as llm_err:
+            return JsonResponse({"error": str(llm_err)}, status=502)
     brief_obj: dict = parsed.get("brief") or {}
     detailed_obj: dict = parsed.get("detailed") or {}
 
@@ -2343,7 +2889,7 @@ def resolve_doubt(request):
     return JsonResponse({
         "subject": subject,
         "type": qtype,
-        "model_used": solve_result["model"],
+        "model_used": solve_result.get("model", "unknown"),
         "answer": answer,
         "explanation": explanation,
         "brief": brief_obj,
@@ -2351,10 +2897,11 @@ def resolve_doubt(request):
         "conceptLinks": [],
         "related_topics": [],
         "_meta": {
-            "source": "llm",
-            "model": solve_result["model"],
-            "latency_ms": round(solve_result["latency_ms"]),
+            "source": "solver" if solve_result.get("model") == "scientific_solver" else "llm",
+            "model": solve_result.get("model", "unknown"),
+            "latency_ms": round(solve_result.get("latency_ms", 0)),
             "institute": institute_id,
+            "vertical": vertical,
         },
     })
 
@@ -2874,12 +3421,15 @@ def generate_stt_notes(request):
         language,
         institute_id,
     )
-    notes_markdown, markdown_polished = _polish_notes_markdown(
-        notes_markdown,
-        data.get("topicId", ""),
-        language,
-        institute_id,
-    )
+    if _normalize_lecture_language(language) in ("hi", "hi-in", "hinglish", "od"):
+        markdown_polished = False
+    else:
+        notes_markdown, markdown_polished = _polish_notes_markdown(
+            notes_markdown,
+            data.get("topicId", ""),
+            language,
+            institute_id,
+        )
     logger.info(
         "STT notes generated | %d chars | chunks=%d",
         len(notes_markdown),
@@ -3681,6 +4231,11 @@ def generate_topic_content(request):
         elif "class 10" in cn or "10th" in cn:
             exam_target = "Class 10"
 
+    # Vertical-aware fallback: school content must not default to JEE framing.
+    # School with no explicit target → school-level (Class 10) rules.
+    if not exam_target and getattr(request, "vertical", "coaching") == "school":
+        exam_target = "Class 10"
+
 
 
     if not topic_name:
@@ -3855,10 +4410,10 @@ def generate_notes_from_transcript(request):
             language,
             institute_id,
         )
-        # Skip polish for Hindi/Hinglish: the 70b merge already outputs clean structured markdown.
-        # Polish saves ~3,800 tokens per video × 8 keys = meaningful daily capacity gain.
-        _is_hindi_lang = str(language or "").lower() in ("hi", "hi-in", "hinglish")
-        if _is_hindi_lang:
+        # Skip polish for Hindi/Hinglish/Odia: the merge already outputs clean structured markdown,
+        # and the English-oriented polish would corrupt Odia script.
+        _skip_polish_lang = _normalize_lecture_language(language) in ("hi", "hi-in", "hinglish", "od")
+        if _skip_polish_lang:
             markdown_polished = False
         else:
             notes_markdown, markdown_polished = _polish_notes_markdown(
@@ -4123,9 +4678,12 @@ def generate_notes_from_youtube(request):
         notes_markdown, notes_meta = _generate_comprehensive_notes(
             english_transcript, topic_id, language, institute_id
         )
-        notes_markdown, markdown_polished = _polish_notes_markdown(
-            notes_markdown, topic_id, language, institute_id
-        )
+        if _normalize_lecture_language(language) in ("hi", "hi-in", "hinglish", "od"):
+            markdown_polished = False
+        else:
+            notes_markdown, markdown_polished = _polish_notes_markdown(
+                notes_markdown, topic_id, language, institute_id
+            )
     except RuntimeError as exc:
         logger.error("generate_notes_from_youtube LLM failed for %s: %s", video_id, exc)
         return Response({"error": str(exc)}, status=502)

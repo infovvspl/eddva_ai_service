@@ -15,6 +15,7 @@ Supports all 11 Sarvam-supported Indian languages:
 
 import logging
 import os
+import time
 
 import requests as _requests
 
@@ -25,6 +26,10 @@ SARVAM_API_KEY  = os.getenv("SARVAM_API_KEY", "")
 SARVAM_ENDPOINT = "https://api.sarvam.ai/translate"
 SARVAM_MODEL    = "mayura:v1"
 SARVAM_CHUNK    = 900          # Sarvam hard limit is ~1 000 chars; use 900 for safety
+# Speech-to-text (used for Odia lecture transcription; Whisper handles en/hi)
+SARVAM_STT_ENDPOINT = os.getenv("SARVAM_STT_ENDPOINT", "https://api.sarvam.ai/speech-to-text")
+SARVAM_STT_MODEL = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
+SARVAM_STT_MODE = os.getenv("SARVAM_STT_MODE", "transcribe")
 
 # ISO 639-1 short code → Sarvam BCP-47 code
 LANGUAGE_CODE_MAP: dict[str, str] = {
@@ -172,3 +177,71 @@ def translate(
             raise
 
     return " ".join(parts).strip()
+
+
+def transcribe_file(
+    audio_path: str,
+    language: str = "od",
+    timeout: int = 60,
+) -> str:
+    """
+    Transcribe a short audio chunk with Sarvam Speech-to-Text.
+
+    The caller should pass short chunks (Sarvam REST is intended for quick
+    responses under ~30 seconds). Use language='od' for Odia, which maps to
+    Sarvam's BCP-47 code 'od-IN'.
+    """
+    api_key = os.getenv("SARVAM_API_KEY", SARVAM_API_KEY)
+    if not api_key:
+        raise RuntimeError(
+            "SARVAM_API_KEY is not set -- add it to .env to enable Sarvam speech-to-text"
+        )
+    if not audio_path or not os.path.exists(audio_path):
+        raise RuntimeError(f"Audio chunk does not exist: {audio_path}")
+
+    language_code = _to_sarvam_code(language)
+    form_data = {
+        "model": SARVAM_STT_MODEL,
+        "mode": SARVAM_STT_MODE,
+    }
+    if language_code and language_code != "unknown":
+        form_data["language_code"] = language_code
+
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with open(audio_path, "rb") as f:
+                resp = _requests.post(
+                    SARVAM_STT_ENDPOINT,
+                    headers={"api-subscription-key": api_key},
+                    files={"file": (os.path.basename(audio_path), f, "audio/mpeg")},
+                    data=form_data,
+                    timeout=timeout,
+                )
+            if resp.status_code in (429, 503) and attempt < 2:
+                retry_after = resp.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after and retry_after.isdigit() else (2 ** attempt) * 2
+                logger.warning("Sarvam STT rate-limited/service busy; retrying in %.1fs", wait)
+                time.sleep(wait)
+                continue
+            if resp.status_code != 200:
+                raise RuntimeError(f"Sarvam STT API error {resp.status_code}: {resp.text[:500]}")
+            data = resp.json()
+            transcript = str(data.get("transcript") or "").strip()
+            if not transcript:
+                raise RuntimeError("Sarvam STT returned an empty transcript field")
+            logger.debug(
+                "Sarvam STT chunk OK | lang=%s | detected=%s | chars=%d",
+                language_code,
+                data.get("language_code"),
+                len(transcript),
+            )
+            return transcript
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep((2 ** attempt) * 1.5)
+                continue
+            break
+
+    raise RuntimeError(f"Sarvam STT failed: {last_error}") from last_error

@@ -6,7 +6,7 @@ from rdkit import Chem
 # Add parent directory to sys.path to import app modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.scientific_solver import RuleBasedChiralDetector, MathStepValidator, OpenBabelFallback, MaximaFallback
+from ai_services.solver.scientific_solver import RuleBasedChiralDetector, MathStepValidator, OpenBabelFallback, MaximaFallback
 
 def test_chiral_detector():
     print("Testing RuleBasedChiralDetector...")

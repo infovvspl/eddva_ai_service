@@ -1,4 +1,4 @@
-# ── AI Service (FastAPI) ─────────────────────────────────────────────────────
+# ── AI Service (Django + gunicorn) ───────────────────────────────────────────
 FROM python:3.11-slim
 
 # System dependencies for OpenCV, PDF processing, EasyOCR
@@ -21,10 +21,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
-COPY main.py manage.py ./
+COPY manage.py ./
 COPY ai_study_project/ ./ai_study_project/
 COPY ai_services/ ./ai_services/
-COPY app/ ./app/
 
 # Create data dir (needed by some services at runtime)
 RUN mkdir -p data/uploads
@@ -37,5 +36,11 @@ USER appuser
 
 EXPOSE 8000
 
-# 2 workers — tune based on EC2 RAM; avoid reload=True in prod
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Run the Django app via gunicorn — matches the production PM2 setup
+# (deploy/ecosystem.config.js). Tune --workers based on EC2 RAM.
+CMD ["gunicorn", "ai_study_project.wsgi:application", \
+     "--bind", "0.0.0.0:8000", \
+     "--workers", "3", \
+     "--timeout", "120", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-"]

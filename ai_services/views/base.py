@@ -43,7 +43,7 @@ def get_limiter() -> UsageLimiter:
     return _limiter
 
 
-def _log_usage_to_db(institute, institute_id: str, feature: str, result: dict, cache_hit: bool):
+def _log_usage_to_db(institute, institute_id: str, feature: str, result: dict, cache_hit: bool, vertical: str = "base"):
     """Persist usage to DB for billing — fire-and-forget."""
     try:
         from ai_services.models import UsageLog
@@ -51,6 +51,7 @@ def _log_usage_to_db(institute, institute_id: str, feature: str, result: dict, c
             institute=institute,
             institute_id_str=institute_id,
             feature=feature,
+            vertical=vertical,
             model_used=result.get("model", "cached"),
             prompt_tokens=result.get("usage", {}).get("prompt_tokens", 0),
             completion_tokens=result.get("usage", {}).get("completion_tokens", 0),
@@ -77,6 +78,7 @@ def ai_call_text(
     """
     institute = getattr(request, "institute", None)
     institute_id = getattr(request, "institute_id", "default")
+    vertical = getattr(request, "vertical", "base")
 
     if institute and not institute.is_feature_enabled(feature):
         return Response(
@@ -90,10 +92,10 @@ def ai_call_text(
 
     try:
         if not skip_cache:
-            cached = _cache.get(institute_id, feature, user_prompt)
+            cached = _cache.get(institute_id, feature, user_prompt, vertical)
             if cached is not None:
-                _log_usage_to_db(institute, institute_id, feature, {}, cache_hit=True)
-                return Response({**cached, "_meta": {"source": "cache", "model": "cached", "institute": institute_id}})
+                _log_usage_to_db(institute, institute_id, feature, {}, cache_hit=True, vertical=vertical)
+                return Response({**cached, "_meta": {"source": "cache", "model": "cached", "institute": institute_id, "vertical": vertical}})
 
         soft_cap = institute.daily_soft_cap if institute else None
         hard_cap = institute.daily_hard_cap if institute else None
@@ -101,8 +103,8 @@ def ai_call_text(
         if not is_allowed:
             return Response({"error": "Daily token budget exceeded for your institute"}, status=429)
 
-        template = get_template(feature)
-        model = get_model_for_task(feature)
+        template = get_template(feature, vertical)
+        model = get_model_for_task(feature, vertical)
         try:
             result = _llm.complete(
                 system_prompt=template.system,
@@ -114,16 +116,16 @@ def ai_call_text(
                 institute_id=institute_id,
             )
         except RuntimeError as e:
-            logger.error("LLM text call failed for %s (institute=%s): %s", feature, institute_id, e)
+            logger.error("LLM text call failed for %s (institute=%s, vertical=%s): %s", feature, institute_id, vertical, e)
             return Response({"error": str(e)}, status=502)
 
         text = result["content"] if isinstance(result["content"], str) else str(result["content"])
         response_data = wrap_fn(text)
 
         if not skip_cache:
-            _cache.set(institute_id, feature, user_prompt, response_data)
+            _cache.set(institute_id, feature, user_prompt, response_data, vertical)
         _limiter.record_usage(institute_id, result["usage"]["total_tokens"])
-        _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False)
+        _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False, vertical=vertical)
 
         meta = {
             "_meta": {
@@ -132,6 +134,7 @@ def ai_call_text(
                 "latency_ms": round(result["latency_ms"]),
                 "tokens": 0,
                 "institute": institute_id,
+                "vertical": vertical,
             }
         }
         if is_warning:
@@ -164,6 +167,7 @@ def ai_call(
     # Extract tenant context (set by middleware)
     institute = getattr(request, "institute", None)
     institute_id = getattr(request, "institute_id", "default")
+    vertical = getattr(request, "vertical", "base")
 
     # 1. Check feature is enabled for this tenant
     if institute and not institute.is_feature_enabled(feature):
@@ -181,24 +185,24 @@ def ai_call(
         )
 
     try:
-        return _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip_cache, max_tokens)
+        return _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip_cache, max_tokens, vertical)
     finally:
         # Always release the concurrency slot
         _limiter.release_concurrency_slot(institute_id)
 
 
-def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip_cache, max_tokens=4096) -> Response:
+def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip_cache, max_tokens=4096, vertical="base") -> Response:
     """Inner pipeline after concurrency slot is acquired."""
 
-    # 3. Tenant-scoped cache lookup
+    # 3. Tenant- + vertical-scoped cache lookup
     if not skip_cache:
-        cached = _cache.get(institute_id, feature, user_prompt)
+        cached = _cache.get(institute_id, feature, user_prompt, vertical)
         if cached is not None:
             # Log cache hit for billing
-            _log_usage_to_db(institute, institute_id, feature, {}, cache_hit=True)
+            _log_usage_to_db(institute, institute_id, feature, {}, cache_hit=True, vertical=vertical)
             return Response({
                 **cached,
-                "_meta": {"source": "cache", "model": "cached", "institute": institute_id},
+                "_meta": {"source": "cache", "model": "cached", "institute": institute_id, "vertical": vertical},
             })
 
     # 4. Check tenant-specific daily token budget
@@ -216,9 +220,9 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
             status=429,
         )
 
-    # 5. LLM call with right-sized model
-    template = get_template(feature)
-    model = get_model_for_task(feature)
+    # 5. LLM call with right-sized model (vertical-aware prompt + model)
+    template = get_template(feature, vertical)
+    model = get_model_for_task(feature, vertical)
 
     try:
         result = _llm.complete(
@@ -230,16 +234,16 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
             institute_id=institute_id,
         )
     except RuntimeError as e:
-        logger.error("LLM call failed for %s (institute=%s): %s", feature, institute_id, e)
+        logger.error("LLM call failed for %s (institute=%s, vertical=%s): %s", feature, institute_id, vertical, e)
         return Response({"error": str(e)}, status=502)
 
-    # 6. Tenant-scoped cache store
+    # 6. Tenant- + vertical-scoped cache store
     if not skip_cache and isinstance(result["content"], dict):
-        _cache.set(institute_id, feature, user_prompt, result["content"])
+        _cache.set(institute_id, feature, user_prompt, result["content"], vertical)
 
     # 7. Record usage (Redis for real-time + DB for billing)
     _limiter.record_usage(institute_id, result["usage"]["total_tokens"])
-    _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False)
+    _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False, vertical=vertical)
 
     # 8. Build response
     response_data = result["content"] if isinstance(result["content"], dict) else {"raw": result["content"]}
@@ -250,6 +254,7 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
             "latency_ms": round(result["latency_ms"]),
             "tokens": result["usage"]["total_tokens"],
             "institute": institute_id,
+            "vertical": vertical,
         }
     }
     if is_warning:

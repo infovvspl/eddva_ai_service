@@ -18,7 +18,7 @@ import httpx
 import subprocess
 from typing import Any, Dict, Optional, List
 from ai_services.core.llm_client import get_llm
-from app.formula_retriever import formula_retriever
+from ai_services.solver.formula_retriever import formula_retriever
 
 try:
     from openbabel import openbabel as ob
@@ -201,7 +201,7 @@ class ScientificSolver:
             "import pint\n"
             "import pubchempy as pcp\n"
             "ureg = pint.UnitRegistry()\n"
-            "from app.scientific_solver import RuleBasedChiralDetector as ChiralDetector, StepValidator, OpenBabelFallback as OpenBabel, MaximaFallback as Maxima\n"
+            "from ai_services.solver.scientific_solver import RuleBasedChiralDetector as ChiralDetector, StepValidator, OpenBabelFallback as OpenBabel, MaximaFallback as Maxima\n"
             "\n"
         ) + code
         

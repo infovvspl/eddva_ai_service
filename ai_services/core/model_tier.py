@@ -51,11 +51,36 @@ FEATURE_TIER_MAP = {
     "career_roadmap":     ModelTier.BALANCED,
     "feedback_analyze":   ModelTier.POWER,
     "test_generate":      ModelTier.POWER,
+
+    # ── QA / evaluation ───────────────────────────────────────────────
+    "evaluate_batch":     ModelTier.POWER,   # accuracy fact-checking needs the strongest model
 }
 
 
-def get_model_for_task(feature: str) -> str:
-    """Resolve the correct model ID for a given feature."""
+# ──────────────────────────────────────────────────────────────────────────────
+#  Per-vertical model overrides.
+#
+#  The maps above are the canonical *base* (coaching → Groq models). A vertical
+#  appears here only when it needs a different model. Within a vertical, use
+#  "__all__" for a blanket override or a feature name for a per-feature one.
+#
+#  e.g. (Phase 3): "school": {"__all__": "deepseek-v4-pro"}
+#  Empty by default → identical behaviour for every caller.
+# ──────────────────────────────────────────────────────────────────────────────
+VERTICAL_MODEL_OVERRIDES = {}  # type: dict[str, dict[str, str]]
+
+
+def get_model_for_task(feature: str, vertical: str = "base") -> str:
+    """
+    Resolve the model ID for a feature, optionally specialized for a vertical.
+
+    Resolution: per-feature vertical override → blanket vertical override
+    → base tier model. Unknown verticals fall back to base.
+    """
+    overrides = VERTICAL_MODEL_OVERRIDES.get(vertical or "base", {})
+    model = overrides.get(feature) or overrides.get("__all__")
+    if model:
+        return model
     tier = FEATURE_TIER_MAP.get(feature, ModelTier.BALANCED)
     return MODEL_MAP[tier]
 

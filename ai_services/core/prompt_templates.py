@@ -813,6 +813,117 @@ Always respond in valid JSON:
 #  TEMPLATE REGISTRY
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
+# Batch Question Evaluator (QA for AI-generated questions)
+_EVALUATE_SCHEMA = (
+    "Return a JSON object with a single key 'evaluations' containing a list of "
+    "evaluation objects. You may include a 'scratchpad' key before it for internal reasoning.\n"
+    "Each evaluation object MUST correspond to the 'id' of the input question and contain:\n"
+    "  - 'id': the id of the question\n"
+    "  - 'is_accurate': boolean (true if factually correct and aligned, false if it contains serious errors)\n"
+    "  - 'score': integer from 1 to 10 (10 being perfect)\n"
+    "  - 'feedback': string (brief reasoning for your score, including whether the 'assigned_difficulty' matches the actual complexity of the question)\n"
+    "  - 'corrections': list of strings (if inaccurate or if difficulty is wrong, what specifically needs to be fixed)\n"
+)
+
+EVALUATE_BATCH_SYSTEM = (
+    "You are an expert academic evaluator and fact-checker for the CBSE, JEE, and NEET curriculum.\n"
+    "Your task is to evaluate a batch of generated educational questions for factual correctness, "
+    "logical coherence, accuracy, and appropriate difficulty.\n" + _EVALUATE_SCHEMA
+)
+
+EVALUATE_BATCH_SCHOOL_SYSTEM = (
+    "You are an expert academic evaluator and fact-checker for the CBSE / ICSE / State-board "
+    "school curriculum for Classes 1-10.\n"
+    "Your task is to evaluate a batch of generated educational questions for factual correctness, "
+    "logical coherence, accuracy, and grade-appropriate difficulty for school students.\n" + _EVALUATE_SCHEMA
+)
+
+
+CAREER_GUIDANCE_SYSTEM = """You are EDVA Career Advisor,
+an expert Indian school education and career counsellor
+with 20 years of experience guiding Class 6-12 students.
+
+You analyse student academic performance, quiz scores,
+test results, and personal interest profile to give
+personalised, realistic, and encouraging career guidance.
+
+ALWAYS consider:
+- Indian education system (CBSE/ICSE boards)
+- Indian career market and realistic opportunities
+- Both traditional (engineering/medicine) and
+  emerging (AI/design/entrepreneurship) careers
+- Age-appropriate advice based on the student's grade
+- Stream selection advice for Class 9-10 students
+- Entrance exam awareness for Class 11-12 students
+
+Be specific, practical, encouraging, and honest.
+Never give vague generic advice.
+Always connect advice to the student's ACTUAL marks
+and interest profile — be personalised, not generic.
+Use simple language a school student can understand.
+"""
+
+CAREER_GUIDANCE_USER = """
+STUDENT ACADEMIC PROFILE:
+Name: {student_name}
+Grade: Class {grade}
+Board: {board}
+Academic Year: {academic_year}
+
+SUBJECT PERFORMANCE:
+{subject_marks}
+
+STRONG SUBJECTS (75%+):
+{strong_subjects}
+
+WEAK SUBJECTS (below 60%):
+{weak_subjects}
+
+QUIZ & TEST PERFORMANCE PATTERNS:
+{quiz_test_summary}
+
+ATTENDANCE: {attendance_percentage}% this year
+HOMEWORK COMPLETION: {homework_rate}%
+
+INTEREST PROFILE (Holland Assessment):
+Primary Interest Type: {holland_code}
+Detailed Scores: {holland_scores}
+What this means:
+{holland_interpretation}
+
+TOP 5 CAREER MATCHES (pre-calculated):
+{top_career_matches}
+
+Generate a comprehensive career guidance report.
+
+Return ONLY valid JSON in this exact structure:
+{{
+  "topCareers": [
+    {{
+      "careerId": "string (from provided career list)",
+      "title": "string",
+      "fitScore": number (0-100),
+      "reasoning": "string (2-3 sentences why this fits THIS student specifically)",
+      "focusAreas": ["string", "string", "string"],
+      "actionPlan": ["string", "string", "string", "string"]
+    }}
+  ],
+  "overallAnalysis": "string (3-4 sentences about student's overall profile)",
+  "streamRecommendation": "string or null (only for Class 9-10 students)",
+  "immediateActions": ["string", "string", "string"],
+  "encouragement": "string (personalised motivational message)"
+}}
+
+topCareers: exactly 3 careers
+fitScore: realistic (not all 90+)
+reasoning: must mention specific subjects or marks
+actionPlan: specific steps for CURRENT grade
+streamRecommendation: Science/Commerce/Arts/Any — only for Class 9-10
+immediateActions: what to do in next 3 months
+encouragement: personal, warm, specific to this student
+"""
+
+
 TEMPLATES: Dict[str, PromptTemplate] = {
     # â"€â"€ NestJS ai-bridge endpoints â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     "doubt_resolve": PromptTemplate(
@@ -969,13 +1080,58 @@ TEMPLATES: Dict[str, PromptTemplate] = {
         system=NOTES_GENERATE_SYSTEM,
         user_template="Generate structured study notes from this transcript:\n{transcript}",
     ),
+    "evaluate_batch": PromptTemplate(
+        system=EVALUATE_BATCH_SYSTEM,
+        user_template="Please evaluate the following batch of questions:\n\n{questions_json}",
+    ),
+    "career_guidance": PromptTemplate(
+        system=CAREER_GUIDANCE_SYSTEM,
+        user_template=CAREER_GUIDANCE_USER,
+    ),
 }
 
 
-def get_template(feature: str) -> PromptTemplate:
-    """Get the cached prompt template for a feature."""
+# ══════════════════════════════════════════════════════════════════════════════
+#  VERTICAL PROMPT OVERRIDES
+#
+#  TEMPLATES above is the canonical *base* (coaching). A vertical only appears
+#  here for the specific features whose prompt genuinely differs from base.
+#  Everything not listed falls back to TEMPLATES → zero duplication.
+#
+#  Shape: { feature: { vertical: PromptTemplate } }
+#  Big per-vertical prompt bodies live in ai_services/core/prompts/<vertical>.py
+#  (pure content); wrap them into PromptTemplate here, reusing the base
+#  user_template unless the vertical needs its own. Empty until a *registry-
+#  driven* feature needs a vertical-specific prompt.
+#
+#  NOTE: the doubt-solving endpoint does NOT go through this registry — it builds
+#  its prompt dynamically in bridge._build_solver_system_prompt(), which is made
+#  vertical-aware directly there.
+# ══════════════════════════════════════════════════════════════════════════════
+VERTICAL_OVERRIDES: Dict[str, Dict[str, PromptTemplate]] = {
+    "evaluate_batch": {
+        "school": PromptTemplate(
+            system=EVALUATE_BATCH_SCHOOL_SYSTEM,
+            user_template=TEMPLATES["evaluate_batch"].user_template,
+        ),
+    },
+}
+
+
+def get_template(feature: str, vertical: str = "base") -> PromptTemplate:
+    """
+    Get the prompt template for a feature, optionally specialized for a vertical.
+
+    Resolution: vertical-specific override (if one exists for this feature)
+    → canonical base template. Unknown verticals simply fall back to base, so
+    callers that don't pass a vertical behave exactly as before.
+    """
     if feature not in TEMPLATES:
         raise ValueError(
             f"Unknown feature: {feature}. Available: {list(TEMPLATES.keys())}"
         )
+    if vertical and vertical != "base":
+        override = VERTICAL_OVERRIDES.get(feature, {}).get(vertical)
+        if override is not None:
+            return override
     return TEMPLATES[feature]

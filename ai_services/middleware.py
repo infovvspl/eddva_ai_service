@@ -23,6 +23,12 @@ import logging
 import threading
 from django.http import JsonResponse
 
+from ai_services.core.verticals import (
+    normalize_vertical,
+    get_profile,
+    env_default_vertical,
+)
+
 logger = logging.getLogger("ai_services.middleware")
 
 # In-memory cache for Institute lookups — avoids DB hit on every request
@@ -97,6 +103,34 @@ def invalidate_institute_cache(api_key: str = None):
             _tenant_id_cache.clear()
 
 
+def _extract_vertical(request) -> str:
+    """
+    Per-request vertical override, if the caller supplied one explicitly.
+    Reads (in order) the X-Vertical header then the ?vertical= query param.
+    Returns "" when none is supplied (so the tenant/env default is used).
+
+    Note: we deliberately do NOT read the JSON body here — consuming the body
+    stream in middleware breaks DRF parsing downstream. Per-request selection
+    travels via the X-Vertical header (set by the NestJS ai-bridge).
+    """
+    return (request.headers.get("X-Vertical") or request.GET.get("vertical") or "").strip()
+
+
+def _resolve_vertical(request, institute) -> str:
+    """
+    Resolve the effective vertical with precedence:
+        explicit per-request  >  institute default  >  DEFAULT_VERTICAL env  >  hard default
+    Always returns a valid, registered vertical key (never raises).
+    """
+    explicit = _extract_vertical(request)
+    if explicit:
+        return normalize_vertical(explicit)
+    institute_vertical = getattr(institute, "vertical", None) if institute else None
+    if institute_vertical:
+        return normalize_vertical(institute_vertical)
+    return env_default_vertical()
+
+
 def _extract_api_key(request) -> str:
     """
     Extract API key from request in priority order:
@@ -139,6 +173,8 @@ class TenantAuthMiddleware:
         if self._is_exempt(request.path):
             request.institute = None
             request.institute_id = "anonymous"
+            request.vertical = _resolve_vertical(request, None)
+            request.profile = get_profile(request.vertical)
             return self.get_response(request)
 
         # Extract API key (from X-API-Key or Bearer token)
@@ -178,12 +214,15 @@ class TenantAuthMiddleware:
         # Attach tenant context to request
         request.institute = institute
         request.institute_id = str(institute.slug)
+        request.vertical = _resolve_vertical(request, institute)
+        request.profile = get_profile(request.vertical)
 
         response = self.get_response(request)
 
         # Debugging headers
         response["X-Institute"] = institute.slug
         response["X-Plan"] = institute.plan
+        response["X-Vertical"] = request.vertical
 
         return response
 

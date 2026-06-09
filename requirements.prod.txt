@@ -5,9 +5,10 @@ python-multipart==0.0.22
 python-dotenv
 httpx
 
-# ── Django + DRF (backing framework) ─────────────────────────────────────────
+# ── Django + DRF (production framework — served via gunicorn) ─────────────────
 django>=4.2
 djangorestframework>=3.14
+gunicorn>=21.2
 
 # ── LLM / Transcription ───────────────────────────────────────────────────────
 faster-whisper>=1.0.0
