@@ -4071,44 +4071,40 @@ _CONTENT_TYPE_PROMPTS = {
     "study_guide":         "Generate a crisp, exam-ready summary of this topic in Markdown. Use bullet points and short paragraphs. Cover every exam-important concept.",
     "key_concepts":        "Generate a structured list of ALL key formulas and must-know concepts for this topic in Markdown. For each: name, definition, units (if applicable), one-line use-case.",
     "practice_questions":  (
-        "Generate a {exam_target} practice problem set for this topic in Markdown. "
+        "Generate a practice problem set for this topic in Markdown. "
         "Include exactly 10 questions with a mix of difficulty (3 easy, 5 medium, 2 hard). "
-        "Strictly follow the {exam_target} question style as specified in the exam constraint above. "
         "For each question:\n"
         "- Number it (Q1, Q2 ...)\n"
-        "- Write the question clearly (use the question styles specified in the exam constraint)\n"
+        "- Write the question clearly\n"
         "- After all questions, add a ## Answers section with answer + 2-3 line explanation.\n"
-        "Ensure questions test understanding, not just recall."
+        "Ensure questions test understanding, not just recall. Keep everything syllabus-appropriate."
     ),
     "dpp": (
-        "Generate a high-quality Daily Practice Problem (DPP) sheet for {exam_target} in Markdown, "
-        "exactly as a top {exam_target} coaching institute would give students.\n\n"
+        "Generate a high-quality Daily Practice Problem (DPP) sheet for this topic in Markdown.\n\n"
         "Format:\n"
-        "# {exam_target} DPP -- {topic_name}\n"
+        "# DPP -- {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name} | **Date:** ______\n\n"
         "## Section A -- Multiple Choice (1 mark each)\n"
-        "Generate 8 MCQ questions in {exam_target} style, each with 4 options (A-D). "
-        "Mix easy and medium difficulty. Follow the question styles specified in the exam constraint.\n\n"
+        "Generate 8 MCQ questions, each with 4 options (A-D). Mix easy and medium difficulty.\n\n"
         "## Section B -- Numericals / Short Answer (3 marks each)\n"
-        "Generate 4 numerical or short-answer problems appropriate for {exam_target}.\n\n"
+        "Generate 4 numerical or short-answer problems.\n\n"
         "## Answer Key\n"
         "List all correct answers and brief hints/solutions.\n\n"
         "Questions must be syllabus-aligned, conceptually varied, and gradually increasing in difficulty. "
-        "Do NOT mix in question styles from other exams."
+        "Do NOT mention any class, grade, board, or exam name anywhere in the output."
     ),
     "pyq": (
-        "Generate a Previous Year Question (PYQ) style practice set for {exam_target} on this topic in Markdown. "
-        "Simulate authentic {exam_target} exam questions from 2018-2024.\n\n"
+        "Generate a Previous Year Question (PYQ) style practice set on this topic in Markdown. "
+        "Simulate authentic, exam-style questions.\n\n"
         "Format:\n"
-        "# {exam_target} PYQ Practice Set -- {topic_name}\n"
+        "# PYQ Practice Set -- {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
-        "## {exam_target} Style Questions\n"
-        "Generate 10 questions strictly in {exam_target} question format (as specified in the exam constraint above). "
-        "For each question, note the year/session pattern it models (e.g. 'Pattern: {exam_target} 2022').\n\n"
+        "## Practice Questions\n"
+        "Generate 10 syllabus-appropriate questions covering this topic.\n\n"
         "## Detailed Solutions\n"
         "Provide full step-by-step solutions for every question.\n\n"
         "Questions must be authentic in difficulty and style. "
-        "Do NOT include questions from other exams."
+        "Do NOT mention any class, grade, board, or exam name anywhere in the output."
     ),
 }
 
