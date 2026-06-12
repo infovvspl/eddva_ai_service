@@ -2,6 +2,7 @@ import os
 import io
 import base64
 import json
+import ast
 import logging
 import traceback
 import matplotlib
@@ -172,6 +173,61 @@ class ScientificSolver:
             "Maxima": MaximaFallback,
         }
 
+    def _clean_generated_code(self, content: str) -> str:
+        """Extract executable Python from an LLM response."""
+        code = (content or "").strip()
+        if not code:
+            return ""
+
+        if "```python" in code:
+            code = code.split("```python", 1)[1].split("```", 1)[0].strip()
+        elif "```" in code:
+            code = code.split("```", 1)[1].split("```", 1)[0].strip()
+
+        lines = code.splitlines()
+        start_markers = (
+            "import ",
+            "from ",
+            "x =",
+            "y =",
+            "t =",
+            "n =",
+            "a =",
+            "b =",
+            "c =",
+            "f =",
+            "g =",
+            "FINAL_RESULT",
+            "def ",
+            "#",
+        )
+
+        start_idx = 0
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith(start_markers):
+                start_idx = idx
+                break
+        code = "\n".join(lines[start_idx:]).strip()
+
+        # Drop common non-code tails if a model ignored the instruction.
+        tail_markers = ("Explanation:", "Answer:", "Final answer:", "Steps:")
+        cleaned_lines = []
+        for line in code.splitlines():
+            if line.strip().startswith(tail_markers):
+                break
+            cleaned_lines.append(line)
+        return "\n".join(cleaned_lines).strip()
+
+    def _code_is_valid_python(self, code: str) -> Optional[str]:
+        try:
+            ast.parse(code)
+            return None
+        except SyntaxError as exc:
+            return f"{exc.msg} (line {exc.lineno})"
+
     async def fetch_nist_data(self, name: str) -> str:
         """Helper to fetch basic data from NIST WebBook (simulated/basic parsing)."""
         url = f"https://webbook.nist.gov/cgi/cbook.cgi?Name={name}&Units=SI"
@@ -316,19 +372,26 @@ class ScientificSolver:
             json_mode=False
         )
         
-        code = llm_resp["content"].strip()
-        # Clean up code if LLM included fences
-        if code.startswith("```python"):
-            code = code.split("```python")[1].split("```")[0].strip()
-        elif code.startswith("```"):
-            code = code.split("```")[1].split("```")[0].strip()
+        code = self._clean_generated_code(llm_resp["content"])
+        syntax_error = self._code_is_valid_python(code)
+        if syntax_error:
+            logger.warning("Scientific code generation produced invalid Python: %s", syntax_error)
+            return {
+                "success": False,
+                "error": f"Generated solver code was invalid Python: {syntax_error}",
+                "model": "scientific_solver",
+            }
 
         # Step 2: Execute Code
         exec_res = self._execute_code(code)
         
         if not exec_res["success"]:
             logger.error(f"Scientific execution failed: {exec_res['error']}")
-            # Fallback or retry? For now, we'll return the error to the synthesizer
+            return {
+                "success": False,
+                "error": exec_res["error"],
+                "model": "scientific_solver",
+            }
         
         # Step 3: Split Synthesis (Parallel Brief/Detailed generation)
         brief_system = (
