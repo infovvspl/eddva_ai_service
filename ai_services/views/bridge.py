@@ -4062,10 +4062,26 @@ _CONTENT_TYPE_PROMPTS = {
         "Format each as: **Q:** <question>  **A:** <answer>. "
         "Cover definitions, formulas, mechanisms, and application questions."
     ),
+    "faq": (
+        "Generate a Frequently Asked Questions (FAQ) sheet for this topic in Markdown. "
+        "Do NOT write lesson notes, summaries, or long explanatory sections. "
+        "Format exactly as question-answer pairs grouped under clear sub-topic headings:\n"
+        "## <Sub-topic>\n"
+        "**Q1. <common student question?>**\n"
+        "**A.** <clear, concise answer in 2-5 sentences>\n\n"
+        "Include 12-15 genuinely common questions students ask, covering definitions, misconceptions, "
+        "formula use, conceptual doubts, and application confusions. Each item must be a real FAQ, not a note bullet."
+    ),
     "checklist": (
         "Generate a revision checklist for this topic in Markdown. "
         "Group items by sub-topic. Use - [ ] for each checkbox item. "
         "Include concepts to understand, formulas to memorise, and types of problems to practice."
+    ),
+    "revision_checklist": (
+        "Generate a revision checklist for this topic in Markdown. "
+        "Group items by sub-topic. Use - [ ] for each checkbox item. "
+        "Include concepts to understand, formulas to memorise, and types of problems to practice. "
+        "Do NOT write normal notes; every actionable item must be a checkbox."
     ),
     # â"€â"€ same as lesson/summary but with short label aliases â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     "study_guide":         "Generate a crisp, exam-ready summary of this topic in Markdown. Use bullet points and short paragraphs. Cover every exam-important concept.",
@@ -4204,7 +4220,7 @@ def generate_topic_content(request):
     topic_name    = data.get("topicName", "").strip()
     subject_name  = data.get("subjectName", "").strip()
     chapter_name  = data.get("chapterName", "").strip()
-    content_type  = data.get("contentType", "lesson")
+    content_type  = str(data.get("contentType", "lesson")).strip().lower()
     difficulty    = data.get("difficulty", "intermediate")
     length        = data.get("length", "standard")
     exam_target   = (data.get("examTarget") or data.get("exam_target") or "").strip()
