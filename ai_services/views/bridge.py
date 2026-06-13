@@ -4110,16 +4110,18 @@ _CONTENT_TYPE_PROMPTS = {
         "Do NOT mention any class, grade, board, or exam name anywhere in the output."
     ),
     "pyq": (
-        "Generate a Previous Year Question (PYQ) style practice set on this topic in Markdown. "
-        "Simulate authentic, exam-style questions.\n\n"
+        "Generate a school Previous Year Question (PYQ) style practice set on this topic in Markdown. "
+        "Simulate authentic class/board exam questions for the selected class only.\n\n"
         "Format:\n"
         "# PYQ Practice Set -- {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
         "## Practice Questions\n"
-        "Generate 10 syllabus-appropriate questions covering this topic.\n\n"
+        "Generate 10 syllabus-appropriate questions covering this topic using school board patterns "
+        "(MCQ, short answer, long answer, case/source-based where suitable).\n\n"
         "## Detailed Solutions\n"
         "Provide full step-by-step solutions for every question.\n\n"
-        "Questions must be authentic in difficulty and style. "
+        "Questions must match the selected class syllabus and board-question difficulty. "
+        "Do NOT generate JEE, NEET, Olympiad, integer-type, multi-correct, match-the-column, or competitive exam PYQs. "
         "Do NOT mention any class, grade, board, or exam name anywhere in the output."
     ),
 }
@@ -4217,6 +4219,7 @@ _LENGTH_WORDS = {
 @api_view(["POST"])
 def generate_topic_content(request):
     data = request.data
+    vertical      = getattr(request, "vertical", "coaching")
     topic_name    = data.get("topicName", "").strip()
     subject_name  = data.get("subjectName", "").strip()
     chapter_name  = data.get("chapterName", "").strip()
@@ -4245,7 +4248,7 @@ def generate_topic_content(request):
 
     # Vertical-aware fallback: school content must not default to JEE framing.
     # School with no explicit target → school-level (Class 10) rules.
-    if not exam_target and getattr(request, "vertical", "coaching") == "school":
+    if not exam_target and vertical == "school":
         exam_target = "Class 10"
 
 
@@ -4266,7 +4269,15 @@ def generate_topic_content(request):
     # Default to JEE (not "JEE/NEET") when exam target is truly unknown
     exam_upper = exam_target.upper() if exam_target else "JEE"
     type_instruction = type_instruction.replace("{exam_target}", exam_upper)
-    diff_desc  = _DIFFICULTY_DESC.get(difficulty, _DIFFICULTY_DESC["intermediate"])
+    if vertical == "school":
+        school_difficulty_desc = {
+            "basic": "introductory school-level depth with simple language",
+            "intermediate": "standard school curriculum and board exam depth",
+            "advanced": "higher-order school board questions, still within the selected class syllabus",
+        }
+        diff_desc = school_difficulty_desc.get(difficulty, school_difficulty_desc["intermediate"])
+    else:
+        diff_desc = _DIFFICULTY_DESC.get(difficulty, _DIFFICULTY_DESC["intermediate"])
     word_limit = _LENGTH_WORDS.get(length, _LENGTH_WORDS["standard"])
 
 
