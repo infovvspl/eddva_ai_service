@@ -1,11 +1,13 @@
 import json
 import logging
+import time
 
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
+from ai_services.core.usage_logger import log_usage
 from .base import ai_call, ai_call_text, get_llm
 
 logger = logging.getLogger("ai_services.career")
@@ -30,6 +32,7 @@ def interpret_holland_code(code: str) -> str:
 @api_view(["POST"])
 def career_guidance(request):
     """AI #17 — School Career Guidance. Auth handled by global X-API-Key middleware."""
+    _start_time = time.time()
     data = request.data or {}
     grade = data.get('grade', 10)
     board = data.get('board', 'CBSE')
@@ -44,6 +47,7 @@ def career_guidance(request):
     holland_scores = data.get('hollandScores', {}) or {}
     top_career_matches = data.get('topCareerMatches', []) or []
     institute_id = data.get('instituteId', '') or getattr(request, 'institute_id', '')
+    user_id_cg = data.get('userId') or data.get('user_id') or data.get('studentName') or ''
 
     marks_text = '\n'.join([
         f"  {s.get('subject')}: {s.get('percentage')}% ({s.get('grade')})"
@@ -86,6 +90,20 @@ def career_guidance(request):
         )
     except Exception as exc:
         logger.error("career_guidance LLM failed: %s", exc)
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type='school',
+                feature_id='career_guidance_report',
+                feature_category='student',
+                model_used='llama-3.3-70b-versatile',
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(exc)[:500],
+                user_id=user_id_cg,
+            )
+        except Exception:
+            pass
         return Response({'error': str(exc)}, status=502)
 
     raw = result.get('content', '{}')
@@ -106,6 +124,22 @@ def career_guidance(request):
     except Exception as exc:
         logger.error("career_guidance JSON parse failed: %s", exc)
         return Response({'error': 'Failed to parse AI response', 'raw': str(raw)[:500]}, status=500)
+
+    try:
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='career_guidance_report',
+            feature_category='student',
+            model_used=result.get('model', 'llama-3.3-70b-versatile'),
+            tokens_input=result.get('tokens_input', 0),
+            tokens_output=result.get('tokens_output', 0),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_cg,
+        )
+    except Exception:
+        pass
 
     return Response({'report': report, 'latency_ms': result.get('latency_ms', 0)})
 

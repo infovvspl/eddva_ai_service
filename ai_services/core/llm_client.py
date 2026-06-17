@@ -378,6 +378,8 @@ class LLMClient:
                             "usage": usage,
                             "model": effective_model,
                             "latency_ms": latency_ms,
+                            "tokens_input": usage.get("prompt_tokens", 0),
+                            "tokens_output": usage.get("completion_tokens", 0),
                         }
 
                     try:
@@ -396,6 +398,8 @@ class LLMClient:
                         "usage": usage,
                         "model": effective_model,
                         "latency_ms": latency_ms,
+                        "tokens_input": usage.get("prompt_tokens", 0),
+                        "tokens_output": usage.get("completion_tokens", 0),
                     }
 
                 except GroqRateLimitError as exc:

@@ -67,6 +67,7 @@ from ai_services.core.gemini_keys import (
     mark_gemini_key_disabled,
 )
 from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
+from ai_services.core.usage_logger import log_usage
 from .base import ai_call, ai_call_text, get_llm
 
 
@@ -297,10 +298,19 @@ def _transcribe_with_groq_one_key(
 
 
 
-    groq_language: str | None = None if language in ("hinglish", "auto") else language
+    # Hinglish → send "hi" so Whisper outputs Devanagari+Latin (code-switching)
+    # instead of auto-detecting and picking Urdu (acoustically identical to Hindi).
+    # "auto" still means no hint (let Whisper detect freely).
+    groq_language: str | None = "hi" if language == "hinglish" else (None if language == "auto" else language)
+
+    # For Hinglish, prime Whisper with a bilingual prompt so it code-switches
+    # to Latin for English words instead of forcing everything into Devanagari.
+    hinglish_primer = (
+        "यह एक हिंदी-अंग्रेजी मिश्रित (Hinglish) व्याख्यान है। "
+        "Hindi words should be in Devanagari, English words in Latin script."
+    ) if language == "hinglish" else ""
+
     client = Groq(api_key=api_key)
-
-
 
     for use_verbose in (True, False):
         kwargs: dict = dict(
@@ -314,9 +324,14 @@ def _transcribe_with_groq_one_key(
             kwargs["response_format"] = "text"
         if groq_language:
             kwargs["language"] = groq_language
+        # Merge hinglish primer with any rolling context window
+        combined_prompt = hinglish_primer
         if prev_context:
             raw = prev_context.encode("utf-8")[-880:]
-            kwargs["prompt"] = raw.decode("utf-8", errors="ignore")
+            ctx = raw.decode("utf-8", errors="ignore")
+            combined_prompt = (hinglish_primer + " " + ctx).strip() if hinglish_primer else ctx
+        if combined_prompt:
+            kwargs["prompt"] = combined_prompt
 
 
 
@@ -450,10 +465,13 @@ def _get_whisper_model():
 def _transcribe_local(audio_path: str, language: str) -> str:
     """Transcribe using local faster-whisper (fallback)."""
     whisper = _get_whisper_model()
+    # faster-whisper doesn't know "hinglish" — use "hi" so it outputs
+    # Devanagari+Latin (code-switched) instead of auto-detecting Urdu.
+    fw_language = "hi" if language == "hinglish" else language
     segments, info = whisper.transcribe(
         audio_path,
         beam_size=5,
-        language=language,
+        language=fw_language,
         task="transcribe",
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
@@ -2694,7 +2712,7 @@ def _coerce_tutor_or_doubt_text(raw) -> str:
 @api_view(["POST"])
 def resolve_doubt(request):
     import re as _re
-
+    _start_time = time.time()
 
 
     data = request.data
@@ -2751,6 +2769,7 @@ def resolve_doubt(request):
 
 
     institute_id = getattr(request, "institute_id", "default")
+    user_id = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
 
 
 
@@ -2835,6 +2854,20 @@ def resolve_doubt(request):
                 )
                 parsed = solve_result["content"] if isinstance(solve_result["content"], dict) else {}
         except RuntimeError as llm_err:
+            try:
+                log_usage(
+                    institute_id=institute_id,
+                    institute_type='school',
+                    feature_id='doubt_resolver',
+                    feature_category='student',
+                    model_used='unknown',
+                    latency_ms=int((time.time() - _start_time) * 1000),
+                    success=False,
+                    error_message=str(llm_err)[:500],
+                    user_id=user_id,
+                )
+            except Exception:
+                pass
             return JsonResponse({"error": str(llm_err)}, status=502)
     brief_obj: dict = parsed.get("brief") or {}
     detailed_obj: dict = parsed.get("detailed") or {}
@@ -2884,7 +2917,22 @@ def resolve_doubt(request):
     for k, v in brief_obj.items(): brief_obj[k] = _safe_str(v)
     for k, v in detailed_obj.items(): detailed_obj[k] = _safe_str(v)
 
-
+    try:
+        _doubt_model = solve_result.get('model', 'unknown')
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='doubt_resolver',
+            feature_category='student',
+            model_used=_doubt_model if _doubt_model != 'scientific_solver' else 'llama-3.3-70b-versatile',
+            tokens_input=solve_result.get('tokens_input', 0),
+            tokens_output=solve_result.get('tokens_output', 0),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id,
+        )
+    except Exception:
+        pass
 
     return JsonResponse({
         "subject": subject,
@@ -3163,11 +3211,14 @@ def ocr_doubt_image(request):
       - purpose: optional. ``grading`` = short transcription for mock-test answers (no 'the image shows…');
         omit or ``doubt`` = fuller extraction for doubt resolution (default).
     """
+    _start_time = time.time()
     image_url = (request.data.get("imageUrl") or "").strip()
     if not image_url:
         return Response({"error": "Missing imageUrl"}, status=400)
     purpose = (request.data.get("purpose") or "doubt").strip().lower()
     is_grading = purpose in ("grading", "mock", "assessment", "mock_test", "answer")
+    institute_id_ocr = getattr(request, "institute_id", "default")
+    user_id_ocr = request.data.get('userId') or request.data.get('user_id') or ''
     if is_grading:
         text = _transcribe_exam_answer_with_vision(image_url)
     else:
@@ -3177,6 +3228,22 @@ def ocr_doubt_image(request):
         text = _extract_text_from_image_url(
             image_url, languages=["en"] if is_grading else None
         )
+    try:
+        _ocr_model = 'llama-4-scout-17b-16e-instruct' if text else 'easyocr-local'
+        log_usage(
+            institute_id=institute_id_ocr,
+            institute_type='school',
+            feature_id='image_ocr_handwriting',
+            feature_category='shared',
+            model_used=_ocr_model,
+            tokens_input=int(len(image_url) / 4),
+            tokens_output=int(len(text or '') / 4),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=bool(text),
+            user_id=user_id_ocr,
+        )
+    except Exception:
+        pass
     return JsonResponse({"text": text or ""})
 
 
@@ -3189,6 +3256,7 @@ def ocr_doubt_image(request):
 
 @api_view(["POST"])
 def start_tutor_session(request):
+    _start_time = time.time()
     data = request.data
     student_id = data.get("studentId")
     if not student_id:
@@ -3197,6 +3265,7 @@ def start_tutor_session(request):
 
 
     institute_id = getattr(request, "institute_id", "default")
+    user_id = data.get('userId') or data.get('user_id') or student_id or ''
     context = data.get("context", "")
 
 
@@ -3228,6 +3297,20 @@ def start_tutor_session(request):
             institute_id=institute_id,
         )
     except RuntimeError as e:
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type='school',
+                feature_id='ai_lecture_notes',
+                feature_category='teacher',
+                model_used='unknown',
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(e)[:500],
+                user_id=user_id,
+            )
+        except Exception:
+            pass
         return JsonResponse({"error": str(e)}, status=502)
 
 
@@ -3239,7 +3322,21 @@ def start_tutor_session(request):
         explanation_text = str(raw_text).strip()
     explanation_text = _coerce_tutor_or_doubt_text(explanation_text)
 
-
+    try:
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='ai_lecture_notes',
+            feature_category='teacher',
+            model_used=result.get('model', 'llama-3.3-70b-versatile'),
+            tokens_input=result.get('tokens_input', 0),
+            tokens_output=result.get('tokens_output', 0),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id,
+        )
+    except Exception:
+        pass
 
     return JsonResponse({
         "response": explanation_text,
@@ -3261,6 +3358,7 @@ def start_tutor_session(request):
 
 @api_view(["POST"])
 def continue_tutor_session(request):
+    _start_time = time.time()
     data = request.data
     session_id = data.get("sessionId")
     student_message = data.get("studentMessage")
@@ -3270,6 +3368,7 @@ def continue_tutor_session(request):
 
 
     institute_id = getattr(request, "institute_id", "default")
+    user_id = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     template = get_template("tutor_continue")
     user_prompt = template.user_template.format(
         session_id=session_id,
@@ -3290,6 +3389,20 @@ def continue_tutor_session(request):
             institute_id=institute_id,
         )
     except RuntimeError as e:
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type='school',
+                feature_id='doubt_resolver',
+                feature_category='student',
+                model_used='unknown',
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(e)[:500],
+                user_id=user_id,
+            )
+        except Exception:
+            pass
         return JsonResponse({"error": str(e)}, status=502)
 
 
@@ -3297,7 +3410,21 @@ def continue_tutor_session(request):
     raw_text = result["content"]
     explanation_text = _coerce_tutor_or_doubt_text(raw_text)
 
-
+    try:
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='doubt_resolver',
+            feature_category='student',
+            model_used=result.get('model', 'llama-3.3-70b-versatile'),
+            tokens_input=result.get('tokens_input', 0),
+            tokens_output=result.get('tokens_output', 0),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id,
+        )
+    except Exception:
+        pass
 
     return JsonResponse({
         "response": explanation_text,
@@ -3349,6 +3476,7 @@ def recommend_content(request):
 
 @api_view(["POST"])
 def generate_stt_notes(request):
+    _start_time = time.time()
     data = request.data
     audio_url = data.get("audioUrl")
     if not audio_url:
@@ -3360,6 +3488,8 @@ def generate_stt_notes(request):
     language = data.get("language", "hi")
     logger.info("generate_stt_notes | audio_url=%s | language=%s", audio_url, language)
     _t0 = _time.perf_counter()
+    institute_id_stt = getattr(request, "institute_id", "default")
+    user_id_stt = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
 
 
 
@@ -3374,6 +3504,23 @@ def generate_stt_notes(request):
             )
         except Exception as exc:
             logger.error("Transcription FAILED for %s: %s", audio_url, exc)
+            try:
+                _stt_model = 'sarvam-stt' if _is_odia_language(language) else 'whisper-large-v3-turbo'
+                log_usage(
+                    institute_id=institute_id_stt,
+                    institute_type='school',
+                    feature_id='lecture_transcription',
+                    feature_category='teacher',
+                    model_used=_stt_model,
+                    tokens_input=int(len(audio_url) / 4),
+                    tokens_output=0,
+                    latency_ms=int((time.time() - _start_time) * 1000),
+                    success=False,
+                    error_message=str(exc)[:500],
+                    user_id=user_id_stt,
+                )
+            except Exception:
+                pass
             return Response(
                 {
                     "error": "transcription_failed",
@@ -3436,7 +3583,36 @@ def generate_stt_notes(request):
         notes_meta.get("chunk_count", 0),
     )
 
-
+    try:
+        _stt_model_used = 'sarvam-stt' if _is_odia_language(language) else 'whisper-large-v3-turbo'
+        _notes_provider = notes_meta.get('provider', 'groq')
+        _notes_model = 'gemini-2.5-flash' if _notes_provider == 'gemini' else 'llama-3.3-70b-versatile'
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='lecture_transcription',
+            feature_category='teacher',
+            model_used=_stt_model_used,
+            tokens_input=int(len(audio_url) / 4),
+            tokens_output=int(len(raw_transcript) / 4),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_stt,
+        )
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='ai_lecture_notes',
+            feature_category='teacher',
+            model_used=_notes_model,
+            tokens_input=int(len(english_transcript) / 4),
+            tokens_output=int(len(notes_markdown) / 4),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_stt,
+        )
+    except Exception:
+        pass
 
     return JsonResponse({
         "notes": notes_markdown,
@@ -3479,6 +3655,7 @@ def generate_stt_notes(request):
 def stt_transcribe_only(request):
     """Whisper transcription only -- no LLM. Saves transcript in ~2-5 min (vs 15+ min for full pipeline)."""
     import time as _time
+    _start_time = time.time()
     data = request.data
     audio_url = (data.get("audioUrl") or "").strip()
     if not audio_url:
@@ -3488,6 +3665,8 @@ def stt_transcribe_only(request):
 
     language = data.get("language", "hi")
     topic_id = data.get("topicId", "")
+    institute_id_stt2 = getattr(request, "institute_id", "default")
+    user_id_stt2 = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     logger.info("stt_transcribe_only | url=%s | language=%s", audio_url, language)
     _t0 = _time.perf_counter()
 
@@ -3497,6 +3676,23 @@ def stt_transcribe_only(request):
         raw_transcript = _transcribe_audio(audio_url, language)
     except Exception as exc:
         logger.error("stt_transcribe_only FAILED for %s: %s", audio_url, exc)
+        try:
+            _stt2_model = 'sarvam-stt' if _is_odia_language(language) else 'whisper-large-v3-turbo'
+            log_usage(
+                institute_id=institute_id_stt2,
+                institute_type='school',
+                feature_id='lecture_transcription',
+                feature_category='teacher',
+                model_used=_stt2_model,
+                tokens_input=int(len(audio_url) / 4),
+                tokens_output=0,
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(exc)[:500],
+                user_id=user_id_stt2,
+            )
+        except Exception:
+            pass
         return Response(
             {
                 "error": "transcription_failed",
@@ -3522,7 +3718,22 @@ def stt_transcribe_only(request):
     elapsed = _time.perf_counter() - _t0
     logger.info("stt_transcribe_only done | %d chars | took=%.1fs", len(raw_transcript), elapsed)
 
-
+    try:
+        _stt2_model_ok = 'sarvam-stt' if _is_odia_language(language) else 'whisper-large-v3-turbo'
+        log_usage(
+            institute_id=institute_id_stt2,
+            institute_type='school',
+            feature_id='lecture_transcription',
+            feature_category='teacher',
+            model_used=_stt2_model_ok,
+            tokens_input=int(len(audio_url) / 4),
+            tokens_output=int(len(raw_transcript) / 4),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_stt2,
+        )
+    except Exception:
+        pass
 
     return JsonResponse({
         "rawTranscript": raw_transcript,
@@ -3800,6 +4011,7 @@ def _chunk_notes(text: str, max_chars: int = 12000) -> list:
 
 @api_view(["POST"])
 def generate_quiz_questions(request):
+    _start_time = time.time()
     data = request.data
 
 
@@ -3831,6 +4043,7 @@ def generate_quiz_questions(request):
 
 
     institute_id = getattr(request, "institute_id", "default")
+    user_id_quiz = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     lecture_title = data.get("lectureTitle", "Lecture")
     topic_id = data.get("topicId", "")
     course_level = data.get("courseLevel", "General")
@@ -3947,6 +4160,22 @@ def generate_quiz_questions(request):
 
 
     if not all_questions:
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type='school',
+                feature_id='in_video_quiz_generator',
+                feature_category='teacher',
+                model_used='llama-3.3-70b-versatile',
+                tokens_input=int(len(source_text) / 4),
+                tokens_output=0,
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message='no_questions_generated',
+                user_id=user_id_quiz,
+            )
+        except Exception:
+            pass
         return Response({"error": "Quiz generation produced no questions. Try again."}, status=502)
 
 
@@ -3955,7 +4184,22 @@ def generate_quiz_questions(request):
     for idx, q in enumerate(all_questions):
         q["id"] = f"q{idx + 1}"
 
-
+    try:
+        _quiz_total_input = sum(len(t.get('user_prompt', '')) for t in tasks)
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='in_video_quiz_generator',
+            feature_category='teacher',
+            model_used=last_meta.get('model', 'llama-3.3-70b-versatile'),
+            tokens_input=int(_quiz_total_input / 4),
+            tokens_output=int(len(str(all_questions)) / 4),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_quiz,
+        )
+    except Exception:
+        pass
 
     return Response({
         "questions": all_questions,
@@ -3988,6 +4232,7 @@ def generate_quiz_questions(request):
 @api_view(["POST"])
 def translate_text(request):
     import time as _time
+    _start_time = time.time()
     from ai_services.core.sarvam_client import translate as sarvam_translate
 
 
@@ -4004,6 +4249,7 @@ def translate_text(request):
 
 
     institute_id = getattr(request, "institute_id", "default")
+    user_id_tr = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     logger.info(
         "translate_text (Sarvam) | target=%s | chars=%d | institute=%s",
         target_language, len(text), institute_id,
@@ -4016,17 +4262,47 @@ def translate_text(request):
         translated = sarvam_translate(text, target_language=target_language)
     except RuntimeError as exc:
         logger.error("Sarvam translation failed: %s", exc)
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type='school',
+                feature_id='multilingual_translation',
+                feature_category='shared',
+                model_used='mayura:v1',
+                tokens_input=int(len(text) / 4),
+                tokens_output=0,
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(exc)[:500],
+                user_id=user_id_tr,
+            )
+        except Exception:
+            pass
         return Response({"error": str(exc)}, status=502)
 
 
 
     latency_ms = (_time.perf_counter() - _t0) * 1000
     logger.info(
-        "Sarvam translation done | %d â†' %d chars | %.0fms",
+        "Sarvam translation done | %d -> %d chars | %.0fms",
         len(text), len(translated), latency_ms,
     )
 
-
+    try:
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='multilingual_translation',
+            feature_category='shared',
+            model_used='mayura:v1',
+            tokens_input=int(len(text) / 4),
+            tokens_output=int(len(translated) / 4),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_tr,
+        )
+    except Exception:
+        pass
 
     return Response({"translatedText": translated})
 
@@ -4224,6 +4500,7 @@ _LENGTH_WORDS = {
 
 @api_view(["POST"])
 def generate_topic_content(request):
+    _start_time = time.time()
     data = request.data
     vertical      = getattr(request, "vertical", "coaching")
     topic_name    = data.get("topicName", "").strip()
@@ -4333,6 +4610,7 @@ def generate_topic_content(request):
 
 
     institute_id = getattr(request, "institute_id", "default")
+    user_id_tc = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     logger.info(
         "generate_topic_content | course=%s | exam=%s | subject=%s | topic=%s | type=%s",
         course_name or "—", exam_target or "—", subject_name or "—", topic_name[:40], content_type,
@@ -4348,9 +4626,37 @@ def generate_topic_content(request):
             institute_id=institute_id,
         )
     except RuntimeError as e:
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type='school',
+                feature_id='topic_content_generation',
+                feature_category='student',
+                model_used='llama-3.3-70b-versatile',
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(e)[:500],
+                user_id=user_id_tc,
+            )
+        except Exception:
+            pass
         return Response({"error": str(e)}, status=502)
 
-
+    try:
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='topic_content_generation',
+            feature_category='student',
+            model_used=llm_result.get('model', 'llama-3.3-70b-versatile'),
+            tokens_input=llm_result.get('tokens_input', 0),
+            tokens_output=llm_result.get('tokens_output', 0),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_tc,
+        )
+    except Exception:
+        pass
 
     content = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
     return Response({
@@ -4382,7 +4688,7 @@ def generate_topic_content(request):
 @api_view(["POST"])
 def generate_notes_from_transcript(request):
     import time as _time
-
+    _start_time = time.time()
 
 
     data = request.data
@@ -4409,6 +4715,7 @@ def generate_notes_from_transcript(request):
     language = data.get("language", "en")
     topic_id = data.get("topicId", "")
     institute_id = getattr(request, "institute_id", "default")
+    user_id_nft = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
 
 
 
@@ -4450,6 +4757,22 @@ def generate_notes_from_transcript(request):
             )
     except RuntimeError as exc:
         logger.error("notes_from_transcript LLM failed (institute=%s): %s", institute_id, exc)
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type='school',
+                feature_id='ai_lecture_notes',
+                feature_category='teacher',
+                model_used='llama-3.3-70b-versatile',
+                tokens_input=int(len(transcript) / 4),
+                tokens_output=0,
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(exc)[:500],
+                user_id=user_id_nft,
+            )
+        except Exception:
+            pass
         return Response({"error": str(exc)}, status=502)
 
     images = []
@@ -4479,7 +4802,23 @@ def generate_notes_from_transcript(request):
         _time.perf_counter() - _t0,
     )
 
-
+    try:
+        _nft_provider = notes_meta.get('provider', 'groq')
+        _nft_model = 'gemini-2.5-flash' if _nft_provider == 'gemini' else 'llama-3.3-70b-versatile'
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='ai_lecture_notes',
+            feature_category='teacher',
+            model_used=_nft_model,
+            tokens_input=int(len(transcript) / 4),
+            tokens_output=int(len(notes_markdown) / 4),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_nft,
+        )
+    except Exception:
+        pass
 
     # Return same shape as /stt/notes so NestJS content.service.ts needs zero changes
     return Response({
@@ -4659,7 +4998,7 @@ def _fetch_yt_captions_python(video_id: str) -> str:
 @api_view(["POST"])
 def generate_notes_from_youtube(request):
     import time as _time
-
+    _start_time = time.time()
 
 
     data = request.data
@@ -4667,6 +5006,7 @@ def generate_notes_from_youtube(request):
     topic_id = data.get("topicId", "")
     language = data.get("language", "en")
     institute_id = getattr(request, "institute_id", "default")
+    user_id_nfy = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
 
 
 
@@ -4735,6 +5075,22 @@ def generate_notes_from_youtube(request):
             )
     except RuntimeError as exc:
         logger.error("generate_notes_from_youtube LLM failed for %s: %s", video_id, exc)
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type='school',
+                feature_id='ai_lecture_notes',
+                feature_category='teacher',
+                model_used='llama-3.3-70b-versatile',
+                tokens_input=int(len(transcript) / 4),
+                tokens_output=0,
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(exc)[:500],
+                user_id=user_id_nfy,
+            )
+        except Exception:
+            pass
         return Response({"error": str(exc)}, status=502)
 
 
@@ -4744,7 +5100,23 @@ def generate_notes_from_youtube(request):
         video_id, len(notes_markdown), _time.perf_counter() - _t0,
     )
 
-
+    try:
+        _nfy_provider = notes_meta.get('provider', 'groq')
+        _nfy_model = 'gemini-2.5-flash' if _nfy_provider == 'gemini' else 'llama-3.3-70b-versatile'
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='ai_lecture_notes',
+            feature_category='teacher',
+            model_used=_nfy_model,
+            tokens_input=int(len(transcript) / 4),
+            tokens_output=int(len(notes_markdown) / 4),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_nfy,
+        )
+    except Exception:
+        pass
 
     return Response({
         "notes": notes_markdown,

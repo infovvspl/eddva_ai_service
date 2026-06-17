@@ -8,12 +8,14 @@ tenant-feature-gated, and usage-logged like the rest of the bridge.
 
 import json
 import logging
+import time
 
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from ai_services.core.prompt_templates import get_template
 from ai_services.core.model_tier import get_model_for_task
+from ai_services.core.usage_logger import log_usage
 from .base import get_llm, _log_usage_to_db
 
 logger = logging.getLogger("ai_services.evaluate")
@@ -27,10 +29,12 @@ def evaluate_batch(request):
     POST body: {"questions": [{"id", "question", "options", "answer", "explanation", "_meta": {"difficulty"}}, ...]}
     Returns:   {"evaluations": [{"id", "is_accurate", "score", "feedback", "corrections"}, ...]}
     """
+    _start_time = time.time()
     institute = getattr(request, "institute", None)
     institute_id = getattr(request, "institute_id", "default")
     vertical = getattr(request, "vertical", "coaching")
     profile = getattr(request, "profile", None)
+    user_id_ev = (request.data or {}).get('userId') or (request.data or {}).get('user_id') or ''
 
     # Feature gating: vertical-level then tenant-level
     if profile is not None and not profile.allows_feature(FEATURE):
@@ -72,6 +76,20 @@ def evaluate_batch(request):
         )
     except Exception as e:
         logger.error("Evaluation failed (institute=%s, vertical=%s): %s", institute_id, vertical, e)
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type='school',
+                feature_id='in_video_quiz_generator',
+                feature_category='teacher',
+                model_used=model,
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(e)[:500],
+                user_id=user_id_ev,
+            )
+        except Exception:
+            pass
         return Response({"error": str(e)}, status=502)
 
     content = result.get("content", {})
@@ -80,6 +98,22 @@ def evaluate_batch(request):
         evaluations = content
 
     _log_usage_to_db(institute, institute_id, FEATURE, result, cache_hit=False, vertical=vertical)
+
+    try:
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='in_video_quiz_generator',
+            feature_category='teacher',
+            model_used=result.get('model', model),
+            tokens_input=result.get('tokens_input', 0),
+            tokens_output=result.get('tokens_output', 0),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+            user_id=user_id_ev,
+        )
+    except Exception:
+        pass
 
     return Response({
         "evaluations": evaluations,

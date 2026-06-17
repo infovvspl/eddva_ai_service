@@ -132,7 +132,7 @@ def ai_call_text(
                 "source": "llm",
                 "model": result["model"],
                 "latency_ms": round(result["latency_ms"]),
-                "tokens": 0,
+                "tokens": result["usage"]["total_tokens"],
                 "institute": institute_id,
                 "vertical": vertical,
             }

@@ -1,0 +1,110 @@
+import httpx
+import logging
+import os
+import threading
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+NESTJS_BASE_URL = os.getenv('NESTJS_INTERNAL_URL', 'http://localhost:3000')
+INTERNAL_API_KEY = os.getenv('INTERNAL_API_KEY', '')
+
+MODEL_COSTS = {
+    'llama-3.1-8b-instant':           {'input': 0.05,  'output': 0.08},
+    'llama-3.3-70b-versatile':        {'input': 0.59,  'output': 0.79},
+    'qwen/qwen3-32b':                  {'input': 0.29,  'output': 0.59},
+    'openai/gpt-oss-120b':             {'input': 0.15,  'output': 0.60},
+    'llama-3.2-11b-vision-preview':    {'input': 0.18,  'output': 0.18},
+    'llama-3.2-90b-vision-preview':    {'input': 0.90,  'output': 0.90},
+    'llama-4-scout-17b-16e-instruct':  {'input': 0.11,  'output': 0.34},
+    'gemini-2.5-flash':                {'input': 0.075, 'output': 0.30},
+    'mayura:v1':                       {'input': 0.10,  'output': 0.10},
+    'whisper-large-v3-turbo':          {'input': 0.04,  'output': 0.0},
+    'faster-whisper-local':            {'input': 0.0,   'output': 0.0},
+    'easyocr-local':                   {'input': 0.0,   'output': 0.0},
+    'sarvam-stt':                      {'input': 0.04,  'output': 0.0},
+}
+
+def calculate_cost(model: str, tokens_input: int, tokens_output: int) -> float:
+    rates = MODEL_COSTS.get(model, MODEL_COSTS.get(model.split('/')[-1], None))
+    if not rates:
+        return 0.0
+    return round(
+        (tokens_input / 1_000_000) * rates['input'] +
+        (tokens_output / 1_000_000) * rates['output'],
+        6
+    )
+
+
+def log_ai_usage_sync(
+    institute_id: str,
+    institute_type: str,
+    feature_id: str,
+    feature_category: str,
+    model_used: str,
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+    latency_ms: int = 0,
+    success: bool = True,
+    error_message: str = None,
+    user_id: str = None,
+):
+    try:
+        cost = calculate_cost(model_used, tokens_input, tokens_output)
+        payload = {
+            "instituteId": institute_id,
+            "instituteType": institute_type,
+            "featureId": feature_id,
+            "featureCategory": feature_category,
+            "modelUsed": model_used,
+            "tokensInput": tokens_input,
+            "tokensOutput": tokens_output,
+            "estimatedCost": cost,
+            "latencyMs": latency_ms,
+            "success": success,
+            "errorMessage": error_message,
+            "userId": user_id,
+        }
+        httpx.post(
+            f"{NESTJS_BASE_URL}/api/v1/internal/ai-usage/log",
+            json=payload,
+            headers={"X-Internal-Key": INTERNAL_API_KEY},
+            timeout=5.0,
+        )
+        logger.debug("AI usage logged: feature=%s model=%s cost=$%.6f", feature_id, model_used, cost)
+    except Exception as e:
+        logger.warning("AI usage logging failed (non-fatal): %s", e)
+
+
+def log_usage(
+    institute_id: str,
+    institute_type: str,
+    feature_id: str,
+    feature_category: str,
+    model_used: str,
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+    latency_ms: int = 0,
+    success: bool = True,
+    error_message: str = None,
+    user_id: str = None,
+):
+    """Fire-and-forget — never blocks the AI response."""
+    t = threading.Thread(
+        target=log_ai_usage_sync,
+        kwargs=dict(
+            institute_id=institute_id or '',
+            institute_type=institute_type or 'school',
+            feature_id=feature_id,
+            feature_category=feature_category,
+            model_used=model_used or 'unknown',
+            tokens_input=tokens_input or 0,
+            tokens_output=tokens_output or 0,
+            latency_ms=latency_ms or 0,
+            success=success,
+            error_message=error_message,
+            user_id=user_id,
+        ),
+        daemon=True,
+    )
+    t.start()
