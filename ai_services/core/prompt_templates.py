@@ -909,7 +909,7 @@ Return ONLY valid JSON in this exact structure:
     }}
   ],
   "overallAnalysis": "string (3-4 sentences about student's overall profile)",
-  "streamRecommendation": "string or null (only for Class 9-10 students)",
+  "streamRecommendation": "string or null (e.g., 'Science (PCM)', 'Commerce with Math', or 'Arts (HEP)' — recommending the stream along with a recommended subject combination, only for Class 9-10 students)",
   "immediateActions": ["string", "string", "string"],
   "encouragement": "string (personalised motivational message)"
 }}
@@ -918,7 +918,7 @@ topCareers: exactly 3 careers
 fitScore: realistic (not all 90+)
 reasoning: must mention specific subjects or marks
 actionPlan: specific steps for CURRENT grade
-streamRecommendation: Science/Commerce/Arts/Any — only for Class 9-10
+streamRecommendation: Science/Commerce/Arts/Any along with the recommended subject combination (e.g., PCM, PCB, Commerce with Math, etc.) — only for Class 9-10
 immediateActions: what to do in next 3 months
 encouragement: personal, warm, specific to this student
 """
