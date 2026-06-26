@@ -3267,6 +3267,7 @@ def start_tutor_session(request):
     institute_id = getattr(request, "institute_id", "default")
     user_id = data.get('userId') or data.get('user_id') or student_id or ''
     context = data.get("context", "")
+    vertical = getattr(request, "vertical", "coaching")
 
 
 
@@ -3276,7 +3277,7 @@ def start_tutor_session(request):
         system_prompt = context
         user_prompt = "Generate the complete lesson now. Write everything in full -- do not truncate or use placeholders."
     else:
-        template = get_template("tutor_session")
+        template = get_template("tutor_session", vertical)
         system_prompt = template.system
         user_prompt = template.user_template.format(
             student_id=student_id,
@@ -3290,7 +3291,7 @@ def start_tutor_session(request):
         result = get_llm().complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model=get_model_for_task("tutor_session"),
+            model=get_model_for_task("tutor_session", vertical),
             temperature=0.3,
             max_tokens=8192,
             json_mode=False,
@@ -3300,7 +3301,7 @@ def start_tutor_session(request):
         try:
             log_usage(
                 institute_id=institute_id,
-                institute_type='school',
+                institute_type=vertical,
                 feature_id='ai_lecture_notes',
                 feature_category='teacher',
                 model_used='unknown',
@@ -3325,7 +3326,7 @@ def start_tutor_session(request):
     try:
         log_usage(
             institute_id=institute_id,
-            institute_type='school',
+            institute_type=vertical,
             feature_id='ai_lecture_notes',
             feature_category='teacher',
             model_used=result.get('model', 'llama-3.3-70b-versatile'),
@@ -3369,7 +3370,8 @@ def continue_tutor_session(request):
 
     institute_id = getattr(request, "institute_id", "default")
     user_id = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
-    template = get_template("tutor_continue")
+    vertical = getattr(request, "vertical", "coaching")
+    template = get_template("tutor_continue", vertical)
     user_prompt = template.user_template.format(
         session_id=session_id,
         student_message=student_message,
@@ -3381,7 +3383,7 @@ def continue_tutor_session(request):
         result = get_llm().complete(
             system_prompt=template.system,
             user_prompt=user_prompt,
-            model=get_model_for_task("tutor_continue"),
+            model=get_model_for_task("tutor_continue", vertical),
             temperature=0.0,
             max_tokens=1200,
             json_mode=True,
@@ -3392,7 +3394,7 @@ def continue_tutor_session(request):
         try:
             log_usage(
                 institute_id=institute_id,
-                institute_type='school',
+                institute_type=vertical,
                 feature_id='doubt_resolver',
                 feature_category='student',
                 model_used='unknown',
@@ -3413,7 +3415,7 @@ def continue_tutor_session(request):
     try:
         log_usage(
             institute_id=institute_id,
-            institute_type='school',
+            institute_type=vertical,
             feature_id='doubt_resolver',
             feature_category='student',
             model_used=result.get('model', 'llama-3.3-70b-versatile'),
@@ -4346,7 +4348,10 @@ _CONTENT_TYPE_PROMPTS = {
         "**Q1. <common student question?>**\n"
         "**A.** <clear, concise answer in 2-5 sentences>\n\n"
         "Include 12-15 genuinely common questions students ask, covering definitions, misconceptions, "
-        "formula use, conceptual doubts, and application confusions. Each item must be a real FAQ, not a note bullet."
+        "formula use, conceptual doubts, and application confusions. Each item must be a real FAQ, not a note bullet.\n\n"
+        "Math formatting rules: wrap every inline expression in single dollar signs, "
+        "for example $x = \\frac{6}{3 + \\sqrt{2}}$. Use LaTeX commands such as \\frac and \\sqrt, "
+        "never raw fractions outside math delimiters and never the Unicode square-root symbol."
     ),
     "checklist": (
         "Generate a revision checklist for this topic in Markdown. "
@@ -4377,7 +4382,8 @@ _CONTENT_TYPE_PROMPTS = {
         "# DPP -- {topic_name}\n"
         "**Subject:** {subject_name} | **Chapter:** {chapter_name} | **Date:** ______\n\n"
         "## Section A -- Multiple Choice (1 mark each)\n"
-        "Generate 8 MCQ questions, each with 4 options (A-D). Mix easy and medium difficulty.\n\n"
+        "Generate 8 MCQ questions, each with 4 options (A-D). Mix easy and medium difficulty.\n"
+        "CRITICAL MCQ OPTION FORMATTING: Write each option (A-D) on a new line, never inline on a single line.\n\n"
         "## Section B -- Numericals / Short Answer (3 marks each)\n"
         "Generate 4 numerical or short-answer problems.\n\n"
         "## Answer Key\n"
@@ -4396,9 +4402,12 @@ _CONTENT_TYPE_PROMPTS = {
         "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
         "## Practice Questions\n"
         "Generate 10 syllabus-appropriate questions covering this topic using school board patterns "
-        "(MCQ, short answer, long answer, case/source-based where suitable).\n\n"
+        "(MCQ, short answer, long answer, case/source-based where suitable).\n"
+        "Each question must show the exact real, authentic year of the board exam (e.g. CBSE 2021) next to the question number. "
+        "It MUST be a real, authentic past year of the exam, never a dummy year or empty placeholder like '____' or 'Year' or '20XX'.\n\n"
         "## Detailed Solutions\n"
         "Provide full step-by-step solutions for every question.\n\n"
+        "CRITICAL MCQ OPTION FORMATTING: Write each option (A-D) on a new line, never inline on a single line.\n\n"
         "Math formatting rules: wrap only mathematical expressions in single dollar signs, "
         "for example Determine whether $3\\sqrt{5}$ is rational. Do not wrap complete English sentences "
         "inside math delimiters.\n\n"
@@ -4407,6 +4416,90 @@ _CONTENT_TYPE_PROMPTS = {
         "Do NOT mention any class, grade, board, or exam name anywhere in the output."
     ),
 }
+
+
+
+_COACHING_CONTENT_TYPE_PROMPTS: dict[str, str] = {
+    # ── DPP (coaching/competitive) ────────────────────────────────────────
+    "dpp": (
+        "Generate a high-quality {exam_target} Daily Practice Problem (DPP) "
+        "sheet for competitive exam preparation in Markdown.\n\n"
+        "Format:\n"
+        "# DPP — {topic_name}\n"
+        "**Subject:** {subject_name} | **Chapter:** {chapter_name} | "
+        "**Exam:** {exam_target} | **Date:** ______\n\n"
+        "---\n\n"
+        "## Section A — Single Correct MCQ (4 marks each, –1 for wrong)\n"
+        "Generate 8 single-correct MCQs. Each must have exactly 4 options (A–D). "
+        "Questions should be multi-step and conceptually challenging at the "
+        "{exam_target} level. Do NOT make questions trivially easy.\n"
+        "CRITICAL MCQ OPTION FORMATTING: Write each option (A-D) on a new line, never inline on a single line.\n\n"
+        "## Section B — Integer Type Numericals (4 marks each) [include for JEE]\n"
+        "Generate 3 integer-answer numericals. The answer must be a non-negative "
+        "integer (0–99). Show the numerical value, not a letter option.\n\n"
+        "## Section C — Multi-Correct MCQ (4 marks, –2 for partial) [include for JEE Advanced]\n"
+        "Generate 2 multi-correct MCQs where one or more options may be correct. "
+        "Mark correct options clearly in the Answer Key — NOT inline with questions.\n\n"
+        "---\n\n"
+        "## Answer Key\n"
+        "List ONLY the correct answers (e.g. 'A1. B', 'B1. 42'). "
+        "Do NOT include solutions or explanations here.\n\n"
+        "---\n\n"
+        "## Detailed Solutions\n"
+        "Provide complete step-by-step solutions for EVERY question. "
+        "Show all working, apply relevant formulas explicitly, and point out "
+        "common traps/mistakes where relevant.\n\n"
+        "Math formatting rules: wrap every inline expression in single dollar signs, "
+        "e.g. $F = ma$ or $x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$. "
+        "Use LaTeX commands (\\frac, \\sqrt, \\int, \\sum, etc.). "
+        "Never write raw fractions or the Unicode √ symbol outside math delimiters.\n\n"
+        "Questions must be {exam_target}-syllabus-aligned, conceptually varied, "
+        "and gradually increasing in difficulty. "
+        "Do NOT generate school-board questions, NCERT recall questions, or "
+        "trivial definition-based MCQs."
+    ),
+
+    # ── PYQ (coaching/competitive) ────────────────────────────────────────
+    "pyq": (
+        "Generate a {exam_target} Previous Year Question (PYQ) style practice set "
+        "for this topic in Markdown. Simulate authentic {exam_target} exam questions "
+        "at genuine difficulty — NOT school board level.\n\n"
+        "Format:\n"
+        "# {exam_target} PYQ Practice — {topic_name}\n"
+        "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
+        "---\n\n"
+        "## Practice Questions\n"
+        "Generate 12 questions in authentic {exam_target} pattern:\n"
+        "- For JEE: Single-correct MCQ (8) + Integer-type numericals (3) + "
+        "Multi-correct MCQ (1)\n"
+        "- For NEET: Single-correct MCQ (10) + Assertion-Reason (2)\n"
+        "- For JEE/NEET combined: 8 Single-correct MCQ + 2 Integer + 2 "
+        "Assertion-Reason\n"
+        "Number questions clearly (Q1, Q2, ...). "
+        "Each question must show the exact real, authentic year the question was asked in the exam (e.g. JEE Main 2019, NEET 2021) next to the question number. "
+        "It MUST be a real, authentic past year of the exam, never a dummy year or empty placeholder like '____' or 'Year' or '20XX'. "
+        "Do NOT include solutions or answers inline.\n\n"
+        "CRITICAL MCQ OPTION FORMATTING: Write each option (A-D) on a new line, never inline on a single line.\n\n"
+        "---\n\n"
+        "## Detailed Solutions\n"
+        "Provide full step-by-step solutions for every question. "
+        "Explain the concept, show all working, cite relevant formulas, "
+        "and highlight common mistakes.\n\n"
+        "Math formatting rules: wrap every inline expression in single dollar signs, "
+        "e.g. $v = u + at$. Use LaTeX commands for fractions, roots, integrals, etc. "
+        "Never write raw fractions or the Unicode √ symbol outside dollar signs.\n\n"
+        "Questions must be at genuine {exam_target} difficulty and pattern. "
+        "Do NOT generate school-board questions, CBSE-style long answers, "
+        "NCERT recall questions, or trivial 1-mark definitions."
+    ),
+}
+
+
+def _get_content_prompts(vertical: str) -> dict[str, str]:
+    """Return the prompt dict appropriate for the given product vertical."""
+    if vertical == "school":
+        return _CONTENT_TYPE_PROMPTS
+    return {**_CONTENT_TYPE_PROMPTS, **_COACHING_CONTENT_TYPE_PROMPTS}
 
 
 
@@ -4541,9 +4634,10 @@ def generate_topic_content(request):
 
 
 
-    type_instruction = _CONTENT_TYPE_PROMPTS.get(
+    active_prompts = _get_content_prompts(vertical)
+    type_instruction = active_prompts.get(
         content_type,
-        _CONTENT_TYPE_PROMPTS["lesson"],
+        active_prompts["lesson"],
     ).replace("{topic_name}", topic_name).replace("{subject_name}", subject_name).replace("{chapter_name}", chapter_name)
 
 
@@ -4629,7 +4723,7 @@ def generate_topic_content(request):
         try:
             log_usage(
                 institute_id=institute_id,
-                institute_type='school',
+                institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
                 feature_id='topic_content_generation',
                 feature_category='student',
                 model_used='llama-3.3-70b-versatile',
@@ -4645,7 +4739,7 @@ def generate_topic_content(request):
     try:
         log_usage(
             institute_id=institute_id,
-            institute_type='school',
+            institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
             feature_id='topic_content_generation',
             feature_category='student',
             model_used=llm_result.get('model', 'llama-3.3-70b-versatile'),

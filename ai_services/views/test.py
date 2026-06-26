@@ -215,7 +215,10 @@ def generate_practice_test(request):
     # chapters = list of exact DB chapter names for subject tests (overrides AI's own chapter selection)
     chapters_raw = data.get("chapters") or []
     db_chapters = [str(c).strip() for c in chapters_raw if str(c).strip()] if isinstance(chapters_raw, list) else []
+    vertical = getattr(request, "vertical", "coaching")
     exam_target = (data.get("exam_target") or "").strip().lower()
+    if not exam_target and vertical == "school":
+        exam_target = "class 10"  # CBSE / School default
 
     qtype = (data.get("type") or data.get("question_type") or "mcq").strip().lower()
     style = (data.get("style") or "").strip().lower()
