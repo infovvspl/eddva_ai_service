@@ -12,6 +12,11 @@ from django.test import TestCase
 
 from ai_services.models import Institute
 from ai_services.middleware import invalidate_institute_cache
+from ai_services.views.bridge import (
+    _has_incomplete_mcq_options,
+    _normalize_generated_math_markdown,
+    _normalize_pyq_exam_tags,
+)
 
 
 class _FakeLLM:
@@ -22,6 +27,7 @@ class _FakeLLM:
     def complete(self, system_prompt, user_prompt, **kwargs):
         self._sink["system_prompt"] = system_prompt
         self._sink["user_prompt"] = user_prompt
+        self._sink["kwargs"] = kwargs
         return {"content": "# Mock content", "model": "mock", "latency_ms": 1,
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
 
@@ -98,6 +104,96 @@ class ContentVerticalContractTests(TestCase):
         user_prompt = sink["user_prompt"]
         self.assertIn("PYQ Practice Set", user_prompt)
         self.assertIn("Do NOT generate JEE, NEET, Olympiad", user_prompt)
+
+    def test_pyq_requires_balanced_katex_and_allows_full_solution_budget(self):
+        resp, sink = self._generate(vertical_header="coaching", content_type="pyq")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("MANDATORY OUTPUT VALIDATION", sink["user_prompt"])
+        self.assertIn("matching closing delimiter", sink["user_prompt"])
+        self.assertIn("only inside EXAMTAG", sink["user_prompt"])
+        self.assertEqual(sink["kwargs"]["max_tokens"], 8192)
+
+    def test_generated_math_normalizer_repairs_detailed_solution_math(self):
+        raw = """```markdown
+## Detailed Solutions
+
+Step 1
+x = \\frac{6}{3 + \\sqrt{2}}
+
+Step 2
+x² + 2x = 3
+
+Step 3
+$y = mx + c
+
+Step 4
+Therefore, z = \\sqrt{5}
+```"""
+        normalized = _normalize_generated_math_markdown(raw)
+
+        self.assertNotIn("```", normalized)
+        self.assertIn("$x = \\frac{6}{3 + \\sqrt{2}}$", normalized)
+        self.assertIn("$x^{2} + 2x = 3$", normalized)
+        self.assertIn("$y = mx + c$", normalized)
+        self.assertIn("Therefore, $z = \\sqrt{5}$", normalized)
+
+    def test_generated_math_normalizer_converts_latex_code_fence(self):
+        normalized = _normalize_generated_math_markdown(
+            "## Detailed Solutions\n\n```latex\nx = \\frac{1}{2}\n```"
+        )
+        self.assertNotIn("```", normalized)
+        self.assertIn("$$\nx = \\frac{1}{2}\n$$", normalized)
+
+    def test_generated_math_normalizer_closes_unbalanced_delimiters(self):
+        normalized = _normalize_generated_math_markdown(
+            "## Detailed Solutions\n\n$x = \\sqrt{5}\n\nTherefore the value follows."
+        )
+        self.assertIn("$x = \\sqrt{5}$", normalized)
+        self.assertEqual(len([m for m in normalized if m == '$']), 2)
+
+    def test_generated_math_normalizer_prepends_missing_opening_delimiter(self):
+        normalized = _normalize_generated_math_markdown(
+            "## Detailed Solutions\n\n$f\n\n(0) = 0^2 - 3(0) + 2$"
+        )
+        self.assertIn("$f$", normalized)
+        self.assertIn("$(0) = 0^2 - 3(0) + 2$", normalized)
+        self.assertNotIn("+ 2$$", normalized)
+
+    def test_pyq_exam_year_is_moved_into_badge_tag_only(self):
+        normalized = _normalize_pyq_exam_tags(
+            "Q1. CBSE Class 10 2021: Find the roots.\n"
+            "Q2. Find the value. (JEE Main 2019)\n"
+            "3. [EXAMTAG: NEET 2021] NEET 2021: Find the answer."
+        )
+        self.assertIn("1. [EXAMTAG: CBSE Class 10 2021] Find the roots.", normalized)
+        self.assertIn("2. [EXAMTAG: JEE Main 2019] Find the value.", normalized)
+        self.assertIn("3. [EXAMTAG: NEET 2021] Find the answer.", normalized)
+        self.assertNotIn("2021: Find", normalized)
+
+    def test_incomplete_mcq_option_detector_rejects_bare_labels(self):
+        broken = """# DPP — Photosynthesis
+
+## Section A — Single Correct MCQ
+
+1. Where does photosynthesis occur?
+A
+B
+C
+D
+
+2. What is chlorophyll?
+A. A pigment
+B. A sugar
+C. A gas
+D. A protein
+
+## Answer Key
+1. A
+""" + ("Supporting content. " * 12)
+        complete = broken.replace("A\nB\nC\nD\n", "A. Chloroplast\nB. Nucleus\nC. Ribosome\nD. Vacuole\n")
+
+        self.assertTrue(_has_incomplete_mcq_options(broken))
+        self.assertFalse(_has_incomplete_mcq_options(complete))
 
     def _generate_test(self, vertical_header=None, exam_target=None):
         sink = {}

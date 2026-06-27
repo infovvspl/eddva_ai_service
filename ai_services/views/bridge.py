@@ -4345,10 +4345,14 @@ _CONTENT_TYPE_PROMPTS = {
         "Do NOT write lesson notes, summaries, or long explanatory sections. "
         "Format exactly as question-answer pairs grouped under clear sub-topic headings:\n"
         "## <Sub-topic>\n"
-        "**Q1. <common student question?>**\n"
+        "**Q1. <common student question?>**\n\n"
         "**A.** <clear, concise answer in 2-5 sentences>\n\n"
         "Include 12-15 genuinely common questions students ask, covering definitions, misconceptions, "
         "formula use, conceptual doubts, and application confusions. Each item must be a real FAQ, not a note bullet.\n\n"
+        "For numerical questions, the answer must provide a detailed step-by-step solution where each new step is on a new line (never in paragraph format). "
+        "For theory questions, the answer must provide a total, complete solution explaining the concept. "
+        "Do not just give the final answer; provide the full, comprehensive explanation.\n\n"
+        "CRITICAL MATH NOTATION: For all mathematics, equations, exponents, and variables, always use valid KaTeX/LaTeX Markdown. Exponents must use carets (e.g., $x^2$, $x^3$), and all mathematical expressions must be wrapped in single dollar signs (e.g. $3\\sqrt{5}$, $f(3) = 0$). Never output raw math or variables without dollar signs, and never use raw exponents like x2 or x3.\n\n"
         "Math formatting rules: wrap every inline expression in single dollar signs, "
         "for example $x = \\frac{6}{3 + \\sqrt{2}}$. Use LaTeX commands such as \\frac and \\sqrt, "
         "never raw fractions outside math delimiters and never the Unicode square-root symbol."
@@ -4403,10 +4407,12 @@ _CONTENT_TYPE_PROMPTS = {
         "## Practice Questions\n"
         "Generate 10 syllabus-appropriate questions covering this topic using school board patterns "
         "(MCQ, short answer, long answer, case/source-based where suitable).\n"
-        "Each question must show the exact real, authentic year of the board exam (e.g. CBSE 2021) next to the question number. "
+        "Format every question exactly as: `1. [EXAMTAG: CBSE Class 10 2021] <question text>`. "
+        "The exam name, class, and year must appear ONLY inside EXAMTAG and must never be repeated in the visible question text. "
         "It MUST be a real, authentic past year of the exam, never a dummy year or empty placeholder like '____' or 'Year' or '20XX'.\n\n"
         "## Detailed Solutions\n"
-        "Provide full step-by-step solutions for every question.\n\n"
+        "Provide full step-by-step solutions for every question. For all numerical questions, provide a detailed step-by-step solution showing calculations and working, where each new mathematical step is written on a new line, never combined into a single paragraph. For all MCQ and theory questions, provide the complete explanation/reasoning along with the correct option, not just the option letter alone.\n\n"
+        "CRITICAL MATH NOTATION: For all mathematics, equations, exponents, and variables, always use valid KaTeX/LaTeX Markdown. Exponents must use carets (e.g., $x^2$, $x^3$), and all mathematical expressions must be wrapped in single dollar signs (e.g. $3\\sqrt{5}$, $f(3) = 0$). Never output raw math or variables without dollar signs, and never use raw exponents like x2 or x3.\n\n"
         "CRITICAL MCQ OPTION FORMATTING: Write each option (A-D) on a new line, never inline on a single line.\n\n"
         "Math formatting rules: wrap only mathematical expressions in single dollar signs, "
         "for example Determine whether $3\\sqrt{5}$ is rational. Do not wrap complete English sentences "
@@ -4446,9 +4452,8 @@ _COACHING_CONTENT_TYPE_PROMPTS: dict[str, str] = {
         "Do NOT include solutions or explanations here.\n\n"
         "---\n\n"
         "## Detailed Solutions\n"
-        "Provide complete step-by-step solutions for EVERY question. "
-        "Show all working, apply relevant formulas explicitly, and point out "
-        "common traps/mistakes where relevant.\n\n"
+        "Provide complete step-by-step solutions for EVERY question. For all numerical questions, provide a detailed step-by-step solution showing calculations and working, where each new mathematical step is written on a new line, never combined into a single paragraph. For all MCQ and theory questions, provide the complete explanation/reasoning along with the correct option, not just the option letter alone. Show all working, apply relevant formulas explicitly, and point out common traps/mistakes where relevant.\n\n"
+        "CRITICAL MATH NOTATION: For all mathematics, equations, exponents, and variables, always use valid KaTeX/LaTeX Markdown. Exponents must use carets (e.g., $x^2$, $x^3$), and all mathematical expressions must be wrapped in single dollar signs (e.g. $3\\sqrt{5}$, $f(3) = 0$). Never output raw math or variables without dollar signs, and never use raw exponents like x2 or x3.\n\n"
         "Math formatting rules: wrap every inline expression in single dollar signs, "
         "e.g. $F = ma$ or $x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$. "
         "Use LaTeX commands (\\frac, \\sqrt, \\int, \\sum, etc.). "
@@ -4476,15 +4481,15 @@ _COACHING_CONTENT_TYPE_PROMPTS: dict[str, str] = {
         "- For JEE/NEET combined: 8 Single-correct MCQ + 2 Integer + 2 "
         "Assertion-Reason\n"
         "Number questions clearly (Q1, Q2, ...). "
-        "Each question must show the exact real, authentic year the question was asked in the exam (e.g. JEE Main 2019, NEET 2021) next to the question number. "
+        "Format every question exactly as: `1. [EXAMTAG: JEE Main 2019] <question text>` or `1. [EXAMTAG: NEET 2021] <question text>`. "
+        "The exam name and year must appear ONLY inside EXAMTAG and must never be repeated in the visible question text. "
         "It MUST be a real, authentic past year of the exam, never a dummy year or empty placeholder like '____' or 'Year' or '20XX'. "
         "Do NOT include solutions or answers inline.\n\n"
         "CRITICAL MCQ OPTION FORMATTING: Write each option (A-D) on a new line, never inline on a single line.\n\n"
         "---\n\n"
         "## Detailed Solutions\n"
-        "Provide full step-by-step solutions for every question. "
-        "Explain the concept, show all working, cite relevant formulas, "
-        "and highlight common mistakes.\n\n"
+        "Provide full step-by-step solutions for every question. For all numerical questions, provide a detailed step-by-step solution showing calculations and working, where each new mathematical step is written on a new line, never combined into a single paragraph. For all MCQ and theory questions, provide the complete explanation/reasoning along with the correct option, not just the option letter alone. Explain the concept, show all working, cite relevant formulas, and highlight common mistakes.\n\n"
+        "CRITICAL MATH NOTATION: For all mathematics, equations, exponents, and variables, always use valid KaTeX/LaTeX Markdown. Exponents must use carets (e.g., $x^2$, $x^3$), and all mathematical expressions must be wrapped in single dollar signs (e.g. $3\\sqrt{5}$, $f(3) = 0$). Never output raw math or variables without dollar signs, and never use raw exponents like x2 or x3.\n\n"
         "Math formatting rules: wrap every inline expression in single dollar signs, "
         "e.g. $v = u + at$. Use LaTeX commands for fractions, roots, integrals, etc. "
         "Never write raw fractions or the Unicode √ symbol outside dollar signs.\n\n"
@@ -4586,6 +4591,220 @@ _LENGTH_WORDS = {
     "standard": "~800 words",
     "detailed": "~1500 words",
 }
+
+
+_CONTENT_LATEX_COMMAND_RE = re.compile(
+    r"\\(?:frac|dfrac|tfrac|sqrt|int|sum|prod|lim|sin|cos|tan|log|ln|"
+    r"theta|alpha|beta|gamma|delta|pi|phi|psi|omega|lambda|sigma|mu|"
+    r"times|cdot|div|pm|leq|geq|neq|to)(?:\b|(?=[_^{]))"
+)
+_CONTENT_SUPERSCRIPT_MAP = str.maketrans({
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
+    "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+    "⁺": "+", "⁻": "-", "⁽": "(", "⁾": ")",
+})
+
+
+def _normalize_generated_math_markdown(markdown: str) -> str:
+    """Repair common LLM math output so remark-math can reliably invoke KaTeX.
+
+    This is deliberately conservative: existing dollar-delimited math is left
+    intact, while standalone calculation lines and raw LaTeX commands are
+    wrapped. It runs before generated content leaves the AI service, keeping
+    school and coaching previews/storage consistent.
+    """
+    text = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return text
+
+    # Models occasionally wrap the entire Markdown response in a code fence;
+    # that makes remark-math treat every formula as literal code.
+    outer_fence = re.fullmatch(r"\s*```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*", text, re.IGNORECASE)
+    if outer_fence:
+        text = outer_fence.group(1).strip()
+
+    # A fenced LaTeX block is display math, not source code.
+    text = re.sub(
+        r"```(?:latex|math|katex)\s*\n([\s\S]*?)\n```",
+        lambda match: "$$\n" + match.group(1).strip() + "\n$$",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = (
+        text.replace(r"\[", "$$").replace(r"\]", "$$")
+        .replace(r"\(", "$").replace(r"\)", "$")
+    )
+
+    # Convert presentation-oriented Unicode math to valid LaTeX first.
+    text = re.sub(
+        r"(?<=[A-Za-z0-9})\]])([⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁽⁾]+)",
+        lambda match: "^{" + match.group(1).translate(_CONTENT_SUPERSCRIPT_MAP) + "}",
+        text,
+    )
+    text = re.sub(r"√\s*\(([^()]+)\)", r"\\sqrt{\1}", text)
+    text = re.sub(r"√\s*([A-Za-z0-9]+)", r"\\sqrt{\1}", text)
+
+    lines = text.split("\n")
+    in_fence = False
+    in_display_math = False
+    repaired: list[str] = []
+
+    for original_line in lines:
+        line = original_line
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            repaired.append(line)
+            continue
+        if in_fence or not stripped:
+            repaired.append(line)
+            continue
+
+        display_count = line.count("$$")
+        if in_display_math:
+            repaired.append(line)
+            if display_count % 2 == 1:
+                in_display_math = False
+            continue
+        if display_count:
+            repaired.append(line)
+            if display_count % 2 == 1:
+                in_display_math = True
+            continue
+
+        single_dollars = len(re.findall(r"(?<!\$)\$(?!\$)", line))
+        if single_dollars % 2 == 1:
+            # An unmatched delimiter on a calculation line otherwise consumes
+            # the following Markdown and prevents KaTeX rendering.
+            if stripped.endswith("$") and not stripped.startswith("$"):
+                leading = line[:len(line) - len(line.lstrip())]
+                line = leading + "$" + line.lstrip()
+            else:
+                line = line.rstrip() + "$"
+            repaired.append(line)
+            continue
+        if single_dollars:
+            repaired.append(line)
+            continue
+
+        body_match = re.match(r"^(\s*(?:(?:Step\s+\d+|\d+[.)]|[-*+])\s*[:.-]?\s*)?)(.*)$", line, re.IGNORECASE)
+        prefix, body = body_match.groups() if body_match else ("", line)
+        body = body.strip()
+        has_latex = bool(_CONTENT_LATEX_COMMAND_RE.search(body))
+        has_equation = bool(re.search(r"(?:[A-Za-z0-9})\]])\s*(?:=|≤|≥|≠|≈|→)\s*", body))
+        has_math_structure = has_latex or has_equation or bool(re.search(r"[A-Za-z0-9})\]]\s*[+*/^_]\s*[A-Za-z0-9({\[]", body))
+        prose_words = re.findall(r"\b[A-Za-z]{3,}\b", _CONTENT_LATEX_COMMAND_RE.sub("", body))
+
+        if has_math_structure and not prose_words:
+            math_body = (body.replace("×", r"\times ").replace("÷", r"\div ")
+                         .replace("≤", r"\leq ").replace("≥", r"\geq ")
+                         .replace("≠", r"\neq ").replace("→", r"\to "))
+            repaired.append(f"{prefix}${math_body.strip()}$")
+        elif has_equation:
+            # Preserve explanatory prose while wrapping a trailing equation,
+            # e.g. "Therefore, x = \\frac{1}{2}".
+            equation_match = re.search(r"(?<![A-Za-z])([A-Za-z][A-Za-z0-9_]*(?:\^\{[^}]+\})?\s*=.+)$", body)
+            equation = equation_match.group(1).strip() if equation_match else ""
+            equation_words = re.findall(
+                r"\b[A-Za-z]{3,}\b",
+                _CONTENT_LATEX_COMMAND_RE.sub("", equation),
+            )
+            if equation_match and not equation_words:
+                math_equation = (equation.replace("×", r"\times ").replace("÷", r"\div ")
+                                 .replace("≤", r"\leq ").replace("≥", r"\geq ")
+                                 .replace("≠", r"\neq ").replace("→", r"\to "))
+                repaired.append(f"{prefix}{body[:equation_match.start(1)]}${math_equation}$")
+            else:
+                repaired.append(line)
+        else:
+            repaired.append(line)
+
+    result = "\n".join(repaired)
+    # Close a genuinely unfinished display block at EOF rather than allowing it
+    # to swallow the remainder of the document.
+    if in_display_math:
+        result = result.rstrip() + "\n$$"
+    return result.strip()
+
+
+_EXAM_YEAR_TAG = (
+    r"(?:CBSE(?:\s+Class\s+\d+)?\s+\d{4}|CLASS\s+\d+\s+\d{4}|"
+    r"NEET(?:\s+UG)?\s+\d{4}|JEE(?:\s+(?:Main|Advanced))?\s+\d{4})"
+)
+
+
+def _normalize_pyq_exam_tags(markdown: str) -> str:
+    """Keep a PYQ's exam/year solely in the renderer's badge marker."""
+    normalized: list[str] = []
+    leading_tag = re.compile(
+        rf"^(\s*)(?:Q\s*)?(\d+)[.)]\s*(?:\*\*)?(?:\[|\()?\s*({_EXAM_YEAR_TAG})\s*(?:\]|\))?"
+        rf"(?:\*\*)?\s*[:—–-]?\s*",
+        re.IGNORECASE,
+    )
+    trailing_tag = re.compile(
+        rf"^(\s*)(?:Q\s*)?(\d+)[.)]\s*(.*?)[\[(]\s*({_EXAM_YEAR_TAG})\s*[\])]\s*$",
+        re.IGNORECASE,
+    )
+
+    for line in str(markdown or "").split("\n"):
+        if "[EXAMTAG:" in line.upper():
+            marker = re.match(r"^(\s*\d+\.\s*\[EXAMTAG:\s*([^\]]+)\]\s*)(.*)$", line, re.IGNORECASE)
+            if marker:
+                prefix, tag, question = marker.groups()
+                question = re.sub(
+                    rf"\s*(?:\*\*)?(?:\[|\()?\s*{re.escape(tag)}\s*(?:\]|\))?(?:\*\*)?\s*[:—–-]?\s*",
+                    " ",
+                    question,
+                    flags=re.IGNORECASE,
+                ).strip()
+                normalized.append(f"{prefix}{question}")
+            else:
+                normalized.append(line)
+            continue
+        match = leading_tag.match(line)
+        if match:
+            indent, number, tag = match.group(1), match.group(2), match.group(3)
+            normalized.append(f"{indent}{number}. [EXAMTAG: {tag}] {line[match.end():].lstrip()}")
+            continue
+        match = trailing_tag.match(line)
+        if match:
+            indent, number, question, tag = match.groups()
+            normalized.append(f"{indent}{number}. [EXAMTAG: {tag}] {question.rstrip()}")
+            continue
+        normalized.append(line)
+    return "\n".join(normalized)
+
+
+def _has_incomplete_mcq_options(markdown: str) -> bool:
+    """Detect generated option labels that have no option text.
+
+    Only inspect substantial question-sheet output so short mocked responses and
+    non-question content are not treated as malformed.
+    """
+    text = str(markdown or "")
+    if len(text) < 200 or not re.search(r"(?im)^#{1,3}\s+.*(?:MCQ|Practice Questions)", text):
+        return False
+    question_section = re.split(
+        r"(?im)^#{1,3}\s+(?:Answer Key|Detailed Solutions?|Solutions?)\s*$",
+        text,
+        maxsplit=1,
+    )[0]
+    option_line = re.compile(
+        r"^\s*(?:[-*+]\s*)?(?:\*\*)?([A-D])(?:\*\*)?\s*(?:[.):—–-]\s*)?(?:\*\*)?\s*(.*?)\s*$",
+        re.IGNORECASE,
+    )
+    option_count = 0
+    for line in question_section.splitlines():
+        match = option_line.match(line)
+        if not match:
+            continue
+        option_count += 1
+        value = match.group(2).strip().strip("*").strip()
+        if not value or re.match(r"^(?:Q\s*)?\d+[.)]\s+", value, re.IGNORECASE):
+            return True
+    return option_count == 0
 
 
 
@@ -4700,6 +4919,22 @@ def generate_topic_content(request):
         f"\n{type_instruction}\n\n"
         "Return ONLY the Markdown content -- no preamble, no 'Here is your content:' prefix."
     )
+    if content_type in {"dpp", "pyq"}:
+        user_prompt += (
+            "\n\nMANDATORY OUTPUT VALIDATION BEFORE RETURNING:\n"
+            "- Do not place the Markdown response or any solution inside a code fence.\n"
+            "- Every MCQ must have four non-empty options formatted exactly as `A. <text>`, `B. <text>`, `C. <text>`, and `D. <text>`, one option per line. Never output a bare option letter.\n"
+            "- Every calculation must use valid LaTeX inside math delimiters.\n"
+            "- Use $...$ for inline math and put multi-step equations in separate $$...$$ blocks.\n"
+            "- Never emit Unicode superscripts, the Unicode square-root symbol, or raw LaTeX outside delimiters.\n"
+            "- Ensure every opening $ or $$ has a matching closing delimiter.\n"
+            "- Finish the Detailed Solutions section for every generated question."
+        )
+    if content_type == "pyq":
+        user_prompt += (
+            "\n- Format every question as `1. [EXAMTAG: <exact exam/class and year>] <question text>`."
+            "\n- Put the exam name and year only inside EXAMTAG; do not repeat either in the question text."
+        )
 
 
 
@@ -4715,7 +4950,9 @@ def generate_topic_content(request):
             user_prompt=user_prompt,
             model="llama-3.3-70b-versatile",
             temperature=0.7,
-            max_tokens=4096,
+            # PYQ/DPP put complete worked solutions at the end. A 4096-token cap
+            # routinely truncated that section and left math delimiters open.
+            max_tokens=8192 if content_type in {"dpp", "pyq"} else 4096,
             json_mode=False,
             institute_id=institute_id,
         )
@@ -4736,6 +4973,34 @@ def generate_topic_content(request):
             pass
         return Response({"error": str(e)}, status=502)
 
+    first_content = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+    if content_type in {"dpp", "pyq"} and _has_incomplete_mcq_options(first_content):
+        logger.warning("generate_topic_content: incomplete MCQ options detected; regenerating once")
+        retry_prompt = (
+            user_prompt
+            + "\n\nYOUR PREVIOUS OUTPUT HAD EMPTY OR MISSING MCQ OPTION TEXT. Regenerate the complete document. "
+              "Every MCQ must contain four non-empty choices using exactly `A. <text>`, `B. <text>`, "
+              "`C. <text>`, and `D. <text>`. Never output a bare option letter. Keep each option on one line."
+        )
+        try:
+            llm_result = get_llm().complete(
+                system_prompt=system_prompt,
+                user_prompt=retry_prompt,
+                model="llama-3.3-70b-versatile",
+                temperature=0.35,
+                max_tokens=8192,
+                json_mode=False,
+                institute_id=institute_id,
+            )
+        except RuntimeError as e:
+            return Response({"error": f"AI regeneration failed: {e}"}, status=502)
+        retried_content = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+        if _has_incomplete_mcq_options(retried_content):
+            return Response(
+                {"error": "AI returned incomplete MCQ options. Please generate again."},
+                status=502,
+            )
+
     try:
         log_usage(
             institute_id=institute_id,
@@ -4753,6 +5018,9 @@ def generate_topic_content(request):
         pass
 
     content = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+    content = _normalize_generated_math_markdown(content)
+    if content_type == "pyq":
+        content = _normalize_pyq_exam_tags(content)
     return Response({
         "content": content,
         "contentType": content_type,
