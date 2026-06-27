@@ -4436,16 +4436,17 @@ _COACHING_CONTENT_TYPE_PROMPTS: dict[str, str] = {
         "**Exam:** {exam_target} | **Date:** ______\n\n"
         "---\n\n"
         "## Section A — Single Correct MCQ (4 marks each, –1 for wrong)\n"
-        "Generate 8 single-correct MCQs. Each must have exactly 4 options (A–D). "
+        "Generate {mcq_count} single-correct MCQs (including Assertion-Reason and Statement-Based questions where relevant). Each must have exactly 4 options (A–D). "
         "Questions should be multi-step and conceptually challenging at the "
         "{exam_target} level. Do NOT make questions trivially easy.\n"
         "CRITICAL MCQ OPTION FORMATTING: Write each option (A-D) on a new line, never inline on a single line.\n\n"
         "## Section B — Integer Type Numericals (4 marks each) [include for JEE]\n"
-        "Generate 3 integer-answer numericals. The answer must be a non-negative "
-        "integer (0–99). Show the numerical value, not a letter option.\n\n"
+        "Generate {integer_count} integer-answer numericals. The answer must be a valid "
+        "integer (can be any positive or negative integer). Show the numerical value, not a letter option.\n\n"
         "## Section C — Multi-Correct MCQ (4 marks, –2 for partial) [include for JEE Advanced]\n"
-        "Generate 2 multi-correct MCQs where one or more options may be correct. "
-        "Mark correct options clearly in the Answer Key — NOT inline with questions.\n\n"
+        "Generate {multicorrect_count} multi-correct MCQs where one or more options may be correct. "
+        "Mark correct options clearly in the Answer Key — NOT inline with questions. "
+        "If a section's count is 0, do NOT generate that section header or any questions for it.\n\n"
         "---\n\n"
         "## Answer Key\n"
         "List ONLY the correct answers (e.g. 'A1. B', 'B1. 42'). "
@@ -4474,12 +4475,10 @@ _COACHING_CONTENT_TYPE_PROMPTS: dict[str, str] = {
         "**Subject:** {subject_name} | **Chapter:** {chapter_name}\n\n"
         "---\n\n"
         "## Practice Questions\n"
-        "Generate 12 questions in authentic {exam_target} pattern:\n"
-        "- For JEE: Single-correct MCQ (8) + Integer-type numericals (3) + "
-        "Multi-correct MCQ (1)\n"
-        "- For NEET: Single-correct MCQ (10) + Assertion-Reason (2)\n"
-        "- For JEE/NEET combined: 8 Single-correct MCQ + 2 Integer + 2 "
-        "Assertion-Reason\n"
+        "Generate {question_count} questions in authentic {exam_target} pattern:\n"
+        "- For JEE: Single-correct MCQ ({mcq_count}) + Integer-type numericals ({integer_count}) + Multi-correct MCQ ({multicorrect_count})\n"
+        "- For NEET: Single-correct MCQ ({mcq_count}) + Assertion-Reason ({assertion_reason_count})\n"
+        "- For JEE/NEET combined: Single-correct MCQ ({mcq_count}) + Integer-type numericals ({integer_count}) + Assertion-Reason ({assertion_reason_count})\n"
         "Number questions clearly (Q1, Q2, ...). "
         "Format every question exactly as: `1. [EXAMTAG: JEE Main 2019] <question text>` or `1. [EXAMTAG: NEET 2021] <question text>`. "
         "The exam name and year must appear ONLY inside EXAMTAG and must never be repeated in the visible question text. "
@@ -4825,6 +4824,17 @@ def generate_topic_content(request):
     course_name   = (data.get("courseName") or data.get("course_name") or "").strip()
     extra_context = data.get("extraContext", "").strip()
 
+    question_count_val = data.get("questionCount") or data.get("question_count")
+    try:
+        q_count = int(question_count_val)
+    except (TypeError, ValueError):
+        q_count = 10 if content_type == "dpp" else 12
+
+    mcq_count = q_count
+    integer_count = 0
+    multicorrect_count = 0
+    assertion_reason_count = 0
+
 
 
     # If exam_target not supplied, try to infer from course name
@@ -4854,16 +4864,46 @@ def generate_topic_content(request):
 
 
     active_prompts = _get_content_prompts(vertical)
+    exam_upper = exam_target.upper() if exam_target else "JEE"
+
+    if "JEE" in exam_upper:
+        if q_count >= 3:
+            multicorrect_count = max(1, round(q_count * 0.20))
+            integer_count = max(1, round(q_count * 0.20))
+            mcq_count = q_count - multicorrect_count - integer_count
+        else:
+            mcq_count = q_count
+            integer_count = 0
+            multicorrect_count = 0
+    elif "NEET" in exam_upper:
+        if q_count >= 5:
+            assertion_reason_count = max(1, round(q_count * 0.20))
+            mcq_count = q_count - assertion_reason_count
+        else:
+            mcq_count = q_count
+            assertion_reason_count = 0
+    else:
+        if q_count >= 5:
+            assertion_reason_count = max(1, round(q_count * 0.20))
+            mcq_count = q_count - assertion_reason_count
+        else:
+            mcq_count = q_count
+            assertion_reason_count = 0
+
     type_instruction = active_prompts.get(
         content_type,
         active_prompts["lesson"],
     ).replace("{topic_name}", topic_name).replace("{subject_name}", subject_name).replace("{chapter_name}", chapter_name)
 
+    type_instruction = (
+        type_instruction
+        .replace("{question_count}", str(q_count))
+        .replace("{mcq_count}", str(mcq_count))
+        .replace("{integer_count}", str(integer_count))
+        .replace("{multicorrect_count}", str(multicorrect_count))
+        .replace("{assertion_reason_count}", str(assertion_reason_count))
+    )
 
-
-    # Patch exam-specific placeholders in DPP / PYQ templates
-    # Default to JEE (not "JEE/NEET") when exam target is truly unknown
-    exam_upper = exam_target.upper() if exam_target else "JEE"
     type_instruction = type_instruction.replace("{exam_target}", exam_upper)
     if vertical == "school":
         school_difficulty_desc = {
