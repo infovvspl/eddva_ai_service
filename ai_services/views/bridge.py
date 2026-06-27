@@ -4343,9 +4343,11 @@ _CONTENT_TYPE_PROMPTS = {
     "faq": (
         "Generate a Frequently Asked Questions (FAQ) sheet for this topic in Markdown. "
         "Do NOT write lesson notes, summaries, or long explanatory sections. "
+        "FAQ means questions that are repeatedly asked in target exams. "
+        "For every question, you must specify the actual past exam years it was asked (e.g., JEE Main 2019, 2022). "
         "Format exactly as question-answer pairs grouped under clear sub-topic headings:\n"
         "## <Sub-topic>\n"
-        "**Q1. <common student question?>**\n\n"
+        "**Q1. [EXAMTAG: {exam_target} <comma-separated years>] <common student question?>**\n\n"
         "**A.** <clear, concise answer in 2-5 sentences>\n\n"
         "Include 12-15 genuinely common questions students ask, covering definitions, misconceptions, "
         "formula use, conceptual doubts, and application confusions. Each item must be a real FAQ, not a note bullet.\n\n"
