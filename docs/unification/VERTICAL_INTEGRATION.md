@@ -58,7 +58,7 @@ scientific solver instead of the LLM.
 
 | Feature | coaching (base) | school |
 |---|---|---|
-| `doubt` (`_build_solver_system_prompt`) | "CBSE/NEET Subject Matter Expert", JEE/NEET framing | "CBSE/ICSE School Teacher (Classes 1–10)", no JEE/NEET |
+| `doubt` (`_build_solver_system_prompt`) | "JEE/NEET Subject Matter Expert", JEE/NEET framing | "CBSE/ICSE School Teacher (Classes 1–10)", no JEE/NEET |
 | `evaluate_batch` | CBSE/JEE/NEET evaluator | CBSE/ICSE school (Classes 1–10) evaluator |
 | `content/generate` | exam target defaults to JEE | defaults to Class 10 board rules (no competitive framing) when none supplied |
 | all other features | shared base prompt | shared base prompt (no override yet) |
@@ -85,3 +85,4 @@ No changes to the engine, cache, middleware, or pipeline are required.
   `vertical_breakdown`; `UsageLog` is filterable by `vertical` in admin.
 - Caches and usage logs are vertical-scoped, so a coaching answer is never
   served to a school request.
+

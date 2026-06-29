@@ -2507,7 +2507,7 @@ _SUBJECT_RULES: dict[str, str] = {
 # are shared; only the academic *context* (competitive vs school) changes.
 _DOUBT_VERTICAL_FRAMING = {
     "coaching": {
-        "theory_role":     "CBSE/NEET Subject Matter Expert",
+        "theory_role":     "JEE/NEET Subject Matter Expert",
         "numerical_rigor": "MANDATORY JEE/NEET GOLD RULES",
     },
     "school": {
