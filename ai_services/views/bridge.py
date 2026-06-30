@@ -68,11 +68,30 @@ from ai_services.core.gemini_keys import (
 )
 from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
 from ai_services.core.usage_logger import log_usage
+from ai_services.core.serpapi_images import search_google_images
 from .base import ai_call, ai_call_text, get_llm
 
 
 
 logger = logging.getLogger("ai_services.llm")
+
+
+@api_view(["POST"])
+def search_educational_images(request):
+    """Search Google Images through SerpApi without exposing its API key."""
+    query = str(request.data.get("query") or "").strip()
+    if not query:
+        return Response({"error": "Missing query"}, status=400)
+    try:
+        limit = int(request.data.get("limit") or 5)
+        images = search_google_images(query, limit, request.data.get("language") or "")
+        return Response({"images": images, "provider": "serpapi"})
+    except RuntimeError as error:
+        logger.warning("SerpApi image search unavailable: %s", error)
+        return Response({"error": str(error)}, status=503)
+    except Exception as error:
+        logger.warning("SerpApi image search failed: %s", error)
+        return Response({"error": "Image search failed"}, status=502)
 
 
 
@@ -4008,6 +4027,17 @@ def _chunk_notes(text: str, max_chars: int = 12000) -> list:
     return chunks or [text[:max_chars]]
 
 
+def _quiz_language_instruction(language: str) -> str:
+    normalized = _normalize_lecture_language(language)
+    if normalized == "od":
+        return (
+            "LANGUAGE REQUIREMENT: Write every question, every option text, every segmentTitle, and every "
+            "explanation in natural Odia (ଓଡ଼ିଆ) script. Keep only JSON field names, IDs, and option labels "
+            "A/B/C/D in English. Do not translate technical symbols or formulas. Do not output Hindi or English prose."
+        )
+    return "LANGUAGE REQUIREMENT: Write the quiz content in English."
+
+
 
 
 
@@ -4049,6 +4079,8 @@ def generate_quiz_questions(request):
     lecture_title = data.get("lectureTitle", "Lecture")
     topic_id = data.get("topicId", "")
     course_level = data.get("courseLevel", "General")
+    language = _normalize_lecture_language(data.get("language") or "en")
+    language_instruction = _quiz_language_instruction(language)
 
 
 
@@ -4103,8 +4135,9 @@ def generate_quiz_questions(request):
             content=chunk,
             course_level=course_level,
         )
+        user_prompt = f"{language_instruction}\n\n{user_prompt}\n\n{language_instruction}"
         tasks.append({
-            "system_prompt": template.system,
+            "system_prompt": f"{template.system}\n\n{language_instruction}",
             "user_prompt": user_prompt,
             "max_tokens": max(800, q_count * 350),
         })
@@ -5118,6 +5151,9 @@ def generate_notes_from_transcript(request):
 
     language = data.get("language", "en")
     topic_id = data.get("topicId", "")
+    skip_image_generation = bool(
+        data.get("skipImageGeneration", False) or data.get("skip_image_generation", False)
+    )
     institute_id = getattr(request, "institute_id", "default")
     user_id_nft = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
 
@@ -5181,20 +5217,23 @@ def generate_notes_from_transcript(request):
 
     images = []
     image_meta = {"enabled": False, "count": 0, "errors": []}
-    try:
-        from ai_services.core.llm_client import LLMClient
-        from ai_services.core.note_images import enrich_notes_with_images
+    if skip_image_generation:
+        image_meta = {"enabled": False, "count": 0, "errors": [], "skip_reason": "requested_by_client"}
+    else:
+        try:
+            from ai_services.core.llm_client import LLMClient
+            from ai_services.core.note_images import enrich_notes_with_images
 
-        notes_markdown, images, image_meta = enrich_notes_with_images(
-            notes_markdown,
-            topic_id,
-            language,
-            institute_id,
-            LLMClient(),
-        )
-    except Exception as exc:
-        logger.warning("notes_from_transcript image enrichment skipped: %s", exc)
-        image_meta = {"enabled": False, "count": 0, "errors": [str(exc)[:160]]}
+            notes_markdown, images, image_meta = enrich_notes_with_images(
+                notes_markdown,
+                topic_id,
+                language,
+                institute_id,
+                LLMClient(),
+            )
+        except Exception as exc:
+            logger.warning("notes_from_transcript image enrichment skipped: %s", exc)
+            image_meta = {"enabled": False, "count": 0, "errors": [str(exc)[:160]]}
 
 
 

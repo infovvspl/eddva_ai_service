@@ -36,6 +36,9 @@ urlpatterns = [
     # AI #7d — Regenerate a single note image in isolation
     path("stt/regenerate-note-image", bridge.regenerate_single_note_image),
 
+    # Educational image search (credentials remain inside the AI service)
+    path("search/educational-images", bridge.search_educational_images),
+
     # AI #8 — Student Feedback Engine
     path("feedback/generate", bridge.generate_feedback),
 
