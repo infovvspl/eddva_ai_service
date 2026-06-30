@@ -2,6 +2,7 @@ import logging
 import re
 import threading
 import json
+import os
 
 from django.http import JsonResponse
 from rest_framework.decorators import api_view
@@ -179,6 +180,98 @@ def parse_ai_result(result, topic, difficulty, qtype, style=""):
     return {"questions": questions}
 
 
+def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int) -> dict:
+    from ai_services.core.gemini_keys import (
+        get_rotated_gemini_keys, has_gemini_api_key, gemini_key_count,
+        is_gemini_permanent_key_error, is_gemini_retryable_error, mark_gemini_key_disabled
+    )
+    if not has_gemini_api_key():
+        raise RuntimeError("GEMINI_API_KEY is not set -- add it to .env to enable Gemini generation")
+    
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception as exc:
+        raise RuntimeError(f"google-genai is unavailable: {exc}") from exc
+
+    import os
+    model_name = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+
+    last_exc = None
+    response = None
+    for key_index, api_key in get_rotated_gemini_keys():
+        try:
+            client = genai.Client(api_key=api_key)
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[user_prompt],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.4,
+                        max_output_tokens=max_tokens,
+                        response_mime_type="application/json",
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    ),
+                )
+            except TypeError:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[user_prompt],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.4,
+                        max_output_tokens=max_tokens,
+                        response_mime_type="application/json",
+                    ),
+                )
+            logger.info(
+                "Gemini Test Generate OK | key=%d/%d | model=%s",
+                key_index, gemini_key_count(), model_name,
+            )
+            break
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc)
+            if is_gemini_permanent_key_error(msg):
+                mark_gemini_key_disabled(api_key)
+                logger.warning("Gemini key %d/%d disabled for permanent error: %s", key_index, gemini_key_count(), msg[:180])
+                continue
+            if is_gemini_retryable_error(msg):
+                logger.warning("Gemini key %d/%d retryable error; rotating to next key: %s", key_index, gemini_key_count(), msg[:220])
+                continue
+            raise RuntimeError(f"Gemini generation failed: {exc}") from exc
+    else:
+        raise RuntimeError(f"Gemini generation failed across all {gemini_key_count()} key(s): {last_exc}") from last_exc
+
+    content = str(getattr(response, "text", "") or "").strip()
+    if not content:
+        raise RuntimeError("Gemini returned empty response")
+    
+    content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE).strip()
+    content = re.sub(r"\s*```$", "", content).strip()
+    
+    content_dict = json.loads(content)
+    
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    if response and hasattr(response, "usage_metadata") and response.usage_metadata:
+        usage = {
+            "prompt_tokens": getattr(response.usage_metadata, "prompt_token_count", 0) or 0,
+            "completion_tokens": getattr(response.usage_metadata, "candidates_token_count", 0) or 0,
+            "total_tokens": getattr(response.usage_metadata, "total_token_count", 0) or 0,
+        }
+        
+    return {
+        "content": content_dict,
+        "usage": usage,
+        "model": model_name,
+    }
+
+
 @api_view(["POST"])
 def generate_practice_test(request):
     """
@@ -186,6 +279,7 @@ def generate_practice_test(request):
     Uses JSON mode for reliability.
     """
     data = request.data
+    language = (data.get("language") or "english").strip().lower()
     topic = data.get("topic")
     if not topic:
         return JsonResponse({"error": "Missing topic"}, status=400)
@@ -832,6 +926,18 @@ def generate_practice_test(request):
         "Use plain Unicode only: × ÷ ± ° √() x² H₂O π θ α β λ → ⇌ ≤ ≥ ≠ ≈\n\n"
     )
 
+    language_instruction = ""
+    if language == "hindi":
+        language_instruction = (
+            "\nCRITICAL LANGUAGE REQUIREMENT: All questions, options, explanations, and solution text "
+            "MUST be written entirely in Hindi (using Devanagari script)."
+        )
+    elif language == "odia":
+        language_instruction = (
+            "\nCRITICAL LANGUAGE REQUIREMENT: All questions, options, explanations, and solution text "
+            "MUST be written entirely in Odia (using Odia script)."
+        )
+
     user_prompt = (
         f"{scope_constraint}"             # SCOPE LOCK comes FIRST so it dominates the model's attention
         f"{exam_banner}"
@@ -844,6 +950,7 @@ def generate_practice_test(request):
         f"{subject_rule}\n\n"
         f"{heuristic_block}\n"
         f"{notes_context}\n"
+        f"{language_instruction}\n"
         "Return the result as a JSON object with a 'questions' array. "
         "Each question object MUST have: 'question', 'answer', 'explanation', "
         f"'scope_check' (echo back '{(chapter or topic or subject or '').strip()[:60]}' to confirm scope), "
@@ -862,8 +969,8 @@ def generate_practice_test(request):
     template = get_template("test_generate")
 
     logger.info(
-        "generate_practice_test | exam=%s | diff=%s | subject=%s | chapter=%s | topic=%s | type=%s | style=%s | n=%d",
-        exam_target or "—", difficulty, subject or "—", chapter or "—", topic[:50], qtype, style or "—", num_questions
+        "generate_practice_test | exam=%s | diff=%s | subject=%s | chapter=%s | topic=%s | type=%s | style=%s | n=%d | lang=%s",
+        exam_target or "—", difficulty, subject or "—", chapter or "—", topic[:50], qtype, style or "—", num_questions, language
     )
 
     # Each question needs ~400-450 tokens (text + 4 options + explanation + scope_check + subtopic + chapter + JSON overhead).
@@ -871,28 +978,65 @@ def generate_practice_test(request):
     # gemma2-9b-it has 15K TPM — cap at 8000 to leave headroom for prompt tokens.
     max_output_tokens = min(8000, max(1500, num_questions * 450 + 600))
 
-    try:
-        # 70b-versatile: handles the full prompt size (>6K tokens). 8b-instant has a 6K per-request TPM cap.
-        result = get_llm().complete(
-            system_prompt=template.system,
-            user_prompt=user_prompt,
-            model="llama-3.3-70b-versatile",
-            temperature=0.4,
-            max_tokens=max_output_tokens,
-            json_mode=True,
-            institute_id=institute_id,
-        )
-    except RuntimeError as e:
-        logger.error("LLM complete failed: %s", e)
-        # Try question bank fallback before returning error
-        cached = question_bank.get_random(subject, chapter, difficulty, qtype, num_questions)
-        if cached:
-            logger.info("LLM failed — serving %d cached questions from question bank", len(cached))
-            return JsonResponse({
-                "questions": cached,
-                "_meta": {"source": "cache", "institute": institute_id, "type": qtype, "style": style or None},
-            })
-        return JsonResponse({"error": str(e)}, status=502)
+    import time
+    start_time = time.perf_counter()
+    result = None
+
+    if language == "odia":
+        try:
+            anti_hallucination_prefix = (
+                "You are EDVA AI, an expert Indian education assistant "
+                "for JEE, NEET, and CBSE (Class 10-12).\n"
+                "Only answer what is asked. Stay on topic. "
+                "Use correct scientific facts only.\n"
+                "CRITICAL: Do NOT include internal reasoning, chain-of-thought, or <think> tags. "
+                "DO NOT THINK. START YOUR RESPONSE DIRECTLY WITH '{'.\n\n"
+            )
+            json_mode_suffix = "\n\nRespond with ONLY a JSON object. No markdown. No code fences. No explanation."
+            effective_system = anti_hallucination_prefix + template.system + json_mode_suffix
+            
+            gemini_res = _gemini_test_generate(effective_system, user_prompt, max_output_tokens)
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            
+            result = {
+                "content": gemini_res["content"],
+                "usage": gemini_res["usage"],
+                "model": gemini_res["model"],
+                "latency_ms": latency_ms,
+            }
+        except Exception as e:
+            logger.error("Gemini Odia generation failed: %s", e)
+            cached = question_bank.get_random(subject, chapter, difficulty, qtype, num_questions)
+            if cached:
+                logger.info("Gemini failed — serving %d cached questions from question bank", len(cached))
+                return JsonResponse({
+                    "questions": cached,
+                    "_meta": {"source": "cache", "institute": institute_id, "type": qtype, "style": style or None},
+                })
+            return JsonResponse({"error": str(e)}, status=502)
+    else:
+        try:
+            # 70b-versatile: handles the full prompt size (>6K tokens). 8b-instant has a 6K per-request TPM cap.
+            result = get_llm().complete(
+                system_prompt=template.system,
+                user_prompt=user_prompt,
+                model="llama-3.3-70b-versatile",
+                temperature=0.4,
+                max_tokens=max_output_tokens,
+                json_mode=True,
+                institute_id=institute_id,
+            )
+        except RuntimeError as e:
+            logger.error("LLM complete failed: %s", e)
+            # Try question bank fallback before returning error
+            cached = question_bank.get_random(subject, chapter, difficulty, qtype, num_questions)
+            if cached:
+                logger.info("LLM failed — serving %d cached questions from question bank", len(cached))
+                return JsonResponse({
+                    "questions": cached,
+                    "_meta": {"source": "cache", "institute": institute_id, "type": qtype, "style": style or None},
+                })
+            return JsonResponse({"error": str(e)}, status=502)
 
     parsed = parse_ai_result(result, topic, difficulty, qtype, style)
     parsed["_meta"] = {

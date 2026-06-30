@@ -4038,7 +4038,111 @@ def _quiz_language_instruction(language: str) -> str:
     return "LANGUAGE REQUIREMENT: Write the quiz content in English."
 
 
+def _gemini_complete(system_prompt: str, user_prompt: str, max_tokens: int, temperature: float = 0.3) -> dict:
+    from google import genai
+    from google.genai import types
+    import os
+    import time
+    
+    if not has_gemini_api_key():
+        raise RuntimeError("GEMINI_API_KEY is not set -- add it to .env to enable Gemini generation")
 
+    model_name = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+
+    last_exc = None
+    response = None
+    start_time = time.perf_counter()
+    for key_index, api_key in get_rotated_gemini_keys():
+        try:
+            client = genai.Client(api_key=api_key)
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[user_prompt],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=temperature,
+                        max_output_tokens=max_tokens,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    ),
+                )
+            except TypeError:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[user_prompt],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=temperature,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+            logger.info(
+                "Gemini Parallel Complete OK | key=%d/%d | model=%s",
+                key_index, gemini_key_count(), model_name,
+            )
+            break
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc)
+            if is_gemini_permanent_key_error(msg):
+                mark_gemini_key_disabled(api_key)
+                logger.warning("Gemini key %d/%d disabled for permanent error: %s", key_index, gemini_key_count(), msg[:180])
+                continue
+            if is_gemini_retryable_error(msg):
+                logger.warning("Gemini key %d/%d retryable error; rotating to next key: %s", key_index, gemini_key_count(), msg[:220])
+                continue
+            raise RuntimeError(f"Gemini generation failed: {exc}") from exc
+    else:
+        raise RuntimeError(f"Gemini generation failed across all {gemini_key_count()} key(s): {last_exc}") from last_exc
+
+    latency_ms = (time.perf_counter() - start_time) * 1000
+    content = str(getattr(response, "text", "") or "").strip()
+    
+    # Strip markdown block formatting if any
+    content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE).strip()
+    content = re.sub(r"\s*```$", "", content).strip()
+    
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    if response and hasattr(response, "usage_metadata") and response.usage_metadata:
+        usage = {
+            "prompt_tokens": getattr(response.usage_metadata, "prompt_token_count", 0) or 0,
+            "completion_tokens": getattr(response.usage_metadata, "candidates_token_count", 0) or 0,
+            "total_tokens": getattr(response.usage_metadata, "total_token_count", 0) or 0,
+        }
+
+    return {
+        "content": content,
+        "usage": usage,
+        "model": model_name,
+        "latency_ms": latency_ms,
+    }
+
+
+def _gemini_parallel_complete_many(tasks: list[dict], temperature: float = 0.3) -> list[dict]:
+    from concurrent.futures import ThreadPoolExecutor
+    n_tasks = len(tasks)
+    if n_tasks == 0:
+        return []
+
+    def _worker(task_idx):
+        task = tasks[task_idx]
+        requested_max = task.get("max_tokens", 3500)
+        max_tokens = max(2000, requested_max * 2)
+        return _gemini_complete(
+            system_prompt=task["system_prompt"],
+            user_prompt=task["user_prompt"],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    with ThreadPoolExecutor(max_workers=n_tasks) as pool:
+        results = list(pool.map(_worker, range(n_tasks)))
+
+    return results
 
 
 @api_view(["POST"])
@@ -4145,15 +4249,21 @@ def generate_quiz_questions(request):
 
 
 
-    # Dispatch all chunks in parallel — each gets a DIFFERENT Groq API key so
-    # every call fires simultaneously with its own full TPM budget.
-    results = get_llm().parallel_complete_many(
-        tasks=tasks,
-        model="quiz",
-        temperature=0.3,
-        json_mode=False,
-        institute_id=institute_id,
-    )
+    # Dispatch all chunks in parallel — if Odia, use Gemini API key rotation;
+    # otherwise use Groq API key rotation.
+    if language == "od":
+        results = _gemini_parallel_complete_many(
+            tasks=tasks,
+            temperature=0.3,
+        )
+    else:
+        results = get_llm().parallel_complete_many(
+            tasks=tasks,
+            model="quiz",
+            temperature=0.3,
+            json_mode=False,
+            institute_id=institute_id,
+        )
 
 
 
@@ -4167,6 +4277,8 @@ def generate_quiz_questions(request):
         raw = result["content"] if isinstance(result["content"], str) else str(result["content"])
         parsed = _parse_quiz_json(raw)
         chunk_qs = parsed.get("questions", [])
+        if not chunk_qs:
+            logger.error("Quiz chunk %d/%d parsing failed. Raw response: %r", chunk_idx, n_chunks, raw)
 
 
 
