@@ -5816,3 +5816,64 @@ def regenerate_single_note_image(request):
         "embedded_text_strip_error": image_result.get("embedded_text_strip_error"),
         "overlay_error": overlay_error,
     })
+
+
+@api_view(["POST"])
+def extract_image_search_terms(request):
+    data = request.data
+    notes = data.get("notes", "").strip()
+    language = data.get("language", "en")
+
+    if not notes:
+        return Response({"error": "Missing notes"}, status=400)
+
+    truncated = notes[:4000]
+
+    system_prompt = 'You are a JSON-only API that returns {"sections": [...]}.'
+    user_prompt = f"""Given these lecture notes (Markdown), identify 3–4 major section headings (## or ###) that would benefit from an illustrative educational image.
+
+For each section:
+- "heading": copy the exact heading line from the notes (include the ## or ### prefix).
+- "searchTerm": 4–7 words, be SPECIFIC to that sub-topic, include a visual type hint (diagram, photograph, chart, illustration, map, microscope, experiment).
+- "caption": one sentence describing exactly what the image shows and how it helps students understand this section.
+
+Return ONLY: {{"sections": [{{"heading": "## Exact Heading", "searchTerm": "...", "caption": "..."}}]}}
+
+NOTES:
+{truncated}"""
+
+    norm_lang = _normalize_lecture_language(language)
+    if norm_lang == "od":
+        logger.info("extract_image_search_terms: routing through Gemini for language 'od'")
+        try:
+            res = _gemini_complete(system_prompt, user_prompt, max_tokens=1024, temperature=0.3)
+            content = res.get("content", "").strip()
+            content = content.replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(content)
+            sections = parsed.get("sections", parsed)
+            if not isinstance(sections, list):
+                sections = []
+            return Response({"sections": sections})
+        except Exception as exc:
+            logger.warning("Gemini extract headings failed: %s", exc)
+            return Response({"error": f"Gemini failed: {str(exc)}"}, status=502)
+    else:
+        logger.info("extract_image_search_terms: routing through Groq for language %r", language)
+        try:
+            llm_result = get_llm("notes_analyze")(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=1024,
+                temperature=0.3,
+                json_mode=True,
+            )
+            content = llm_result.get("content", "").strip()
+            content = content.replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(content)
+            sections = parsed.get("sections", parsed)
+            if not isinstance(sections, list):
+                sections = []
+            return Response({"sections": sections})
+        except Exception as exc:
+            logger.warning("Groq extract headings failed: %s", exc)
+            return Response({"error": f"Groq failed: {str(exc)}"}, status=502)
