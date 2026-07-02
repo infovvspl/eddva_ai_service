@@ -46,6 +46,20 @@ class Institute(models.Model):
     plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default="free")
     is_active = models.BooleanField(default=True)
 
+    # FIX BUG-9: Service-account flag.
+    # Only service accounts (e.g. the NestJS ai-bridge) are allowed to use the
+    # X-Tenant-ID header to operate on behalf of a different tenant.
+    # Regular institute API keys MUST NEVER be able to switch tenant context.
+    is_service_account = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "If True, this API key belongs to a trusted internal service (e.g. NestJS ai-bridge). "
+            "Only service accounts may use X-Tenant-ID to operate on behalf of another tenant. "
+            "Regular institute keys are NEVER allowed to impersonate another tenant."
+        ),
+    )
+
     # Per-tenant token caps (override global defaults)
     daily_soft_cap = models.IntegerField(
         default=500_000,
@@ -100,9 +114,13 @@ class UsageLog(models.Model):
         Institute, on_delete=models.CASCADE, related_name="usage_logs",
         null=True, blank=True,
     )
+    # institute_id_str is a denormalized copy of institute.slug kept for:
+    #   1. Fast filtering in admin_api.py without a JOIN
+    #   2. Logging anonymous / unauthenticated calls where FK is null
+    # Rule: always set institute_id_str == institute.slug when FK is present.
     institute_id_str = models.CharField(
         max_length=128, db_index=True,
-        help_text="Fallback string ID when Institute FK is not available",
+        help_text="Denormalized slug — must match institute.slug. Used for fast filter queries.",
     )
     feature = models.CharField(max_length=64, db_index=True)
     vertical = models.CharField(
@@ -129,7 +147,12 @@ class UsageLog(models.Model):
 
 
 class BatchJob(models.Model):
-    """Persistent record of batch processing jobs."""
+    """
+    Persistent record of batch processing jobs.
+
+    FIX BUG-5: Jobs are persisted in DB (not in-memory dict) and carry an
+    expires_at timestamp. A management command / cron job deletes expired rows.
+    """
 
     STATUS_CHOICES = [
         ("queued", "Queued"),
@@ -153,6 +176,12 @@ class BatchJob(models.Model):
     results_json = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    # TTL for garbage collection — management command deletes rows past this date.
+    # Default: 24 hours after creation. Adjust per plan tier if needed.
+    expires_at = models.DateTimeField(
+        null=True, blank=True, db_index=True,
+        help_text="Row is safe to delete after this time. Set on job creation.",
+    )
 
     class Meta:
         ordering = ["-created_at"]

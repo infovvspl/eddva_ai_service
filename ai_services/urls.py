@@ -107,6 +107,8 @@ urlpatterns = [
     # Tenant Admin API
     path("admin-api/usage/", admin_api.usage_dashboard),
     path("admin-api/cache/flush/", admin_api.flush_cache),
+    path("admin-api/cache/stats/", admin_api.cache_stats),   # cost savings dashboard
+    path("admin-api/cache/health/", admin_api.cache_health), # ops health check
     path("admin-api/info/", admin_api.institute_info),
 
     # Root

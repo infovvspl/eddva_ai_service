@@ -11,9 +11,11 @@ NestJS backend flow:
 
 This middleware:
   1. Extracts API key from X-API-Key OR Authorization: Bearer
-  2. Extracts tenant from X-Tenant-ID header (NestJS) or from API key lookup
-  3. Attaches request.institute and request.institute_id
-  4. Rejects invalid/missing auth (401) or inactive institutes (403)
+  2. Validates the key against the Institute table
+  3. For service-account keys only: resolves tenant from X-Tenant-ID header
+     (FIX BUG-9: regular institute keys CANNOT switch tenant via X-Tenant-ID)
+  4. Attaches request.institute and request.institute_id
+  5. Rejects invalid/missing auth (401) or inactive institutes (403)
 
 Exempt paths: health checks, root, admin, static files.
 """
@@ -31,9 +33,13 @@ from ai_services.core.verticals import (
 
 logger = logging.getLogger("ai_services.middleware")
 
-# In-memory cache for Institute lookups — avoids DB hit on every request
-_institute_cache = {}
-_tenant_id_cache = {}  # Cache by tenant external ID (UUID from NestJS)
+# ---------------------------------------------------------------------------
+# In-memory cache for Institute lookups — avoids DB hit on every request.
+# FIX BUG-4: Both caches are invalidated together when a specific tenant
+# changes, preventing stale data for NestJS-routed (X-Tenant-ID) requests.
+# ---------------------------------------------------------------------------
+_institute_cache: dict = {}       # api_key  → {institute, expires_at}
+_tenant_id_cache: dict = {}       # ext UUID → {institute, expires_at}
 _cache_lock = threading.Lock()
 _CACHE_TTL = 300  # 5 minutes
 
@@ -50,7 +56,7 @@ EXEMPT_PREFIXES = (
 
 
 def _get_cached_institute_by_api_key(api_key: str):
-    """Look up institute by API key with 5-minute cache."""
+    """Look up institute by API key with 5-minute TTL cache."""
     now = time.time()
 
     with _cache_lock:
@@ -71,7 +77,7 @@ def _get_cached_institute_by_api_key(api_key: str):
 
 
 def _get_cached_institute_by_tenant_id(tenant_id: str):
-    """Look up institute by external tenant ID (UUID from NestJS) with cache."""
+    """Look up institute by external tenant ID (UUID from NestJS) with TTL cache."""
     now = time.time()
 
     with _cache_lock:
@@ -96,12 +102,28 @@ def _get_cached_institute_by_tenant_id(tenant_id: str):
     return institute
 
 
-def invalidate_institute_cache(api_key: str = None):
-    """Call this when institute config changes (e.g., from admin save)."""
+def invalidate_institute_cache(api_key: str = None, external_tenant_id: str = None):
+    """
+    Invalidate cached institute data when config changes (e.g. admin save).
+
+    FIX BUG-4: Previously, calling invalidate_institute_cache(api_key=<key>)
+    only cleared _institute_cache, leaving _tenant_id_cache stale.
+    Now both caches are cleared for the affected tenant.
+
+    Args:
+        api_key: If set, evicts only the entry for this API key.
+        external_tenant_id: If set, evicts only the entry for this NestJS UUID.
+        (Both can be passed together — both will be evicted.)
+        If neither is passed → full flush of both caches.
+    """
     with _cache_lock:
-        if api_key:
-            _institute_cache.pop(api_key, None)
+        if api_key or external_tenant_id:
+            if api_key:
+                _institute_cache.pop(api_key, None)
+            if external_tenant_id:
+                _tenant_id_cache.pop(external_tenant_id, None)
         else:
+            # Full flush
             _institute_cache.clear()
             _tenant_id_cache.clear()
 
@@ -139,19 +161,16 @@ def _extract_api_key(request) -> str:
     Extract API key from request in priority order:
     1. X-API-Key header (direct calls)
     2. Authorization: Bearer <key> (NestJS ai-bridge calls)
-    3. ?api_key= query param (browser testing)
+    3. ?api_key= query param (browser testing only)
     """
-    # 1. X-API-Key header
     api_key = request.headers.get("X-API-Key")
     if api_key:
         return api_key
 
-    # 2. Authorization: Bearer <key>
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[7:].strip()
 
-    # 3. Query param fallback
     return request.GET.get("api_key", "")
 
 
@@ -162,10 +181,13 @@ class TenantAuthMiddleware:
     Supports two flows:
       Flow A (Direct): X-API-Key → lookup Institute by api_key
       Flow B (NestJS): Bearer token + X-Tenant-ID → validate token, resolve tenant by external ID
+                       FIX BUG-9: Flow B only works if the authenticated key has is_service_account=True.
 
     Attaches to request:
       - request.institute: Institute model instance (or None for exempt paths)
       - request.institute_id: str slug (or "anonymous")
+      - request.vertical: resolved vertical key
+      - request.profile: VerticalProfile instance
     """
 
     def __init__(self, get_response):
@@ -205,14 +227,33 @@ class TenantAuthMiddleware:
                 status=403,
             )
 
-        # Check for X-Tenant-ID (from NestJS) — allows the master API key to
-        # operate on behalf of a specific tenant
+        # FIX BUG-9: X-Tenant-ID impersonation is only allowed for service-account keys.
+        # A regular institute API key (is_service_account=False) MUST NOT be able to
+        # switch to a different tenant's context by sending X-Tenant-ID.
         nest_tenant_id = request.headers.get("X-Tenant-ID")
         if nest_tenant_id:
-            # The API key is the master service key; resolve the actual tenant
-            tenant_institute = _get_cached_institute_by_tenant_id(nest_tenant_id)
-            if tenant_institute:
-                institute = tenant_institute
+            if not institute.is_service_account:
+                # Suspicious: a non-service-account key is trying to impersonate a tenant.
+                # Log it for security auditing and reject the override (still serve the
+                # authenticated institute, do NOT switch context).
+                logger.warning(
+                    "X-Tenant-ID override rejected: API key %s... is not a service account "
+                    "(institute=%s). Possible impersonation attempt.",
+                    api_key[:8],
+                    institute.slug,
+                )
+                # Fall through — serve the authenticated institute without switching context.
+            else:
+                # Authenticated service-account key: resolve the real tenant.
+                tenant_institute = _get_cached_institute_by_tenant_id(nest_tenant_id)
+                if tenant_institute:
+                    institute = tenant_institute
+                else:
+                    logger.warning(
+                        "Service account %s... supplied unknown X-Tenant-ID: %s",
+                        api_key[:8],
+                        nest_tenant_id,
+                    )
 
         # Attach tenant context to request
         request.institute = institute
@@ -222,7 +263,7 @@ class TenantAuthMiddleware:
 
         response = self.get_response(request)
 
-        # Debugging headers
+        # Debugging headers (safe — these are internal slugs, not secrets)
         response["X-Institute"] = institute.slug
         response["X-Plan"] = institute.plan
         response["X-Vertical"] = request.vertical

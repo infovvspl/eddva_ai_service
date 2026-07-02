@@ -23,7 +23,12 @@ def usage_dashboard(request):
     """
     institute = getattr(request, "institute", None)
     institute_id = getattr(request, "institute_id", "default")
-    days = int(request.query_params.get("days", 7))
+    # ISSUE-7 FIX: Clamp days to 1–90 to prevent full table scans.
+    # Malformed values fall back to the default of 7.
+    try:
+        days = max(1, min(int(request.query_params.get("days", 7)), 90))
+    except (ValueError, TypeError):
+        days = 7
     since = timezone.now() - timedelta(days=days)
 
     # Real-time usage from rate limiter
@@ -112,8 +117,72 @@ def institute_info(request):
         "slug": institute.slug,
         "plan": institute.plan,
         "vertical": institute.vertical,
+        "is_service_account": institute.is_service_account,
         "daily_soft_cap": institute.daily_soft_cap,
         "daily_hard_cap": institute.daily_hard_cap,
         "max_concurrent_requests": institute.max_concurrent_requests,
         "features_enabled": institute.features_enabled,
     })
+
+
+@api_view(["GET"])
+def cache_stats(request):
+    """
+    GET /admin-api/cache/stats/?days=7
+
+    Returns Redis cache performance stats for this institute:
+      - Hit rate (% of requests served from cache without calling LLM)
+      - Tokens saved (total tokens NOT sent to Groq/Gemini)
+      - Cost saved in USD and INR
+      - Daily breakdown for charting
+
+    This is your AI cost optimization dashboard.
+    A 60%+ hit rate means 60% of AI calls are FREE.
+    """
+    institute_id = getattr(request, "institute_id", "default")
+    try:
+        days = max(1, min(int(request.query_params.get("days", 7)), 90))
+    except (ValueError, TypeError):
+        days = 7
+
+    cache = get_cache()
+    stats = cache.get_stats(institute_id, days=days)
+    return Response(stats)
+
+
+@api_view(["GET"])
+def cache_health(request):
+    """
+    GET /admin-api/cache/health/
+
+    Quick health check for ops/monitoring:
+      - Is Redis connected?
+      - How many entries in memory cache?
+      - Redis server info (version, memory usage)
+
+    Use this to verify Redis is working in production.
+    """
+    from ai_services.core.cache import get_redis
+
+    r = get_redis()
+    if not r:
+        return Response({
+            "redis_connected": False,
+            "warning": "Redis is NOT connected. Caching is per-worker only. Set REDIS_URL.",
+            "memory_entries": get_cache()._memory.size(),
+        }, status=503)
+
+    try:
+        info = r.info("memory")
+        return Response({
+            "redis_connected": True,
+            "redis_version": r.info("server").get("redis_version"),
+            "used_memory_human": info.get("used_memory_human"),
+            "maxmemory_human": info.get("maxmemory_human", "unlimited"),
+            "memory_policy": r.info("memory").get("maxmemory_policy", "noeviction"),
+            "memory_entries": get_cache()._memory.size(),
+            "status": "ok",
+        })
+    except Exception as e:
+        return Response({"redis_connected": True, "error": str(e)}, status=500)
+

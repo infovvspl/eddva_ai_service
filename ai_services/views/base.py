@@ -9,12 +9,13 @@ Full tenant-aware pipeline:
   5. Check tenant-specific daily token budget → 429 on hard cap
   6. Call LLM with right-sized model
   7. Store in tenant-scoped cache
-  8. Record token usage (Redis + DB UsageLog)
+  8. Record token usage (Redis + DB UsageLog) — DB write is async (BUG-8 fix)
   9. Release concurrency slot
   10. Return response
 """
 
 import logging
+import threading
 from rest_framework.response import Response
 
 from ai_services.core.llm_client import LLMClient
@@ -43,8 +44,8 @@ def get_limiter() -> UsageLimiter:
     return _limiter
 
 
-def _log_usage_to_db(institute, institute_id: str, feature: str, result: dict, cache_hit: bool, vertical: str = "base"):
-    """Persist usage to DB for billing — fire-and-forget."""
+def _do_log_usage_to_db(institute, institute_id: str, feature: str, result: dict, cache_hit: bool, vertical: str):
+    """Inner function — runs in a daemon thread, never blocks the request path."""
     try:
         from ai_services.models import UsageLog
         UsageLog.objects.create(
@@ -61,6 +62,20 @@ def _log_usage_to_db(institute, institute_id: str, feature: str, result: dict, c
         )
     except Exception as e:
         logger.error("Failed to log usage to DB: %s", e)
+
+
+def _log_usage_to_db(institute, institute_id: str, feature: str, result: dict, cache_hit: bool, vertical: str = "base"):
+    """
+    FIX BUG-8: Persist usage to DB asynchronously on a daemon thread.
+    The LLM response is returned to the client immediately — this write
+    never adds latency to the request/response cycle.
+    """
+    t = threading.Thread(
+        target=_do_log_usage_to_db,
+        args=(institute, institute_id, feature, result, cache_hit, vertical),
+        daemon=True,
+    )
+    t.start()
 
 
 def ai_call_text(

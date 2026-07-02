@@ -11,10 +11,26 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 # ── Security ─────────────────────────────────────────────────────────────────
-SECRET_KEY = os.getenv(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-a*ehy=r79uo-5bub%9lc3#7xlm96xgr+rx^)@hwotlan^=w47d",
-)
+# FIX BUG-3: No hardcoded fallback. If DJANGO_SECRET_KEY is missing in production,
+# the app must CRASH at startup rather than silently use an insecure known key.
+# In dev, you can set it in .env. In production, inject it as an environment secret.
+_secret = os.getenv("DJANGO_SECRET_KEY", "")
+if not _secret:
+    if os.getenv("DJANGO_DEBUG", "false").lower() in ("true", "1", "yes"):
+        # Dev mode: provide a safe local default so runserver works out of the box
+        import warnings
+        _secret = "django-dev-only-insecure-key-change-before-deploying"
+        warnings.warn(
+            "DJANGO_SECRET_KEY is not set. Using an insecure dev-only key. "
+            "Set DJANGO_SECRET_KEY in your .env before deploying to production.",
+            stacklevel=1,
+        )
+    else:
+        raise RuntimeError(
+            "DJANGO_SECRET_KEY environment variable is required in production. "
+            "Generate one with: python -c \"from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())\""
+        )
+SECRET_KEY = _secret
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() in ("true", "1", "yes")
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0").split(",")
 
@@ -136,6 +152,38 @@ REST_FRAMEWORK = {
     },
 }
 
+# ── Redis ─────────────────────────────────────────────────────────────────────
+# Redis is used for:
+#   1. AI response caching (primary cost optimization — avoids repeated LLM calls)
+#   2. Question bank persistence (survives restarts, shared across workers)
+#   3. Cache hit/miss statistics (cost savings dashboard)
+#
+# Required in production. Falls back to in-memory (per-worker) if not set.
+#
+# For local dev:   redis://localhost:6379
+# For EC2:         redis://127.0.0.1:6379  (Redis on same server)
+# For Redis Cloud: redis://:password@host:6379
+#
+# IMPORTANT Redis memory policy: Set `maxmemory-policy allkeys-lru` in redis.conf
+# or via: redis-cli CONFIG SET maxmemory-policy allkeys-lru
+# This means Redis will evict the least-recently-used keys when memory is full,
+# which is correct behavior for a cache (never crash, always make space for new entries).
+#
+# Recommended maxmemory for 750 students: 256mb–512mb
+# Set via: redis-cli CONFIG SET maxmemory 256mb
+
+REDIS_URL = os.getenv("REDIS_URL", "")
+
+# Warn at settings-load time if Redis is missing in production
+if not REDIS_URL and not DEBUG:
+    import warnings
+    warnings.warn(
+        "REDIS_URL is not set in production. "
+        "AI response caching is disabled — every LLM call will cost money. "
+        "Set REDIS_URL=redis://localhost:6379 for significant cost savings.",
+        stacklevel=1,
+    )
+
 # ── Logging ──────────────────────────────────────────────────────────────────
 LOGGING = {
     "version": 1,
@@ -160,3 +208,4 @@ LOGGING = {
         },
     },
 }
+

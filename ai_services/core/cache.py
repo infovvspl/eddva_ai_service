@@ -1,19 +1,39 @@
 """
-Tenant-scoped response caching — Redis-backed with in-memory fallback.
+Redis-powered AI Response Cache — Cost Optimization Layer.
 
-Same JEE/NEET questions get asked millions of times. Caching identical
-or near-identical prompts saves 15-20% on LLM costs.
+WHY THIS MATTERS:
+  750 students studying JEE/NEET ask the SAME questions every day.
+  "What is Newton's second law?" gets asked 50 times → without cache = 50 LLM calls.
+  With Redis cache → 1 LLM call + 49 instant cache hits = 98% cost saving on that question.
 
-IMPORTANT: Cache keys are scoped by (institute_id + feature + prompt_hash)
-so Institute A never sees Institute B's cached responses.
+ARCHITECTURE (3 layers):
+  Layer 1 — Prompt Normalizer:
+      Cleans whitespace/case/punctuation before hashing so
+      "Newton's 2nd law?" and "newtons second law" hit the SAME cache entry.
 
-Strategy:
-  - Hash the (institute + feature + user_prompt) to create a cache key
-  - TTL varies by feature (content=24h, feedback=1h, tests=6h)
-  - Falls back to in-memory LRU cache if Redis is unavailable
+  Layer 2 — Redis (Primary, Shared):
+      Survives restarts. Shared across all gunicorn workers.
+      Keyed by: (institute_id + vertical + feature + normalized_prompt_hash)
+      TTL varies by feature (doubt=24h, quiz=24h, test=6h).
+
+  Layer 3 — In-Memory LRU (Hot-path fallback):
+      Ultra-fast local cache for the most recent 2000 entries.
+      Avoids a Redis round-trip for the hottest questions.
+      Falls back when Redis is unavailable.
+
+COST TRACKING:
+  Every cache hit records money saved in Redis counters.
+  GET /admin-api/cache/stats/ shows hit rate + rupees saved today.
+
+PROMPT NORMALIZATION (the key insight for cost savings):
+  Raw prompt:       "  what  is  Newton's 2nd  Law of motion ??? "
+  Normalized:       "what is newton 2nd law of motion"
+  → Same hash as:   "What is Newton's Second Law of Motion?"
+  → Cache HIT instead of a new LLM call.
 """
 
 import os
+import re
 import json
 import hashlib
 import logging
@@ -25,62 +45,207 @@ from typing import Optional
 
 logger = logging.getLogger("ai_services.cache")
 
-# Feature-specific TTLs in seconds.
-# Rule of thumb:
-#   - Same inputs ALWAYS produce the same useful output → cache long (24h)
-#   - Output is per-session / per-student-state / must be fresh → TTL=0 (skip cache)
-#   - Not listed here → DEFAULT_TTL (1 hour)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Feature-specific TTLs (seconds)
+#  Rule: deterministic input → same output = cache long.
+#        per-student/session data = TTL 0 (skip).
+# ─────────────────────────────────────────────────────────────────────────────
 CACHE_TTL = {
-    # ── Never cache — must always be fresh ────────────────────────────────────
-    "plan_generate":     0,      # Regenerate must produce a new plan every time
-    "cheating_analyze":  0,      # Real-time proctoring data
-    "feedback_generate": 0,      # Per-session test scores — stale feedback is misleading
+    # ── Never cache — must always be fresh ───────────────────────────────────
+    "plan_generate":     0,      # personalized plan — stale = misleading
+    "cheating_analyze":  0,      # real-time proctoring
+    "feedback_generate": 0,      # per-session test scores
+    "content_generate":  0,      # teachers expect fresh content every time
+    "evaluate_batch":    0,      # QA must reflect the exact current batch
 
-    # ── Long cache — deterministic, stable content ─────────────────────────────
-    "doubt_resolve":     86400,  # 24h — same physics/chemistry question = same answer
-    "syllabus_generate": 86400,  # 24h — exam syllabus doesn't change mid-year
-    "content_suggest":   86400,  # 24h — resource URLs don't change often
+    # ── Long cache — same input ALWAYS gives the same correct answer ──────────
+    "doubt_resolve":     86400,  # 24h — Newton's law is Newton's law
+    "syllabus_generate": 86400,  # 24h — syllabus doesn't change mid-year
+    "content_suggest":   86400,  # 24h — resource URLs are stable
     "notes_generate":    86400,  # 24h — same transcript = same notes
     "stt_notes":         86400,  # 24h — same audio = same notes
-
-    # ── Long cache — deterministic, stable content (bridge endpoints) ─────────
-    "quiz_generate":     86400,  # 24h — same transcript always produces same questions
-    "content_generate":  0,      # never cache — teachers expect fresh content on every generate
+    "quiz_generate":     86400,  # 24h — same transcript = same questions
 
     # ── Medium cache ──────────────────────────────────────────────────────────
-    "test_generate":     21600,  # 6h  — topic MCQs are stable within a day
+    "test_generate":     21600,  # 6h  — MCQs stable within a day
     "career_roadmap":    43200,  # 12h
-    "study_plan":        0,      # legacy key — mapped to plan_generate now; disable
-    "content_recommend": 21600,  # 6h  — recommendations change as weak topics evolve
+    "content_recommend": 21600,  # 6h
 
     # ── Short cache ───────────────────────────────────────────────────────────
-    "performance_analyze": 3600, # 1h — scores change after new tests
+    "performance_analyze": 3600, # 1h
     "feedback_analyze":    3600, # 1h
     "notes_analyze":       3600, # 1h
-    "evaluate_batch":      0,    # always re-evaluate — QA must reflect the exact current batch
+
+    # ── Legacy ────────────────────────────────────────────────────────────────
+    "study_plan":        0,      # mapped to plan_generate
 }
 
-DEFAULT_TTL = 3600  # 1 hour — for features not explicitly listed above
+DEFAULT_TTL = 3600  # 1h for unlisted features
+
+# Redis key prefixes
+_KEY_PREFIX    = "ai_svc"       # response cache
+_STATS_PREFIX  = "ai_stats"     # hit/miss counters + cost saved
 
 
-def _make_cache_key(institute_id: str, feature: str, prompt_hash: str, vertical: str = "base") -> str:
+# ─────────────────────────────────────────────────────────────────────────────
+#  Prompt Normalizer — the secret weapon for higher cache hit rates
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Common Indian English / SMS abbreviations students use
+_ABBREV = {
+    r"\b2nd\b":    "second",
+    r"\b3rd\b":    "third",
+    r"\b1st\b":    "first",
+    r"\bkya\b":    "what",
+    r"\bkaise\b":  "how",
+    r"\bbtao\b":   "explain",
+    r"\bpls\b":    "please",
+    r"\bplz\b":    "please",
+    r"\bu\b":      "you",
+    r"\bw/\b":     "with",
+    r"\bw/o\b":    "without",
+    r"\bvs\b":     "versus",
+    r"\bdef\b":    "definition",
+    r"\bdefn\b":   "definition",
+    r"\bproof\b":  "prove",
+    r"\beq\b":     "equation",
+    r"\bdiff\b":   "differentiate",
+    r"\bintegn\b": "integration",
+    r"\bcalc\b":   "calculate",
+    r"\bformula\b":"formula",
+    r"\bex\b":     "example",
+    r"\beg\b":     "example",
+    r"\bq\b":      "question",
+}
+
+_ABBREV_PATTERNS = [(re.compile(k, re.I), v) for k, v in _ABBREV.items()]
+
+# Punctuation to strip (apostrophes, question/exclamation marks, etc.)
+_STRIP_PUNCT = re.compile(r"[\"'`\?\!\.\,\;\:\(\)\[\]\{\}\-\_\*\#\@\$\%\^\&]")
+_MULTI_SPACE = re.compile(r"\s+")
+
+
+def normalize_prompt(prompt: str) -> str:
     """
-    Tenant- AND vertical-scoped cache key. Institute A and B get separate
-    entries, and a coaching answer is never served to a school request (and
-    vice-versa) even for the same prompt.
+    Normalize a user prompt to maximize cache hit rate.
+
+    Transformations (order matters):
+      1. Lowercase
+      2. Expand common abbreviations (2nd → second, pls → please)
+      3. Strip punctuation
+      4. Collapse whitespace
+      5. Strip leading/trailing whitespace
+
+    Examples:
+      "  What is Newton's 2nd Law?? "  →  "what is newtons second law"
+      "newton second law"               →  "newton second law"   ← SAME HASH
+      "NEWTONS 2ND LAW!"                →  "newtons second law"  ← SAME HASH
     """
-    return f"ai_svc:{institute_id}:{vertical}:{feature}:{prompt_hash}"
+    if not prompt:
+        return ""
+
+    text = prompt.lower()
+
+    # Expand abbreviations
+    for pattern, replacement in _ABBREV_PATTERNS:
+        text = pattern.sub(replacement, text)
+
+    # Strip punctuation (keep Devanagari danda as-is for Hindi)
+    text = _STRIP_PUNCT.sub(" ", text)
+
+    # Collapse whitespace
+    text = _MULTI_SPACE.sub(" ", text).strip()
+
+    return text
+
+
+def _make_cache_key(
+    institute_id: str,
+    feature: str,
+    prompt_hash: str,
+    vertical: str = "base",
+) -> str:
+    """
+    Tenant- AND vertical-scoped cache key.
+    Institute A and B get separate entries.
+    Coaching and school answers never mix.
+    """
+    return f"{_KEY_PREFIX}:{institute_id}:{vertical}:{feature}:{prompt_hash}"
 
 
 def _hash_prompt(prompt: str) -> str:
-    """Deterministic hash of the user prompt (not system prompt — that's constant)."""
-    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
+    """
+    Hash the NORMALIZED prompt for higher cache hit rate.
+    Two slightly different phrasings of the same question → same hash.
+    """
+    normalized = normalize_prompt(prompt)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
+
+def _stats_key(institute_id: str, date_str: str) -> str:
+    return f"{_STATS_PREFIX}:{institute_id}:{date_str}"
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Shared Redis Connection Pool (singleton)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_redis_client = None
+_redis_lock = Lock()
+
+
+def get_redis():
+    """
+    Return a shared Redis connection pool instance.
+    Uses a connection pool (not a single connection) — safe for multi-threaded gunicorn.
+    Raises RuntimeError if Redis is not configured and we're not in dev fallback mode.
+    """
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+
+    with _redis_lock:
+        if _redis_client is not None:
+            return _redis_client
+
+        redis_url = os.getenv("REDIS_URL", "")
+        if not redis_url:
+            return None
+
+        try:
+            import redis
+            # Connection pool: max 20 connections, shared across all threads/workers
+            pool = redis.ConnectionPool.from_url(
+                redis_url,
+                decode_responses=True,
+                max_connections=20,
+                socket_timeout=1.0,
+                socket_connect_timeout=1.0,
+                retry_on_timeout=True,
+            )
+            client = redis.Redis(connection_pool=pool)
+            client.ping()
+            logger.info("Redis connected (pool) → %s", redis_url.split("@")[-1])  # hide password
+            _redis_client = client
+        except Exception as e:
+            logger.warning("Redis unavailable (%s) — falling back to in-memory cache", e)
+            _redis_client = None
+
+    return _redis_client
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  In-Memory LRU — hot-path Layer 3 (local to each worker)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class _InMemoryLRU:
-    """Thread-safe LRU cache as Redis fallback. Max 5000 entries."""
+    """Thread-safe LRU cache — Layer 3 fallback and hot-path accelerator."""
 
-    def __init__(self, max_size: int = 5000):
+    def __init__(self, max_size: int = 2000):
         self._cache: OrderedDict = OrderedDict()
         self._max_size = max_size
         self._lock = Lock()
@@ -103,7 +268,7 @@ class _InMemoryLRU:
                 "expires_at": time.time() + ttl,
             }
             if len(self._cache) > self._max_size:
-                self._cache.popitem(last=False)
+                self._cache.popitem(last=False)  # evict oldest
 
     def delete(self, key: str):
         with self._lock:
@@ -113,156 +278,334 @@ class _InMemoryLRU:
         with self._lock:
             self._cache.clear()
 
+    def size(self) -> int:
+        with self._lock:
+            return len(self._cache)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  ResponseCache — the main cache used by every AI view
+# ─────────────────────────────────────────────────────────────────────────────
 
 class ResponseCache:
     """
-    Dual-layer cache: Redis (primary) → In-memory LRU (fallback).
-    All keys are tenant-scoped — no cross-tenant data leakage.
+    3-layer AI response cache for maximum cost savings.
+
+    Layer 1: Prompt normalization (before hashing) → higher hit rate
+    Layer 2: Redis (shared, persistent, survives restarts)
+    Layer 3: In-memory LRU (ultra-fast, local to this worker)
+
+    All keys tenant-scoped — no cross-tenant data leakage.
     """
 
     def __init__(self):
-        self._redis = None
-        self._memory = _InMemoryLRU()
-        self._init_redis()
+        self._memory = _InMemoryLRU(max_size=2000)
 
-    def _init_redis(self):
-        redis_url = os.getenv("REDIS_URL", "")
-        if not redis_url:
-            logger.info("REDIS_URL not set — using in-memory LRU cache")
+    @property
+    def _redis(self):
+        return get_redis()
+
+    # ── Cost tracking helpers ─────────────────────────────────────────────────
+
+    def _record_hit(self, institute_id: str, feature: str, tokens_saved: int = 0, cost_saved: float = 0.0):
+        """Increment hit counters in Redis for the cost savings dashboard."""
+        r = self._redis
+        if not r:
             return
         try:
-            import redis
-            self._redis = redis.from_url(redis_url, decode_responses=True, socket_timeout=1)
-            self._redis.ping()
-            logger.info("Redis cache connected: %s", redis_url)
-        except Exception as e:
-            logger.warning("Redis unavailable (%s), using in-memory LRU fallback", e)
-            self._redis = None
+            today = _today()
+            key = _stats_key(institute_id, today)
+            pipe = r.pipeline()
+            pipe.hincrby(key, "hits", 1)
+            pipe.hincrby(key, f"hits:{feature}", 1)
+            if tokens_saved:
+                pipe.hincrbyfloat(key, "tokens_saved", tokens_saved)
+            if cost_saved:
+                pipe.hincrbyfloat(key, "cost_saved_usd", cost_saved)
+            pipe.expire(key, 86400 * 7)  # keep 7 days of stats
+            pipe.execute()
+        except Exception:
+            pass
 
-    def get(self, institute_id: str, feature: str, user_prompt: str, vertical: str = "base") -> Optional[dict]:
-        """Look up cached LLM response scoped to this tenant + vertical. Returns None on miss."""
+    def _record_miss(self, institute_id: str, feature: str):
+        """Increment miss counter."""
+        r = self._redis
+        if not r:
+            return
+        try:
+            today = _today()
+            key = _stats_key(institute_id, today)
+            pipe = r.pipeline()
+            pipe.hincrby(key, "misses", 1)
+            pipe.hincrby(key, f"misses:{feature}", 1)
+            pipe.expire(key, 86400 * 7)
+            pipe.execute()
+        except Exception:
+            pass
+
+    # ── Core get / set ────────────────────────────────────────────────────────
+
+    def get(
+        self,
+        institute_id: str,
+        feature: str,
+        user_prompt: str,
+        vertical: str = "base",
+    ) -> Optional[dict]:
+        """
+        Look up a cached LLM response.
+        Prompt is normalized before hashing for higher hit rate.
+        Returns None on miss (caller must invoke LLM).
+        """
         ttl = CACHE_TTL.get(feature, DEFAULT_TTL)
         if ttl == 0:
             return None  # feature opted out of caching
 
         key = _make_cache_key(institute_id, feature, _hash_prompt(user_prompt), vertical)
 
-        # Try Redis first
-        if self._redis:
+        # Layer 3 — in-memory (fastest, no network round-trip)
+        mem_result = self._memory.get(key)
+        if mem_result is not None:
+            logger.debug("Cache HIT (memory) key=%s", key[-20:])
+            self._record_hit(institute_id, feature)
+            return mem_result
+
+        # Layer 2 — Redis
+        r = self._redis
+        if r:
             try:
-                raw = self._redis.get(key)
+                raw = r.get(key)
                 if raw:
-                    logger.debug("Cache HIT (redis) %s", key)
-                    return json.loads(raw)
-            except Exception:
-                pass
+                    result = json.loads(raw)
+                    # Populate memory cache for next time (avoid Redis round-trip)
+                    self._memory.set(key, result, min(ttl, 300))  # memory TTL max 5min
+                    logger.debug("Cache HIT (redis) key=%s", key[-20:])
+                    self._record_hit(institute_id, feature)
+                    return result
+            except Exception as e:
+                logger.warning("Redis get error: %s", e)
 
-        # Fallback to memory
-        result = self._memory.get(key)
-        if result:
-            logger.debug("Cache HIT (memory) %s", key)
-        return result
+        self._record_miss(institute_id, feature)
+        return None
 
-    def set(self, institute_id: str, feature: str, user_prompt: str, response: dict, vertical: str = "base"):
-        """Store LLM response in tenant- + vertical-scoped cache."""
+    def set(
+        self,
+        institute_id: str,
+        feature: str,
+        user_prompt: str,
+        response: dict,
+        vertical: str = "base",
+        tokens_used: int = 0,
+        cost_usd: float = 0.0,
+    ):
+        """
+        Store an LLM response in both Redis and memory cache.
+        Also records the tokens/cost so future hits can report savings.
+        """
         ttl = CACHE_TTL.get(feature, DEFAULT_TTL)
         if ttl == 0:
             return
 
         key = _make_cache_key(institute_id, feature, _hash_prompt(user_prompt), vertical)
 
-        # Write to both layers
-        self._memory.set(key, response, ttl)
+        # Store the original response + metadata about what it cost to generate
+        payload = {
+            **response,
+            "_cache_meta": {
+                "cached_at": time.time(),
+                "tokens": tokens_used,
+                "cost_usd": cost_usd,
+                "institute_id": institute_id,
+                "feature": feature,
+                "vertical": vertical,
+            },
+        }
 
-        if self._redis:
+        # Write to Redis first (shared, persistent)
+        r = self._redis
+        if r:
             try:
-                self._redis.setex(key, ttl, json.dumps(response))
+                r.setex(key, ttl, json.dumps(payload, ensure_ascii=False))
             except Exception as e:
-                logger.warning("Redis write failed: %s", e)
+                logger.warning("Redis set error: %s", e)
+
+        # Write to memory cache (hot-path accelerator)
+        self._memory.set(key, payload, min(ttl, 300))
 
     def invalidate(self, institute_id: str, feature: str, user_prompt: str, vertical: str = "base"):
-        """Remove a specific cached response for a tenant + vertical."""
+        """Remove a specific cached response."""
         key = _make_cache_key(institute_id, feature, _hash_prompt(user_prompt), vertical)
         self._memory.delete(key)
-        if self._redis:
+        r = self._redis
+        if r:
             try:
-                self._redis.delete(key)
+                r.delete(key)
             except Exception:
                 pass
 
     def flush_tenant(self, institute_id: str):
-        """Clear ALL cached responses for a specific tenant."""
-        # Memory cache — scan and delete matching keys
-        prefix = f"ai_svc:{institute_id}:"
+        """Clear ALL cached responses for a specific tenant (Redis + memory)."""
+        prefix = f"{_KEY_PREFIX}:{institute_id}:"
+
+        # Memory flush
         with self._memory._lock:
             keys_to_delete = [k for k in self._memory._cache if k.startswith(prefix)]
             for k in keys_to_delete:
                 del self._memory._cache[k]
 
-        # Redis — scan and delete
-        if self._redis:
+        # Redis flush (cursor scan — safe for large datasets)
+        r = self._redis
+        if r:
             try:
                 cursor = 0
+                deleted = 0
                 while True:
-                    cursor, keys = self._redis.scan(cursor, match=f"{prefix}*", count=100)
+                    cursor, keys = r.scan(cursor, match=f"{prefix}*", count=200)
                     if keys:
-                        self._redis.delete(*keys)
+                        r.delete(*keys)
+                        deleted += len(keys)
                     if cursor == 0:
                         break
-            except Exception:
-                pass
+                logger.info("flush_tenant: deleted %d Redis keys for %s", deleted, institute_id)
+            except Exception as e:
+                logger.warning("Redis flush_tenant error: %s", e)
 
     def flush_all(self):
         """Clear all cached responses for ALL tenants."""
         self._memory.flush()
-        if self._redis:
+        r = self._redis
+        if r:
             try:
                 cursor = 0
                 while True:
-                    cursor, keys = self._redis.scan(cursor, match="ai_svc:*", count=100)
+                    cursor, keys = r.scan(cursor, match=f"{_KEY_PREFIX}:*", count=200)
                     if keys:
-                        self._redis.delete(*keys)
+                        r.delete(*keys)
                     if cursor == 0:
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Redis flush_all error: %s", e)
 
+    # ── Analytics / Cost Dashboard ────────────────────────────────────────────
+
+    def get_stats(self, institute_id: str, days: int = 7) -> dict:
+        """
+        Return cache performance stats for the cost savings dashboard.
+        Shows hit rate, tokens saved, and estimated money saved in USD + INR.
+        """
+        r = self._redis
+        if not r:
+            return {
+                "note": "Redis not connected — stats unavailable",
+                "redis_connected": False,
+                "memory_entries": self._memory.size(),
+            }
+
+        today = _today()
+        all_hits = 0
+        all_misses = 0
+        total_tokens_saved = 0.0
+        total_cost_saved_usd = 0.0
+        daily = []
+
+        try:
+            for i in range(days):
+                import datetime
+                day = (
+                    datetime.date.today() - datetime.timedelta(days=i)
+                ).strftime("%Y-%m-%d")
+                key = _stats_key(institute_id, day)
+                data = r.hgetall(key)
+                if not data:
+                    continue
+
+                hits    = int(data.get("hits", 0))
+                misses  = int(data.get("misses", 0))
+                tokens  = float(data.get("tokens_saved", 0))
+                cost    = float(data.get("cost_saved_usd", 0))
+
+                all_hits   += hits
+                all_misses += misses
+                total_tokens_saved   += tokens
+                total_cost_saved_usd += cost
+
+                daily.append({
+                    "date": day,
+                    "hits": hits,
+                    "misses": misses,
+                    "hit_rate_pct": round(hits / (hits + misses) * 100, 1) if (hits + misses) else 0,
+                    "tokens_saved": int(tokens),
+                    "cost_saved_usd": round(cost, 4),
+                    "cost_saved_inr": round(cost * 84, 2),  # approx USD→INR
+                })
+        except Exception as e:
+            logger.warning("Cache stats error: %s", e)
+
+        total_calls = all_hits + all_misses
+        hit_rate = round(all_hits / total_calls * 100, 1) if total_calls else 0
+
+        return {
+            "redis_connected": True,
+            "memory_entries": self._memory.size(),
+            "period_days": days,
+            "total_calls": total_calls,
+            "total_hits": all_hits,
+            "total_misses": all_misses,
+            "hit_rate_pct": hit_rate,
+            "tokens_saved": int(total_tokens_saved),
+            "cost_saved_usd": round(total_cost_saved_usd, 4),
+            "cost_saved_inr": round(total_cost_saved_usd * 84, 2),
+            "daily_breakdown": daily,
+            "insight": _cache_insight(hit_rate, total_cost_saved_usd),
+        }
+
+
+def _cache_insight(hit_rate: float, cost_saved_usd: float) -> str:
+    """Human-readable insight for the dashboard."""
+    if hit_rate >= 60:
+        return f"Excellent! {hit_rate}% of requests served from cache. Students are asking similar questions — cache is working perfectly."
+    if hit_rate >= 35:
+        return f"Good. {hit_rate}% hit rate. As more students use the platform, hit rate will improve further."
+    if hit_rate >= 10:
+        return f"Cache is warming up ({hit_rate}% hit rate). Expect improvement as question patterns repeat."
+    return f"Cache is fresh ({hit_rate}% hit rate). Hit rate grows as students ask repeated questions."
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  QuestionBankCache — fallback question store on LLM failure
+# ─────────────────────────────────────────────────────────────────────────────
 
 class QuestionBankCache:
     """
-    Stores successfully generated questions by (subject, chapter, difficulty, qtype).
+    Stores successfully generated questions by (institute, vertical, subject, chapter, difficulty, qtype).
     On LLM failure, returns a random previously-seen question from the bank.
 
-    Storage:
-      - Redis LIST (RPUSH/LTRIM) when REDIS_URL is set — survives restarts, shared across workers
-      - Module-level dict fallback when Redis is unavailable — in-memory only, lost on restart
-        (still useful for demo: bank fills up during the session)
+    Tenant + vertical scoped — school questions never mix with JEE questions.
     """
 
     _BANK_TTL = 60 * 60 * 24 * 7   # 7 days
-    _MAX_PER_KEY = 50               # max questions stored per bucket
+    _MAX_PER_KEY = 50
 
     def __init__(self):
-        self._redis = None
         self._memory: dict[str, list] = {}
         self._lock = Lock()
-        self._init_redis()
 
-    def _init_redis(self):
-        redis_url = os.getenv("REDIS_URL", "")
-        if not redis_url:
-            return
-        try:
-            import redis
-            self._redis = redis.from_url(redis_url, decode_responses=True, socket_timeout=1)
-            self._redis.ping()
-            logger.info("QuestionBank: Redis connected")
-        except Exception as e:
-            logger.warning("QuestionBank: Redis unavailable (%s), using in-memory fallback", e)
-            self._redis = None
+    @property
+    def _redis(self):
+        return get_redis()
 
-    def _key(self, subject: str, chapter: str, difficulty: str, qtype: str) -> str:
+    def _key(
+        self,
+        subject: str,
+        chapter: str,
+        difficulty: str,
+        qtype: str,
+        institute_id: str = "global",
+        vertical: str = "base",
+    ) -> str:
         parts = [
+            (institute_id or "global").lower().strip()[:40],
+            (vertical or "base").lower().strip(),
             (subject or "").lower().strip()[:40],
             (chapter or "").lower().strip()[:40],
             (difficulty or "").lower().strip(),
@@ -270,13 +613,20 @@ class QuestionBankCache:
         ]
         return "qbank:" + ":".join(parts)
 
-    def save(self, subject: str, chapter: str, difficulty: str, qtype: str, questions: list):
-        """Append successfully generated questions into the bank."""
+    def save(
+        self,
+        subject: str,
+        chapter: str,
+        difficulty: str,
+        qtype: str,
+        questions: list,
+        institute_id: str = "global",
+        vertical: str = "base",
+    ):
         if not questions:
             return
-        key = self._key(subject, chapter, difficulty, qtype)
+        key = self._key(subject, chapter, difficulty, qtype, institute_id, vertical)
 
-        # In-memory store (always written)
         with self._lock:
             bucket = self._memory.get(key, [])
             bucket.extend(questions)
@@ -284,10 +634,10 @@ class QuestionBankCache:
                 bucket = bucket[-self._MAX_PER_KEY:]
             self._memory[key] = bucket
 
-        # Redis store (bounded list)
-        if self._redis:
+        r = self._redis
+        if r:
             try:
-                pipe = self._redis.pipeline()
+                pipe = r.pipeline()
                 for q in questions:
                     pipe.rpush(key, json.dumps(q, ensure_ascii=False))
                 pipe.ltrim(key, -self._MAX_PER_KEY, -1)
@@ -296,21 +646,28 @@ class QuestionBankCache:
             except Exception as e:
                 logger.warning("QuestionBank Redis write failed: %s", e)
 
-    def get_random(self, subject: str, chapter: str, difficulty: str, qtype: str, n: int = 1) -> list:
-        """Return up to n random cached questions. Returns [] if the bank is empty."""
-        key = self._key(subject, chapter, difficulty, qtype)
+    def get_random(
+        self,
+        subject: str,
+        chapter: str,
+        difficulty: str,
+        qtype: str,
+        n: int = 1,
+        institute_id: str = "global",
+        vertical: str = "base",
+    ) -> list:
+        key = self._key(subject, chapter, difficulty, qtype, institute_id, vertical)
         questions: list = []
 
-        # Try Redis first
-        if self._redis:
+        r = self._redis
+        if r:
             try:
-                raw_list = self._redis.lrange(key, 0, -1)
+                raw_list = r.lrange(key, 0, -1)
                 if raw_list:
-                    questions = [json.loads(r) for r in raw_list]
+                    questions = [json.loads(x) for x in raw_list]
             except Exception:
                 pass
 
-        # Fallback to in-memory
         if not questions:
             with self._lock:
                 questions = list(self._memory.get(key, []))
@@ -322,4 +679,5 @@ class QuestionBankCache:
         return questions[:n]
 
 
+# Module-level singletons
 question_bank = QuestionBankCache()

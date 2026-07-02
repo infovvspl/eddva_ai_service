@@ -40,12 +40,7 @@ from typing import Optional
 
 
 
-try:
-    import requests as _requests
-except ImportError:
-    import subprocess, sys as _sys
-    subprocess.check_call([_sys.executable, "-m", "pip", "install", "requests", "--quiet"])
-    import requests as _requests
+import requests as _requests
 
 
 
@@ -99,25 +94,13 @@ def search_educational_images(request):
 
 
 
+
+# ISSUE-3 FIX: Use the single canonical key loader from groq_keys.py.
+# The old inline key list only loaded keys 0–13, while groq_keys.py loads all keys 1–32.
+# All Whisper transcription calls now use the same complete key pool as LLM calls.
 GROQ_API_KEYS: list[str] = get_groq_api_keys()
-_GROQ_KEYS_RAW = [
-    os.getenv("GROQ_API_KEY", ""),
-    os.getenv("GROQ_API_KEY_1", ""),
-    os.getenv("GROQ_API_KEY_2", ""),
-    os.getenv("GROQ_API_KEY_3", ""),
-    os.getenv("GROQ_API_KEY_4", ""),
-    os.getenv("GROQ_API_KEY_5", ""),
-    os.getenv("GROQ_API_KEY_6", ""),
-    os.getenv("GROQ_API_KEY_7", ""),
-    os.getenv("GROQ_API_KEY_8", ""),
-    os.getenv("GROQ_API_KEY_9", ""),
-    os.getenv("GROQ_API_KEY_10", ""),
-    os.getenv("GROQ_API_KEY_11", ""),
-    os.getenv("GROQ_API_KEY_12", ""),
-    os.getenv("GROQ_API_KEY_13", ""),
-]
-GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
+
 GROQ_WHISPER_MODEL = "whisper-large-v3-turbo"
 GROQ_MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB Groq limit
 # Gaps between Whisper segments (seconds) come from the decoded audio; they approximate speech pauses.

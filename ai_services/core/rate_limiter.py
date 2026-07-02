@@ -58,11 +58,28 @@ class UsageLimiter:
         return f"ai_svc:usage:{institute_id}:{_day_key()}"
 
     def _get_semaphore(self, institute_id: str, max_concurrent: int) -> Semaphore:
-        """Get or create a per-tenant semaphore for concurrency control."""
+        """
+        Get or create a per-tenant semaphore for concurrency control.
+
+        FIX BUG-7 (partial): If max_concurrent_requests changes in the DB
+        (e.g. via admin), the old cached semaphore had the wrong count.
+        We now store the configured max alongside the semaphore and rebuild
+        it when the count changes.
+
+        NOTE: In-process semaphores are NOT shared across gunicorn workers.
+        For true multi-worker concurrency enforcement, move this to Redis
+        using atomic INCR/DECR with a per-tenant key. This is a known
+        scalability gap (see SCALE-1 in the audit report).
+        """
         with self._sem_lock:
-            if institute_id not in self._semaphores:
-                self._semaphores[institute_id] = Semaphore(max_concurrent)
-            return self._semaphores[institute_id]
+            entry = self._semaphores.get(institute_id)
+            if entry is None or entry["max"] != max_concurrent:
+                # Build a new semaphore if one doesn't exist or the limit changed
+                self._semaphores[institute_id] = {
+                    "sem": Semaphore(max_concurrent),
+                    "max": max_concurrent,
+                }
+            return self._semaphores[institute_id]["sem"]
 
     def check_budget(
         self,
@@ -120,12 +137,13 @@ class UsageLimiter:
     def release_concurrency_slot(self, institute_id: str):
         """Release a concurrency slot after an LLM call completes."""
         with self._sem_lock:
-            sem = self._semaphores.get(institute_id)
-            if sem:
+            entry = self._semaphores.get(institute_id)
+            if entry:
                 try:
-                    sem.release()
+                    entry["sem"].release()
                 except ValueError:
-                    pass  # already released
+                    pass  # already released (defensive)
+
 
     def record_usage(self, institute_id: str, tokens_used: int):
         """Record token consumption after an LLM call."""
