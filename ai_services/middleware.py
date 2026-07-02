@@ -185,7 +185,7 @@ class TenantAuthMiddleware:
 
     Attaches to request:
       - request.institute: Institute model instance (or None for exempt paths)
-      - request.institute_id: str slug (or "anonymous")
+      - request.institute_id: str NestJS UUID (X-Tenant-ID for service-account calls, else external_tenant_id → slug)
       - request.vertical: resolved vertical key
       - request.profile: VerticalProfile instance
     """
@@ -228,11 +228,13 @@ class TenantAuthMiddleware:
             )
 
         # FIX BUG-9: X-Tenant-ID impersonation is only allowed for service-account keys.
-        # A regular institute API key (is_service_account=False) MUST NOT be able to
-        # switch to a different tenant's context by sending X-Tenant-ID.
+        # Capture is_service_account NOW, before institute may be reassigned to the
+        # school tenant object (which has is_service_account=False).
+        api_key_is_service_account = institute.is_service_account
+
         nest_tenant_id = request.headers.get("X-Tenant-ID")
         if nest_tenant_id:
-            if not institute.is_service_account:
+            if not api_key_is_service_account:
                 # Suspicious: a non-service-account key is trying to impersonate a tenant.
                 # Log it for security auditing and reject the override (still serve the
                 # authenticated institute, do NOT switch context).
@@ -257,7 +259,15 @@ class TenantAuthMiddleware:
 
         # Attach tenant context to request
         request.institute = institute
-        request.institute_id = str(institute.slug)
+        # When the original API key belongs to a service account (NestJS ai-bridge),
+        # X-Tenant-ID IS the NestJS school UUID — use it directly so ai_usage_daily
+        # rows are keyed by the same UUID the analytics dashboard queries.
+        # Fall back to external_tenant_id → slug for direct institute-key requests.
+        nest_tid = request.headers.get("X-Tenant-ID", "")
+        if api_key_is_service_account and nest_tid:
+            request.institute_id = nest_tid
+        else:
+            request.institute_id = str(institute.external_tenant_id or institute.slug)
         request.vertical = _resolve_vertical(request, institute)
         request.profile = get_profile(request.vertical)
 

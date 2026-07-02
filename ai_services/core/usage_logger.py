@@ -65,12 +65,13 @@ def log_ai_usage_sync(
             "errorMessage": error_message,
             "userId": user_id,
         }
-        httpx.post(
+        resp = httpx.post(
             f"{NESTJS_BASE_URL}/api/v1/internal/ai-usage/log",
             json=payload,
             headers={"X-Internal-Key": INTERNAL_API_KEY},
             timeout=5.0,
         )
+        resp.raise_for_status()
         logger.debug("AI usage logged: feature=%s model=%s cost=$%.6f", feature_id, model_used, cost)
     except Exception as e:
         logger.warning("AI usage logging failed (non-fatal): %s", e)

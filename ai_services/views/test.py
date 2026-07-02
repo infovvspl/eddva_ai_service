@@ -12,7 +12,7 @@ from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
 from ai_services.core.batch_processor import BatchProcessor
 from ai_services.core.cache import question_bank
-from .base import ai_call, get_llm
+from .base import ai_call, get_llm, _log_usage_nestjs, _log_usage_to_db
 
 # ── Text cleaning ─────────────────────────────────────────────────────────────
 
@@ -1039,6 +1039,12 @@ def generate_practice_test(request):
             return JsonResponse({"error": str(e)}, status=502)
 
     parsed = parse_ai_result(result, topic, difficulty, qtype, style)
+    try:
+        institute = getattr(request, "institute", None)
+        _log_usage_to_db(institute, institute_id, "test_generate", result, cache_hit=False, vertical=vertical)
+    except Exception as log_e:
+        logger.error("Failed to log usage for test_generate: %s", log_e)
+
     parsed["_meta"] = {
         "source": "llm",
         "model": result["model"],

@@ -62,6 +62,20 @@ def _do_log_usage_to_db(institute, institute_id: str, feature: str, result: dict
             latency_ms=result.get("latency_ms", 0),
             cache_hit=cache_hit,
         )
+        
+        # Also sync to NestJS for real-time dashboard billing
+        if not cache_hit:
+            _log_usage_nestjs(
+                institute_id=institute_id,
+                institute_type=vertical or 'school',
+                feature_id=feature,
+                feature_category='general',
+                model_used=result.get('model', 'unknown'),
+                tokens_input=result.get('tokens_input', 0) or result.get('usage', {}).get('prompt_tokens', 0),
+                tokens_output=result.get('tokens_output', 0) or result.get('usage', {}).get('completion_tokens', 0),
+                latency_ms=int(result.get('latency_ms', 0)),
+                success=True,
+            )
     except Exception as e:
         logger.error("Failed to log usage to DB: %s", e)
 
@@ -143,18 +157,6 @@ def ai_call_text(
             _cache.set(institute_id, feature, user_prompt, response_data, vertical)
         _limiter.record_usage(institute_id, result["usage"]["total_tokens"])
         _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False, vertical=vertical)
-        # ── Send token + cost data to NestJS for dashboard billing ──
-        _log_usage_nestjs(
-            institute_id=institute_id,
-            institute_type=vertical or 'school',
-            feature_id=feature,
-            feature_category='general',
-            model_used=result.get('model', 'unknown'),
-            tokens_input=result.get('tokens_input', 0) or result.get('usage', {}).get('prompt_tokens', 0),
-            tokens_output=result.get('tokens_output', 0) or result.get('usage', {}).get('completion_tokens', 0),
-            latency_ms=int(result.get('latency_ms', 0)),
-            success=True,
-        )
 
         meta = {
             "_meta": {
@@ -273,18 +275,6 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
     # 7. Record usage (Redis for real-time + DB for billing)
     _limiter.record_usage(institute_id, result["usage"]["total_tokens"])
     _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False, vertical=vertical)
-    # ── Send token + cost data to NestJS for dashboard billing ──
-    _log_usage_nestjs(
-        institute_id=institute_id,
-        institute_type=vertical or 'school',
-        feature_id=feature,
-        feature_category='general',
-        model_used=result.get('model', 'unknown'),
-        tokens_input=result.get('tokens_input', 0) or result.get('usage', {}).get('prompt_tokens', 0),
-        tokens_output=result.get('tokens_output', 0) or result.get('usage', {}).get('completion_tokens', 0),
-        latency_ms=int(result.get('latency_ms', 0)),
-        success=True,
-    )
 
     # 8. Build response
     response_data = result["content"] if isinstance(result["content"], dict) else {"raw": result["content"]}
