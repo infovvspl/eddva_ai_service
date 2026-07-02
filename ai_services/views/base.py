@@ -16,6 +16,7 @@ Full tenant-aware pipeline:
 
 import logging
 import threading
+import os
 from rest_framework.response import Response
 
 from ai_services.core.llm_client import LLMClient
@@ -23,6 +24,7 @@ from ai_services.core.cache import ResponseCache
 from ai_services.core.rate_limiter import UsageLimiter
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
+from ai_services.core.usage_logger import log_usage as _log_usage_nestjs
 
 logger = logging.getLogger("ai_services.views")
 
@@ -141,6 +143,18 @@ def ai_call_text(
             _cache.set(institute_id, feature, user_prompt, response_data, vertical)
         _limiter.record_usage(institute_id, result["usage"]["total_tokens"])
         _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False, vertical=vertical)
+        # ── Send token + cost data to NestJS for dashboard billing ──
+        _log_usage_nestjs(
+            institute_id=institute_id,
+            institute_type=vertical or 'school',
+            feature_id=feature,
+            feature_category='general',
+            model_used=result.get('model', 'unknown'),
+            tokens_input=result.get('tokens_input', 0) or result.get('usage', {}).get('prompt_tokens', 0),
+            tokens_output=result.get('tokens_output', 0) or result.get('usage', {}).get('completion_tokens', 0),
+            latency_ms=int(result.get('latency_ms', 0)),
+            success=True,
+        )
 
         meta = {
             "_meta": {
@@ -259,6 +273,18 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
     # 7. Record usage (Redis for real-time + DB for billing)
     _limiter.record_usage(institute_id, result["usage"]["total_tokens"])
     _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False, vertical=vertical)
+    # ── Send token + cost data to NestJS for dashboard billing ──
+    _log_usage_nestjs(
+        institute_id=institute_id,
+        institute_type=vertical or 'school',
+        feature_id=feature,
+        feature_category='general',
+        model_used=result.get('model', 'unknown'),
+        tokens_input=result.get('tokens_input', 0) or result.get('usage', {}).get('prompt_tokens', 0),
+        tokens_output=result.get('tokens_output', 0) or result.get('usage', {}).get('completion_tokens', 0),
+        latency_ms=int(result.get('latency_ms', 0)),
+        success=True,
+    )
 
     # 8. Build response
     response_data = result["content"] if isinstance(result["content"], dict) else {"raw": result["content"]}
