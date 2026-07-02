@@ -5163,9 +5163,39 @@ def generate_topic_content(request):
                 institute_id=institute_id,
             )
         except RuntimeError as e:
+            try:
+                log_usage(
+                    institute_id=institute_id,
+                    institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
+                    feature_id=f'content_{content_type}' if content_type else 'content_generate',
+                    feature_category='content',
+                    model_used='llama-3.3-70b-versatile',
+                    latency_ms=int((time.time() - _start_time) * 1000),
+                    success=False,
+                    error_message=f"MCQ retry failed: {str(e)[:500]}",
+                    user_id=user_id_tc,
+                )
+            except Exception:
+                pass
             return Response({"error": f"AI regeneration failed: {e}"}, status=502)
         retried_content = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
         if _has_incomplete_mcq_options(retried_content):
+            try:
+                log_usage(
+                    institute_id=institute_id,
+                    institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
+                    feature_id=f'content_{content_type}' if content_type else 'content_generate',
+                    feature_category='content',
+                    model_used=llm_result.get('model', 'llama-3.3-70b-versatile'),
+                    tokens_input=llm_result.get('usage', {}).get('prompt_tokens', 0),
+                    tokens_output=llm_result.get('usage', {}).get('completion_tokens', 0),
+                    latency_ms=int((time.time() - _start_time) * 1000),
+                    success=False,
+                    error_message="Incomplete MCQ options after retry",
+                    user_id=user_id_tc,
+                )
+            except Exception:
+                pass
             return Response(
                 {"error": "AI returned incomplete MCQ options. Please generate again."},
                 status=502,

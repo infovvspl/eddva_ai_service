@@ -2,6 +2,7 @@ import httpx
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -49,32 +50,35 @@ def log_ai_usage_sync(
     error_message: str = None,
     user_id: str = None,
 ):
-    try:
-        cost = calculate_cost(model_used, tokens_input, tokens_output)
-        payload = {
-            "instituteId": institute_id,
-            "instituteType": institute_type,
-            "featureId": feature_id,
-            "featureCategory": feature_category,
-            "modelUsed": model_used,
-            "tokensInput": tokens_input,
-            "tokensOutput": tokens_output,
-            "estimatedCost": cost,
-            "latencyMs": latency_ms,
-            "success": success,
-            "errorMessage": error_message,
-            "userId": user_id,
-        }
-        resp = httpx.post(
-            f"{NESTJS_BASE_URL}/api/v1/internal/ai-usage/log",
-            json=payload,
-            headers={"X-Internal-Key": INTERNAL_API_KEY},
-            timeout=5.0,
-        )
-        resp.raise_for_status()
-        logger.debug("AI usage logged: feature=%s model=%s cost=$%.6f", feature_id, model_used, cost)
-    except Exception as e:
-        logger.warning("AI usage logging failed (non-fatal): %s", e)
+    cost = calculate_cost(model_used, tokens_input, tokens_output)
+    payload = {
+        "instituteId": institute_id,
+        "instituteType": institute_type,
+        "featureId": feature_id,
+        "featureCategory": feature_category,
+        "modelUsed": model_used,
+        "tokensInput": tokens_input,
+        "tokensOutput": tokens_output,
+        "estimatedCost": cost,
+        "latencyMs": latency_ms,
+        "success": success,
+        "errorMessage": error_message,
+        "userId": user_id,
+    }
+    url = f"{NESTJS_BASE_URL}/api/v1/internal/ai-usage/log"
+    headers = {"X-Internal-Key": INTERNAL_API_KEY}
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = httpx.post(url, json=payload, headers=headers, timeout=10.0)
+            resp.raise_for_status()
+            logger.debug("AI usage logged: feature=%s model=%s cost=$%.6f", feature_id, model_used, cost)
+            return
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # 1s, 2s
+    logger.warning("AI usage logging failed after 3 attempts (non-fatal): %s", last_err)
 
 
 def log_usage(
