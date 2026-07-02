@@ -79,12 +79,17 @@ jobs:
             printf 'DB_HOST=%s\n' "$DB_HOST" >> .env
             printf 'DB_PORT=%s\n' "$DB_PORT" >> .env
             printf 'CORS_ALLOWED_ORIGINS=%s\n' "$CORS_ALLOWED_ORIGINS" >> .env
+            printf 'NESTJS_INTERNAL_URL=https://dev-api.eddva.in\n' >> .env
+            printf 'INTERNAL_API_KEY=edva_internal_ai_log_2026\n' >> .env
 
             # Install dependencies (requirements.txt has gunicorn, groq, django-cors-headers)
             venv/bin/pip install -r requirements.txt --quiet
 
             # Django migrations
             venv/bin/python manage.py migrate --noinput
+
+            # Ensure the NestJS ai-bridge service account has is_service_account=True
+            venv/bin/python manage.py shell -c "from ai_services.models import Institute; sa=Institute.objects.filter(api_key='${AI_API_KEY}').first(); sa and not sa.is_service_account and (setattr(sa,'is_service_account',True) or setattr(sa,'slug',sa.slug or 'apexiq-nestjs-service') or sa.save()) or print('ok')" || true
 
             # Restart: delete + start so the fresh .env is picked up
             mkdir -p $HOME/logs
