@@ -7,8 +7,8 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-NESTJS_BASE_URL = os.getenv('NESTJS_INTERNAL_URL', 'http://localhost:3000')
-INTERNAL_API_KEY = os.getenv('INTERNAL_API_KEY', '')
+_NESTJS_BASE_URL = os.getenv('NESTJS_INTERNAL_URL', '')
+_INTERNAL_API_KEY = os.getenv('INTERNAL_API_KEY', '')
 
 MODEL_COSTS = {
     'llama-3.1-8b-instant':           {'input': 0.05,  'output': 0.08},
@@ -65,8 +65,14 @@ def log_ai_usage_sync(
         "errorMessage": error_message,
         "userId": user_id,
     }
-    url = f"{NESTJS_BASE_URL}/api/v1/internal/ai-usage/log"
-    headers = {"X-Internal-Key": INTERNAL_API_KEY}
+    # Read at call time so gunicorn worker always picks up the deployed .env values
+    nestjs_url = os.getenv('NESTJS_INTERNAL_URL', '') or _NESTJS_BASE_URL
+    api_key = os.getenv('INTERNAL_API_KEY', '') or _INTERNAL_API_KEY
+    if not nestjs_url:
+        logger.error("AI usage log skipped: NESTJS_INTERNAL_URL is not set (feature=%s)", feature_id)
+        return
+    url = f"{nestjs_url}/api/v1/internal/ai-usage/log"
+    headers = {"X-Internal-Key": api_key}
     last_err = None
     for attempt in range(3):
         try:
@@ -78,7 +84,7 @@ def log_ai_usage_sync(
             last_err = e
             if attempt < 2:
                 time.sleep(2 ** attempt)  # 1s, 2s
-    logger.warning("AI usage logging failed after 3 attempts (non-fatal): %s", last_err)
+    logger.error("AI usage logging failed after 3 attempts — url=%s feature=%s err=%s", url, feature_id, last_err)
 
 
 def log_usage(
