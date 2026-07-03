@@ -70,6 +70,35 @@ from .base import ai_call, ai_call_text, get_llm
 
 logger = logging.getLogger("ai_services.llm")
 
+_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    re.IGNORECASE,
+)
+
+def _resolve_institute_id(request) -> str:
+    """
+    Return the school's UUID for usage attribution.
+
+    Precedence:
+      1. request.institute_id when it already looks like a UUID
+         (middleware correctly resolved it — e.g. is_service_account=True)
+      2. X-Tenant-ID header (always the NestJS school UUID; safe fallback
+         when middleware fell back to slug because is_service_account=False)
+      3. raw request.institute_id as-is (could be a slug — NestJS will reject
+         invalid UUID, but at least the event is logged)
+    """
+    mid = getattr(request, "institute_id", "") or ""
+    if _UUID_RE.match(mid):
+        return mid
+    xtid = request.headers.get("X-Tenant-ID", "").strip()
+    if xtid and _UUID_RE.match(xtid):
+        logger.warning(
+            "institute_id from middleware (%r) is not a UUID; using X-Tenant-ID (%s) instead",
+            mid, xtid,
+        )
+        return xtid
+    return mid or "unknown"
+
 
 @api_view(["POST"])
 def search_educational_images(request):
@@ -2770,7 +2799,7 @@ def resolve_doubt(request):
 
 
 
-    institute_id = getattr(request, "institute_id", "default")
+    institute_id = _resolve_institute_id(request)
     user_id = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
 
 
@@ -3219,7 +3248,7 @@ def ocr_doubt_image(request):
         return Response({"error": "Missing imageUrl"}, status=400)
     purpose = (request.data.get("purpose") or "doubt").strip().lower()
     is_grading = purpose in ("grading", "mock", "assessment", "mock_test", "answer")
-    institute_id_ocr = getattr(request, "institute_id", "default")
+    institute_id_ocr = _resolve_institute_id(request)
     user_id_ocr = request.data.get('userId') or request.data.get('user_id') or ''
     if is_grading:
         text = _transcribe_exam_answer_with_vision(image_url)
@@ -3266,7 +3295,7 @@ def start_tutor_session(request):
 
 
 
-    institute_id = getattr(request, "institute_id", "default")
+    institute_id = _resolve_institute_id(request)
     user_id = data.get('userId') or data.get('user_id') or student_id or ''
     context = data.get("context", "")
     vertical = getattr(request, "vertical", "coaching")
@@ -3370,7 +3399,7 @@ def continue_tutor_session(request):
 
 
 
-    institute_id = getattr(request, "institute_id", "default")
+    institute_id = _resolve_institute_id(request)
     user_id = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     vertical = getattr(request, "vertical", "coaching")
     template = get_template("tutor_continue", vertical)
@@ -3492,7 +3521,7 @@ def generate_stt_notes(request):
     language = data.get("language", "hi")
     logger.info("generate_stt_notes | audio_url=%s | language=%s", audio_url, language)
     _t0 = _time.perf_counter()
-    institute_id_stt = getattr(request, "institute_id", "default")
+    institute_id_stt = _resolve_institute_id(request)
     user_id_stt = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
 
 
@@ -3560,12 +3589,12 @@ def generate_stt_notes(request):
         raw_transcript,
         data.get("topicId", ""),
         language,
-        getattr(request, "institute_id", "default"),
+        _resolve_institute_id(request),
     )
 
 
 
-    institute_id = getattr(request, "institute_id", "default")
+    institute_id = _resolve_institute_id(request)
     notes_markdown, notes_meta = _generate_comprehensive_notes(
         english_transcript,
         data.get("topicId", ""),
@@ -3669,7 +3698,7 @@ def stt_transcribe_only(request):
 
     language = data.get("language", "hi")
     topic_id = data.get("topicId", "")
-    institute_id_stt2 = getattr(request, "institute_id", "default")
+    institute_id_stt2 = _resolve_institute_id(request)
     user_id_stt2 = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     logger.info("stt_transcribe_only | url=%s | language=%s", audio_url, language)
     _t0 = _time.perf_counter()
@@ -4161,7 +4190,7 @@ def generate_quiz_questions(request):
 
 
 
-    institute_id = getattr(request, "institute_id", "default")
+    institute_id = _resolve_institute_id(request)
     user_id_quiz = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     lecture_title = data.get("lectureTitle", "Lecture")
     topic_id = data.get("topicId", "")
@@ -4378,7 +4407,7 @@ def translate_text(request):
 
 
 
-    institute_id = getattr(request, "institute_id", "default")
+    institute_id = _resolve_institute_id(request)
     user_id_tr = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     logger.info(
         "translate_text (Sarvam) | target=%s | chars=%d | institute=%s",
@@ -5108,7 +5137,7 @@ def generate_topic_content(request):
 
 
 
-    institute_id = getattr(request, "institute_id", "default")
+    institute_id = _resolve_institute_id(request)
     user_id_tc = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     logger.info(
         "generate_topic_content | course=%s | exam=%s | subject=%s | topic=%s | type=%s",
@@ -5279,7 +5308,7 @@ def generate_notes_from_transcript(request):
     skip_image_generation = bool(
         data.get("skipImageGeneration", False) or data.get("skip_image_generation", False)
     )
-    institute_id = getattr(request, "institute_id", "default")
+    institute_id = _resolve_institute_id(request)
     user_id_nft = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
 
 
@@ -5573,7 +5602,7 @@ def generate_notes_from_youtube(request):
     video_id = (data.get("videoId") or data.get("video_id") or "").strip()
     topic_id = data.get("topicId", "")
     language = data.get("language", "en")
-    institute_id = getattr(request, "institute_id", "default")
+    institute_id = _resolve_institute_id(request)
     user_id_nfy = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
 
 

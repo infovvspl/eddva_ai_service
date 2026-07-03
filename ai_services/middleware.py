@@ -259,12 +259,13 @@ class TenantAuthMiddleware:
 
         # Attach tenant context to request
         request.institute = institute
-        # When the original API key belongs to a service account (NestJS ai-bridge),
-        # X-Tenant-ID IS the NestJS school UUID — use it directly so ai_usage_daily
-        # rows are keyed by the same UUID the analytics dashboard queries.
-        # Fall back to external_tenant_id → slug for direct institute-key requests.
+        # X-Tenant-ID is always the NestJS school UUID when sent by the ai-bridge.
+        # Use it directly for usage attribution (ai_usage_daily institute_id) so
+        # analytics queries by school UUID match what's stored.
+        # The service-account check above handles DATA-SERVING context only;
+        # usage attribution is safe to key by X-Tenant-ID regardless of key type.
         nest_tid = request.headers.get("X-Tenant-ID", "")
-        if api_key_is_service_account and nest_tid:
+        if nest_tid:
             request.institute_id = nest_tid
         else:
             request.institute_id = str(institute.external_tenant_id or institute.slug)
