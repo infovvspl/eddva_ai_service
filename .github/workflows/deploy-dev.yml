@@ -79,7 +79,7 @@ jobs:
             printf 'DB_HOST=%s\n' "$DB_HOST" >> .env
             printf 'DB_PORT=%s\n' "$DB_PORT" >> .env
             printf 'CORS_ALLOWED_ORIGINS=%s\n' "$CORS_ALLOWED_ORIGINS" >> .env
-            printf 'NESTJS_INTERNAL_URL=https://dev-api.eddva.in\n' >> .env
+            printf 'NESTJS_INTERNAL_URL=http://localhost:3001\n' >> .env
             printf 'INTERNAL_API_KEY=edva_internal_ai_log_2026\n' >> .env
 
             # Install dependencies (requirements.txt has gunicorn, groq, django-cors-headers)
