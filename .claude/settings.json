@@ -11,7 +11,14 @@
       "Bash(echo \"Server PID: $!\")",
       "Bash(curl -s -X POST http://localhost:8000/test/generate/ -H 'Content-Type: application/json' -H 'X-API-Key: apexiq-dev-secret-key-2026' -d '{\"topic\": \"Newton Laws of Motion\", \"difficulty\": \"medium\", \"num_questions\": 3}')",
       "Bash(pkill -f \"manage.py runserver\")",
-      "Bash(python -c \"import sys,json; print\\(json.dumps\\(json.load\\(sys.stdin\\), indent=2\\)\\)\")"
+      "Bash(python -c \"import sys,json; print\\(json.dumps\\(json.load\\(sys.stdin\\), indent=2\\)\\)\")",
+      "Bash(C=\"c:/Users/HP/Desktop/VVSPL/AI_Study\"; echo \"===== DATABASES config =====\"; sed -n '/DATABASES = {/,/^}/p' \"$C/ai_study_project/settings.py\" | head -25; echo \"\"; echo \"===== Redis prod requirement block \\(around line 155-185\\) =====\"; sed -n '155,190p' \"$C/ai_study_project/settings.py\")",
+      "Bash(xargs echo \"images on disk:\")",
+      "Bash(python -m py_compile ai_services/views/evaluate.py ai_services/solver/_sandbox_runner.py)",
+      "Bash(python manage.py test ai_services.tests_verticals ai_services.tests_content_vertical -v2)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\HP\\Desktop\\VVSPL\\AI_Study\\ai_study_project"
     ]
   }
 }

@@ -242,79 +242,78 @@ class ScientificSolver:
                 return f"Error fetching NIST data: {str(e)}"
 
     def _execute_code(self, code: str) -> Dict[str, Any]:
-        """Executes Python code in a restricted environment and captures output."""
-        stdout_capture = io.StringIO()
-        results = {}
-        
-        # Prepend standard imports to ensure they are available even if LLM forgets
-        full_code = (
-            "import numpy as np\n"
-            "import sympy as sp\n"
-            "import matplotlib.pyplot as plt\n"
-            "from scipy import integrate, optimize, stats\n"
-            "from rdkit import Chem\n"
-            "from rdkit.Chem import Descriptors, AllChem\n"
-            "import pint\n"
-            "import pubchempy as pcp\n"
-            "ureg = pint.UnitRegistry()\n"
-            "from ai_services.solver.scientific_solver import RuleBasedChiralDetector as ChiralDetector, StepValidator, OpenBabelFallback as OpenBabel, MaximaFallback as Maxima\n"
-            "\n"
-        ) + code
-        
-        # Prepare environment
-        exec_globals = {
-            "__builtins__": __builtins__,
-            "print": lambda *args: stdout_capture.write(" ".join(map(str, args)) + "\n"),
+        """
+        Execute LLM-generated Python in an ISOLATED subprocess (security boundary
+        — see docs/PRODUCTION_AUDIT.md C1). The child gets a hard wall-clock
+        timeout, a secret-stripped environment (no API keys / DB creds reachable),
+        and (on POSIX) CPU/memory/file-size rlimits. Any failure degrades to the
+        LLM path in solve(), exactly as before.
+
+        Disable entirely with SOLVER_EXEC_ENABLED=false.
+        """
+        import os
+        import sys
+        import subprocess
+
+        if os.getenv("SOLVER_EXEC_ENABLED", "true").lower() not in ("true", "1", "yes"):
+            return {"success": False, "stdout": "", "results": {}, "graphs": [],
+                    "error": "scientific solver code execution is disabled (SOLVER_EXEC_ENABLED=false)"}
+
+        timeout_s = int(os.getenv("SOLVER_EXEC_TIMEOUT", "15"))
+        # project root = .../ai_services/solver/scientific_solver.py -> up 3
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+        # Minimal, secret-free environment. Deliberately excludes GROQ_*, DB_*,
+        # REDIS_URL, SARVAM/GEMINI keys, etc. so exec'd code cannot exfiltrate them.
+        clean_env = {
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": base_dir,
+            "MPLBACKEND": "Agg",
+            "HOME": os.environ.get("HOME") or os.environ.get("TEMP") or "/tmp",
         }
-        
+        for _k in ("SYSTEMROOT", "TEMP", "TMP", "LD_LIBRARY_PATH"):
+            if os.environ.get(_k):
+                clean_env[_k] = os.environ[_k]
+
+        preexec = None
+        if os.name == "posix":
+            def _apply_limits():
+                import resource
+                cpu = timeout_s + 2
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+                mem = 2 * 1024 * 1024 * 1024  # 2 GB address space
+                resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
+                fsize = 50 * 1024 * 1024      # 50 MB max file write
+                resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
+                os.setsid()  # own process group so timeout kill takes children too
+            preexec = _apply_limits
+
         try:
-            # Clear any previous plots
-            plt.clf()
-            
-            # Execute
-            exec(full_code, exec_globals)
-            
-            # Capture variables defined in code (excluding builtins/modules)
-            excluded_keys = {"__builtins__", "print", "np", "sp", "plt", "integrate", "optimize", "stats", "Chem", "Descriptors", "AllChem", "pint", "pcp", "ureg"}
-            for k, v in exec_globals.items():
-                if k not in excluded_keys and not k.startswith("_"):
-                    # Only keep simple serializable types or convert to str
-                    try:
-                        # Attempt to check if it's a basic type
-                        if isinstance(v, (int, float, str, list, dict, bool, type(None))):
-                            json.dumps(v) # Test serialization
-                            results[k] = v
-                        else:
-                            results[k] = str(v)
-                    except:
-                        results[k] = str(v)
-
-            # Capture Matplotlib figures
-            figs_base64 = []
-            for i in plt.get_fignums():
-                fig = plt.figure(i)
-                buf = io.BytesIO()
-                fig.savefig(buf, format='png', bbox_inches='tight')
-                buf.seek(0)
-                img_str = base64.b64encode(buf.read()).decode('utf-8')
-                figs_base64.append(f"data:image/png;base64,{img_str}")
-                buf.close()
-
-            return {
-                "success": True,
-                "stdout": stdout_capture.getvalue(),
-                "results": results,
-                "graphs": figs_base64,
-                "error": None
-            }
+            proc = subprocess.run(
+                [sys.executable, "-m", "ai_services.solver._sandbox_runner"],
+                input=json.dumps({"code": code}),
+                capture_output=True, text=True,
+                timeout=timeout_s, cwd=base_dir, env=clean_env,
+                preexec_fn=preexec,
+            )
+        except subprocess.TimeoutExpired:
+            return {"success": False, "stdout": "", "results": {}, "graphs": [],
+                    "error": f"execution timed out after {timeout_s}s"}
         except Exception as e:
-            return {
-                "success": False,
-                "stdout": stdout_capture.getvalue(),
-                "results": results,
-                "graphs": [],
-                "error": f"{str(e)}\n{traceback.format_exc()}"
-            }
+            return {"success": False, "stdout": "", "results": {}, "graphs": [],
+                    "error": f"sandbox launch failed: {e}"}
+
+        from ai_services.solver._sandbox_runner import RESULT_SENTINEL
+        out = proc.stdout or ""
+        idx = out.rfind(RESULT_SENTINEL)
+        if idx == -1:
+            return {"success": False, "stdout": out, "results": {}, "graphs": [],
+                    "error": f"sandbox produced no result (rc={proc.returncode}): {(proc.stderr or '')[:500]}"}
+        try:
+            return json.loads(out[idx + len(RESULT_SENTINEL):])
+        except Exception as e:
+            return {"success": False, "stdout": out, "results": {}, "graphs": [],
+                    "error": f"could not parse sandbox result: {e}"}
 
     async def solve(self, question: str, mode: str = "detailed") -> Dict[str, Any]:
         """Main entry point: Generate code -> Execute -> Synthesize answer."""

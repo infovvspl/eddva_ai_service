@@ -174,15 +174,29 @@ REST_FRAMEWORK = {
 
 REDIS_URL = os.getenv("REDIS_URL", "")
 
-# Warn at settings-load time if Redis is missing in production
+# Redis is REQUIRED in production. Without it, response caching, per-tenant token
+# budget caps, and cross-worker concurrency limits all silently degrade to
+# per-worker in-memory state — caps become unenforced (billing/abuse risk) and
+# every worker re-pays the LLM. Fail loud instead of running mis-configured.
+#
+# Escape hatch: REDIS_OPTIONAL=true explicitly accepts the in-memory fallback
+# (e.g. a one-off single-worker box). Do NOT use it for real multi-worker traffic.
 if not REDIS_URL and not DEBUG:
-    import warnings
-    warnings.warn(
-        "REDIS_URL is not set in production. "
-        "AI response caching is disabled — every LLM call will cost money. "
-        "Set REDIS_URL=redis://localhost:6379 for significant cost savings.",
-        stacklevel=1,
-    )
+    if os.getenv("REDIS_OPTIONAL", "false").lower() in ("true", "1", "yes"):
+        import warnings
+        warnings.warn(
+            "REDIS_URL is not set and REDIS_OPTIONAL=true. Running on per-worker "
+            "in-memory fallback: token caps and concurrency limits are NOT enforced "
+            "globally and caching is disabled. Not safe for multi-worker production.",
+            stacklevel=1,
+        )
+    else:
+        raise RuntimeError(
+            "REDIS_URL environment variable is required in production. Redis backs "
+            "response caching, per-tenant token budgets, and cross-worker concurrency "
+            "limits. Set REDIS_URL=redis://localhost:6379 (or your endpoint). To run "
+            "without it on a single-worker box, set REDIS_OPTIONAL=true."
+        )
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 LOGGING = {

@@ -1,3 +1,11 @@
 .env
 __pycache__
 ai_study
+
+# Local dev database — never commit; prod uses Postgres
+db.sqlite3
+*.sqlite3
+
+# Generated media — belongs in S3, not git
+/data/generated_note_images/
+*.pyc

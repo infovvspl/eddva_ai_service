@@ -79,8 +79,8 @@ def evaluate_batch(request):
         try:
             log_usage(
                 institute_id=institute_id,
-                institute_type='school',
-                feature_id='in_video_quiz_generator',
+                institute_type=vertical,
+                feature_id='question_evaluator',
                 feature_category='teacher',
                 model_used=model,
                 latency_ms=int((time.time() - _start_time) * 1000),
@@ -100,14 +100,15 @@ def evaluate_batch(request):
     _log_usage_to_db(institute, institute_id, FEATURE, result, cache_hit=False, vertical=vertical)
 
     try:
+        _usage = result.get('usage', {}) if isinstance(result, dict) else {}
         log_usage(
             institute_id=institute_id,
-            institute_type='school',
-            feature_id='in_video_quiz_generator',
+            institute_type=vertical,
+            feature_id='question_evaluator',
             feature_category='teacher',
             model_used=result.get('model', model),
-            tokens_input=result.get('tokens_input', 0),
-            tokens_output=result.get('tokens_output', 0),
+            tokens_input=_usage.get('prompt_tokens', 0),
+            tokens_output=_usage.get('completion_tokens', 0),
             latency_ms=int((time.time() - _start_time) * 1000),
             success=True,
             user_id=user_id_ev,
