@@ -81,6 +81,7 @@ jobs:
             printf 'CORS_ALLOWED_ORIGINS=%s\n' "$CORS_ALLOWED_ORIGINS" >> .env
             printf 'NESTJS_INTERNAL_URL=http://localhost:3001\n' >> .env
             printf 'INTERNAL_API_KEY=edva_internal_ai_log_2026\n' >> .env
+            printf 'REDIS_OPTIONAL=true\n' >> .env
 
             # Install dependencies (requirements.txt has gunicorn, groq, django-cors-headers)
             venv/bin/pip install -r requirements.txt --quiet
