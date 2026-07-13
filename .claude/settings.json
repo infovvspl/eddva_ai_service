@@ -15,7 +15,12 @@
       "Bash(C=\"c:/Users/HP/Desktop/VVSPL/AI_Study\"; echo \"===== DATABASES config =====\"; sed -n '/DATABASES = {/,/^}/p' \"$C/ai_study_project/settings.py\" | head -25; echo \"\"; echo \"===== Redis prod requirement block \\(around line 155-185\\) =====\"; sed -n '155,190p' \"$C/ai_study_project/settings.py\")",
       "Bash(xargs echo \"images on disk:\")",
       "Bash(python -m py_compile ai_services/views/evaluate.py ai_services/solver/_sandbox_runner.py)",
-      "Bash(python manage.py test ai_services.tests_verticals ai_services.tests_content_vertical -v2)"
+      "Bash(python manage.py test ai_services.tests_verticals ai_services.tests_content_vertical -v2)",
+      "Bash(xargs echo \"H2 guard in origin/dev:\")",
+      "Bash(xargs echo \"M3 telemetry in origin/dev:\")",
+      "Bash(xargs echo \"H4 gitignore in origin/dev:\")",
+      "Bash(grep -cE \"^db.sqlite3$|generated_note_images/.*png\")",
+      "Bash(git commit *)"
     ],
     "additionalDirectories": [
       "c:\\Users\\HP\\Desktop\\VVSPL\\AI_Study\\ai_study_project"
