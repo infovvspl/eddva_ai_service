@@ -56,6 +56,10 @@ jobs:
             # no tenant can be seeded, so every request 401s. Default it rather than
             # writing a blank. (ALLOWED_HOSTS/CORS are hardcoded below, so they're safe.)
             AI_API_KEY_VALUE="${AI_API_KEY:-apexiq-dev-secret-key-2026}"
+            # Export the resolved value back over the (possibly empty) forwarded one:
+            # load_dotenv() will not override an already-set env var, even an empty one,
+            # so an empty AI_API_KEY in the environment would shadow what we write to .env.
+            export AI_API_KEY="$AI_API_KEY_VALUE"
 
             printf 'GROQ_API_KEY=%s\n'          "$GROQ_API_KEY"        > .env
             # Optional: comma-separated list of Groq keys for rotation (the client

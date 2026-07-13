@@ -75,6 +75,17 @@ jobs:
             CORS_VALUE="${CORS_ALLOWED_ORIGINS:-https://dev.eddva.in,https://dev-api.eddva.in}"
             AI_API_KEY_VALUE="${AI_API_KEY:-apexiq-dev-secret-key-2026}"
 
+            # CRITICAL: export the RESOLVED values back over the empty ones.
+            # ssh-action exports every var listed in `envs:` — including secrets that
+            # are unset, which arrive as EMPTY strings. load_dotenv() does not override
+            # an already-set env var (even an empty one), so an empty ALLOWED_HOSTS in
+            # the environment SHADOWS the value we just wrote to .env: `migrate` then
+            # dies with "ALLOWED_HOSTS is empty in production", and gunicorn would boot
+            # the same way because pm2 inherits this shell's environment.
+            export ALLOWED_HOSTS="$ALLOWED_HOSTS_VALUE"
+            export CORS_ALLOWED_ORIGINS="$CORS_VALUE"
+            export AI_API_KEY="$AI_API_KEY_VALUE"
+
             # Write .env (printf avoids leading-whitespace issues from heredoc)
             printf 'GROQ_API_KEY=%s\n' "$GROQ_API_KEY" > .env
             # Optional: comma-separated list of Groq keys for rotation (the client
