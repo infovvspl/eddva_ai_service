@@ -126,6 +126,52 @@ class SchoolFeatureGatingTests(SimpleTestCase):
             self.assertTrue(coaching.allows_feature(f))
 
 
+class SolverFormulaKnowledgeBaseIsCoachingOnlyTests(SimpleTestCase):
+    """
+    The formula KB is built from JEE/NEET formula sheets (data/knowledge_base/).
+    Grounding a Class 1-10 answer with IIT-JEE formulae would push it above grade
+    level, so retrieval must be skipped for the school vertical.
+    """
+
+    def _solve_and_capture(self, vertical):
+        """Run solve() far enough to see whether the KB was queried."""
+        from unittest.mock import patch
+        import asyncio
+
+        calls = []
+
+        class _FakeLLM:
+            def complete(self, system_prompt, user_prompt, **kw):
+                calls.append(system_prompt)
+                # invalid python twice -> solve() gives up quickly, no sandbox run
+                return {"content": "not python {", "model": "m", "latency_ms": 1,
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+        retrieved = []
+
+        def _fake_retrieve(query, top_k=3):
+            retrieved.append(query)
+            return [{"text": "F = ma (JEE sheet)", "source": "IIT-JEE-Formula-PCM.pdf"}]
+
+        import ai_services.solver.scientific_solver as ss
+        with patch.object(ss.formula_retriever, "retrieve", _fake_retrieve):
+            solver = ss.ScientificSolver.__new__(ss.ScientificSolver)
+            solver.llm = _FakeLLM()
+            asyncio.run(solver.solve("A ball is thrown upward", "detailed", vertical))
+        return retrieved, calls
+
+    def test_school_does_not_query_the_jee_formula_bank(self):
+        retrieved, calls = self._solve_and_capture("school")
+        self.assertEqual(retrieved, [], "school must NOT be grounded with JEE/NEET formulae")
+        self.assertIn("Classes 1-10", calls[0])
+        self.assertNotIn("VERIFIED FORMULAS FROM KNOWLEDGE BASE", calls[0])
+
+    def test_coaching_does_query_the_formula_bank(self):
+        retrieved, calls = self._solve_and_capture("coaching")
+        self.assertEqual(len(retrieved), 1, "coaching should use the formula KB")
+        self.assertIn("VERIFIED FORMULAS FROM KNOWLEDGE BASE", calls[0])
+
+
 class SchoolifyUnitTests(SimpleTestCase):
     def test_neutralises_common_phrases(self):
         out = schoolify("You are a tutor for JEE/NEET students preparing for competitive exams.")

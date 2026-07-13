@@ -315,20 +315,33 @@ class ScientificSolver:
             return {"success": False, "stdout": out, "results": {}, "graphs": [],
                     "error": f"could not parse sandbox result: {e}"}
 
-    async def solve(self, question: str, mode: str = "detailed") -> Dict[str, Any]:
+    async def solve(self, question: str, mode: str = "detailed", vertical: str = "coaching") -> Dict[str, Any]:
         """Main entry point: Generate code -> Execute -> Synthesize answer."""
-        
-        # Step 1.1: Retrieve relevant formulas from Knowledge Base (PDFs)
-        kb_formulas = formula_retriever.retrieve(question)
+
+        # Step 1.1: Retrieve relevant formulas from the Knowledge Base (PDFs).
+        #
+        # The KB is built from JEE/NEET formula sheets (see data/knowledge_base/:
+        # IIT-JEE-Formula-PCM, NEET/JEE maths formulae, ...). Grounding a Class 1-10
+        # answer with IIT-JEE formulae would push it above grade level, so the KB is
+        # used for the coaching vertical only. School answers are solved from first
+        # principles at board level instead.
+        is_school = (vertical or "").lower() == "school"
+        kb_formulas = [] if is_school else formula_retriever.retrieve(question)
         formula_context = ""
         if kb_formulas:
             formula_context = "\n\nVERIFIED FORMULAS FROM KNOWLEDGE BASE:\n"
             for f in kb_formulas:
                 formula_context += f"- {f['text']} (Source: {f['source']})\n"
-        
+
         # Step 1.2: Generate Solution Code
+        audience = (
+            "a school tutor app for Classes 1-10 (CBSE/ICSE/State board). Keep the "
+            "method at board level — no competitive-exam shortcuts or advanced tricks"
+            if is_school else
+            "a JEE/NEET/CBSE tutor app"
+        )
         system_prompt = (
-            "You are a Scientific Code Generator for a JEE/NEET/CBSE tutor app. "
+            f"You are a Scientific Code Generator for {audience}. "
             "Your goal is to write Python code that solves a scientific or mathematical question with 100% accuracy.\n\n"
             "PRE-IMPORTED MODULES (already available, do NOT import them):\n"
             "- np: NumPy\n"

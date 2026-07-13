@@ -41,6 +41,7 @@ class FormulaRetriever:
         self.index = None
         self.chunks = []
         self.model = None
+        self._model_loaded = False
 
         if not _KB_AVAILABLE:
             logger.info(
@@ -48,17 +49,31 @@ class FormulaRetriever:
                 "runs; it just won't be grounded with retrieved formulas.",
                 _KB_IMPORT_ERROR,
             )
-            return
 
+    def _ensure_model(self) -> bool:
+        """
+        Load the embedding model LAZILY, on first retrieval.
+
+        This module is a singleton imported by scientific_solver, which is in turn
+        imported by the sandbox subprocess on EVERY solver run. Loading a
+        SentenceTransformer in __init__ would make every sandbox launch (and every
+        gunicorn boot) pay for a ~90 MB model it usually never uses. Defer it.
+        """
+        if self._model_loaded:
+            return self.model is not None
+        self._model_loaded = True
+
+        if not _KB_AVAILABLE:
+            return False
         try:
             self.model = SentenceTransformer('all-MiniLM-L6-v2')
         except Exception as e:
             logger.warning("Could not load embedding model (%s) — formula KB disabled.", e)
             self.model = None
-            return
+            return False
 
-        # Load index if exists
         self.load_index()
+        return True
 
     @property
     def available(self) -> bool:
@@ -138,8 +153,10 @@ class FormulaRetriever:
 
         Returns [] when the knowledge base is unavailable (extras not installed,
         or no index built) — the solver then runs without formula grounding
-        rather than failing.
+        rather than failing. The embedding model is loaded here, on first use.
         """
+        if not self._ensure_model():
+            return []
         if not self.available or not self.chunks:
             return []
 

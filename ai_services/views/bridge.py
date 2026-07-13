@@ -2845,8 +2845,11 @@ def resolve_doubt(request):
         from ai_services.solver.scientific_solver import scientific_solver
 
         if subject in ("physics", "chemistry", "mathematics", "math", "science"):
-            logger.info("[DOUBT RESOLVER] Routing to scientific solver for %s/%s", subject, qtype)
-            scientific_res = async_to_sync(scientific_solver.solve)(combined_question, mode)
+            logger.info("[DOUBT RESOLVER] Routing to scientific solver for %s/%s (vertical=%s)", subject, qtype, vertical)
+            # Pass the vertical: the solver's formula knowledge base is built from
+            # JEE/NEET formula sheets, so it is used for coaching only — a Class 1-10
+            # answer must not be grounded with IIT-JEE formulae.
+            scientific_res = async_to_sync(scientific_solver.solve)(combined_question, mode, vertical)
             if scientific_res and ("brief" in scientific_res or "detailed" in scientific_res):
                 parsed = scientific_res
                 solve_result = {"model": "scientific_solver"}

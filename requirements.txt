@@ -74,9 +74,15 @@ fastapi==0.129.0
 uvicorn==0.41.0
 python-multipart==0.0.22
 
-# ── Optional: formula knowledge base for the scientific solver ────────────────
-# NOT installed on the box today, so the solver runs without formula grounding
-# (ai_services/solver/formula_retriever.py degrades gracefully). torch and
-# transformers are already present, so enabling it is cheap — uncomment to
-# ground the solver with formulas retrieved from the indexed PDFs:
-# sentence-transformers==3.0.1
+# ── Formula knowledge base for the scientific solver ──────────────────────────
+# Grounds the solver with formulas retrieved from the indexed PDFs in
+# data/knowledge_base (IIT-JEE / NEET formula sheets), improving accuracy on
+# coaching doubts. torch + transformers are already present, so this is a small
+# addition. The embedding model is loaded LAZILY (first retrieval only), so it
+# costs nothing at boot or in the solver's sandbox subprocess.
+#
+# NOTE: the KB is used for the COACHING vertical only — grounding a Class 1-10
+# answer with IIT-JEE formulae would push it above grade level (see
+# scientific_solver.solve). If it cannot be loaded, formula_retriever degrades
+# gracefully and the solver still runs.
+sentence-transformers==3.0.1
