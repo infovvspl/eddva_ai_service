@@ -23,7 +23,13 @@
       "Bash(git commit *)",
       "Bash(MSYS_NO_PATHCONV=1 git show origin/main:.github/workflows/deploy.yml)",
       "Bash(MSYS_NO_PATHCONV=1 git show origin/dev:.github/workflows/deploy.yml)",
-      "Bash(xargs echo \"middleware api_key refs:\")"
+      "Bash(xargs echo \"middleware api_key refs:\")",
+      "Bash(xargs echo \"dev vs origin/dev:\")",
+      "Bash(xargs echo \"main vs origin/main:\")",
+      "Bash(MSYS_NO_PATHCONV=1 git show main:.github/workflows/deploy.yml)",
+      "Bash(python manage.py test ai_services.tests_concurrency -v2)",
+      "Bash(grep -E \"ok$|FAIL|ERROR|Ran |OK|test_\")",
+      "Bash(python manage.py test ai_services.tests_verticals ai_services.tests_content_vertical ai_services.tests_concurrency -v1)"
     ],
     "additionalDirectories": [
       "c:\\Users\\HP\\Desktop\\VVSPL\\AI_Study\\ai_study_project"
