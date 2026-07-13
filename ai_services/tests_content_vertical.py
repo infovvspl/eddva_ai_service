@@ -87,7 +87,9 @@ class ContentVerticalContractTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         user_prompt = sink["user_prompt"]
         self.assertIn("PYQ Practice", user_prompt)
-        self.assertIn("Multi-correct MCQ (1)", user_prompt)
+        # Coaching PYQ must include multi-correct MCQs (a JEE-pattern feature).
+        # Don't couple to the exact count — it's derived (max(1, round(q_count*0.20))).
+        self.assertIn("Multi-correct MCQ (", user_prompt)
         self.assertNotIn("school Board Exam", user_prompt)
 
     def test_school_dpp_and_pyq_prompts(self):

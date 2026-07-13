@@ -16,8 +16,14 @@
       "Bash(xargs echo \"images on disk:\")",
       "Bash(python -m py_compile ai_services/views/evaluate.py ai_services/solver/_sandbox_runner.py)",
       "Bash(python manage.py test ai_services.tests_verticals ai_services.tests_content_vertical -v2)",
-      "Bash(echo \"=== deploy.yml: server path + how .env is written ===\")",
-      "Bash(grep -niE 'cd |cwd|path|eddva_ai_service|ai-service|\\\\.env|REDIS|secrets\\\\.|EnvironmentFile|cat >|tee' c:/Users/HP/Desktop/VVSPL/AI_Study/.github/workflows/deploy.yml)"
+      "Bash(xargs echo \"H2 guard in origin/dev:\")",
+      "Bash(xargs echo \"M3 telemetry in origin/dev:\")",
+      "Bash(xargs echo \"H4 gitignore in origin/dev:\")",
+      "Bash(grep -cE \"^db.sqlite3$|generated_note_images/.*png\")",
+      "Bash(git commit *)",
+      "Bash(MSYS_NO_PATHCONV=1 git show origin/main:.github/workflows/deploy.yml)",
+      "Bash(MSYS_NO_PATHCONV=1 git show origin/dev:.github/workflows/deploy.yml)",
+      "Bash(xargs echo \"middleware api_key refs:\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\HP\\Desktop\\VVSPL\\AI_Study\\ai_study_project"
