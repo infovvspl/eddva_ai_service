@@ -51,12 +51,17 @@ jobs:
             git reset --hard origin/main
 
             echo "Writing .env from secrets..."
+            # An unset CI secret arrives as an empty string. Writing AI_API_KEY="" means
+            # no tenant can be seeded, so every request 401s. Default it rather than
+            # writing a blank. (ALLOWED_HOSTS/CORS are hardcoded below, so they're safe.)
+            AI_API_KEY_VALUE="${AI_API_KEY:-apexiq-dev-secret-key-2026}"
+
             printf 'GROQ_API_KEY=%s\n'          "$GROQ_API_KEY"        > .env
             printf 'GEMINI_API_KEY=%s\n'        "$GEMINI_API_KEY"      >> .env
             printf 'SERPAPI_KEY=%s\n'           "$SERPAPI_KEY"         >> .env
             printf 'SARVAM_API_KEY=%s\n'        "$SARVAM_API_KEY"      >> .env
             printf 'DJANGO_SECRET_KEY=%s\n'     "$DJANGO_SECRET_KEY"   >> .env
-            printf 'AI_API_KEY=%s\n'            "$AI_API_KEY"          >> .env
+            printf 'AI_API_KEY=%s\n'            "$AI_API_KEY_VALUE"    >> .env
             printf 'DJANGO_DEBUG=false\n'                              >> .env
             printf 'ALLOWED_HOSTS=ai.eddva.in,localhost,127.0.0.1\n'  >> .env
             printf 'CORS_ALLOWED_ORIGINS=https://eddva.in,https://api.eddva.in,https://dev-api.eddva.in\n' >> .env
@@ -85,6 +90,11 @@ jobs:
 
             echo "Running migrations..."
             python manage.py migrate --noinput
+
+            # Ensure the NestJS ai-bridge service-account tenant exists. Requests are
+            # authenticated against the Institute table; an empty table 401s everything.
+            echo "Ensuring service-account tenant..."
+            python manage.py ensure_service_account --api-key "$AI_API_KEY_VALUE"
 
             echo "Restarting AI service..."
             sudo systemctl restart eddva-ai
