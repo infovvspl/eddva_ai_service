@@ -36,13 +36,17 @@ jobs:
           DB_HOST: ${{ secrets.AI_DB_HOST }}
           DB_PORT: ${{ secrets.AI_DB_PORT }}
           CORS_ALLOWED_ORIGINS: ${{ secrets.DEV_AI_CORS_ORIGINS }}
-          REDIS_URL: ${{ secrets.DEV_REDIS_URL }}
+          # NOTE: forwarded as DEV_REDIS_URL, NOT REDIS_URL. If the secret is unset,
+          # ssh-action exports the var as an EMPTY string, and load_dotenv() will not
+          # override an already-set (even empty) env var — which would shadow the
+          # REDIS_URL we write into .env and crash settings.py.
+          DEV_REDIS_URL: ${{ secrets.DEV_REDIS_URL }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 25m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,REDIS_URL
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL
           script: |
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -85,7 +89,10 @@ jobs:
             # Redis is REQUIRED (response cache, token caps, cross-worker concurrency).
             # Dev uses Redis DB 1 so it never shares cache keys with prod (DB 0).
             # Replaces the old REDIS_OPTIONAL=true, which silently disabled caching.
-            printf 'REDIS_URL=%s\n' "${REDIS_URL:-redis://127.0.0.1:6379/1}" >> .env
+            REDIS_URL_VALUE="${DEV_REDIS_URL:-redis://127.0.0.1:6379/1}"
+            printf 'REDIS_URL=%s\n' "$REDIS_URL_VALUE" >> .env
+            # Export it too, so migrate/gunicorn see it even before load_dotenv runs.
+            export REDIS_URL="$REDIS_URL_VALUE"
 
             # Install dependencies (requirements.txt has gunicorn, groq, django-cors-headers)
             venv/bin/pip install -r requirements.txt --quiet
