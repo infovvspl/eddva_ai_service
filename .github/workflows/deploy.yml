@@ -21,16 +21,14 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
-          DJANGO_SECRET_KEY: ${{ secrets.PROD_DJANGO_SECRET_KEY }}
-          ALLOWED_HOSTS: ${{ secrets.PROD_AI_ALLOWED_HOSTS }}
-          AI_API_KEY: ${{ secrets.PROD_AI_API_KEY }}
+          DJANGO_SECRET_KEY: ${{ secrets.PROD_DJANGO_SECRET_KEY || secrets.DEV_DJANGO_SECRET_KEY }}
+          AI_API_KEY: ${{ secrets.PROD_AI_API_KEY || secrets.DEV_AI_API_KEY }}
           DB_ENGINE: ${{ secrets.AI_DB_ENGINE }}
-          DB_NAME: ${{ secrets.PROD_AI_DB_NAME }}
+          DB_NAME: ${{ secrets.PROD_AI_DB_NAME || secrets.DEV_AI_DB_NAME }}
           DB_USER: ${{ secrets.AI_DB_USER }}
           DB_PASSWORD: ${{ secrets.AI_DB_PASSWORD }}
           DB_HOST: ${{ secrets.AI_DB_HOST }}
           DB_PORT: ${{ secrets.AI_DB_PORT }}
-          CORS_ALLOWED_ORIGINS: ${{ secrets.PROD_AI_CORS_ORIGINS }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
           # NOTE: forwarded as PROD_REDIS_URL, NOT REDIS_URL. If the secret is unset,
           # ssh-action exports the var as an EMPTY string, and load_dotenv() will not
@@ -38,11 +36,11 @@ jobs:
           # REDIS_URL we write into .env and crash settings.py.
           PROD_REDIS_URL: ${{ secrets.REDIS_URL }}
         with:
-          host: ${{ secrets.PROD_AI_EC2_HOST }}
-          username: ${{ secrets.PROD_AI_EC2_USER }}
-          key: ${{ secrets.PROD_AI_EC2_SSH_KEY }}
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 20m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,INTERNAL_API_KEY,PROD_REDIS_URL
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,INTERNAL_API_KEY,PROD_REDIS_URL
           script: |
             set -e
             AI_DIR=/home/ubuntu/eddva_ai_service
@@ -53,32 +51,32 @@ jobs:
             git reset --hard origin/main
 
             echo "Writing .env from secrets..."
-            printf 'GROQ_API_KEY=%s\n'        "$GROQ_API_KEY"        > .env
-            printf 'GEMINI_API_KEY=%s\n'      "$GEMINI_API_KEY"      >> .env
-            printf 'SERPAPI_KEY=%s\n'         "$SERPAPI_KEY"         >> .env
-            printf 'SARVAM_API_KEY=%s\n'      "$SARVAM_API_KEY"      >> .env
-            printf 'DJANGO_SECRET_KEY=%s\n'   "$DJANGO_SECRET_KEY"   >> .env
-            printf 'ALLOWED_HOSTS=%s\n'       "$ALLOWED_HOSTS"       >> .env
-            printf 'AI_API_KEY=%s\n'          "$AI_API_KEY"          >> .env
-            printf 'DJANGO_DEBUG=false\n'                            >> .env
-            printf 'DB_ENGINE=%s\n'           "$DB_ENGINE"           >> .env
-            printf 'DB_NAME=%s\n'             "$DB_NAME"             >> .env
-            printf 'DB_USER=%s\n'             "$DB_USER"             >> .env
-            printf 'DB_PASSWORD=%s\n'         "$DB_PASSWORD"         >> .env
-            printf 'DB_HOST=%s\n'             "$DB_HOST"             >> .env
-            printf 'DB_PORT=%s\n'             "$DB_PORT"             >> .env
-            printf 'CORS_ALLOWED_ORIGINS=%s\n' "$CORS_ALLOWED_ORIGINS" >> .env
-            printf 'NESTJS_INTERNAL_URL=http://localhost:3000\n'    >> .env
-            printf 'INTERNAL_API_KEY=%s\n'    "$INTERNAL_API_KEY"    >> .env
+            printf 'GROQ_API_KEY=%s\n'          "$GROQ_API_KEY"        > .env
+            printf 'GEMINI_API_KEY=%s\n'        "$GEMINI_API_KEY"      >> .env
+            printf 'SERPAPI_KEY=%s\n'           "$SERPAPI_KEY"         >> .env
+            printf 'SARVAM_API_KEY=%s\n'        "$SARVAM_API_KEY"      >> .env
+            printf 'DJANGO_SECRET_KEY=%s\n'     "$DJANGO_SECRET_KEY"   >> .env
+            printf 'AI_API_KEY=%s\n'            "$AI_API_KEY"          >> .env
+            printf 'DJANGO_DEBUG=false\n'                              >> .env
+            printf 'ALLOWED_HOSTS=ai.eddva.in,localhost,127.0.0.1\n'  >> .env
+            printf 'CORS_ALLOWED_ORIGINS=https://eddva.in,https://api.eddva.in,https://dev-api.eddva.in\n' >> .env
+            printf 'DB_ENGINE=%s\n'             "$DB_ENGINE"           >> .env
+            printf 'DB_NAME=%s\n'               "$DB_NAME"             >> .env
+            printf 'DB_USER=%s\n'               "$DB_USER"             >> .env
+            printf 'DB_PASSWORD=%s\n'           "$DB_PASSWORD"         >> .env
+            printf 'DB_HOST=%s\n'               "$DB_HOST"             >> .env
+            printf 'DB_PORT=%s\n'               "$DB_PORT"             >> .env
+            printf 'NESTJS_INTERNAL_URL=http://localhost:3000\n'      >> .env
+            printf 'INTERNAL_API_KEY=%s\n'      "$INTERNAL_API_KEY"    >> .env
             # Redis is REQUIRED — it backs the response cache, per-tenant token caps
             # and cross-worker concurrency limits. Redis runs on this box; prod uses
-            # DB 0 (dev uses DB 1) so the two never share cache keys. Point REDIS_URL
-            # at a managed Redis via the repo secret to override.
-            # (Setting this replaces the old REDIS_OPTIONAL=true escape hatch, which
-            #  silently disabled caching and left token caps unenforced.)
+            # DB 0 (dev uses DB 1) so the two never share cache keys. Override with
+            # the REDIS_URL repo secret to point at a managed Redis.
+            # (Replaces the old REDIS_OPTIONAL=true escape hatch, which silently
+            #  disabled caching and left per-tenant token caps unenforced.)
             REDIS_URL_VALUE="${PROD_REDIS_URL:-redis://127.0.0.1:6379/0}"
-            printf 'REDIS_URL=%s\n' "$REDIS_URL_VALUE"                 >> .env
-            # Export it too, so migrate/gunicorn see it even before load_dotenv runs.
+            printf 'REDIS_URL=%s\n'             "$REDIS_URL_VALUE"     >> .env
+            # Export too, so migrate/gunicorn see it regardless of load_dotenv ordering.
             export REDIS_URL="$REDIS_URL_VALUE"
 
             echo "Installing Python dependencies..."

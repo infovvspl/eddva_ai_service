@@ -424,8 +424,9 @@ class LLMClient:
                     )
 
             # All keys failed this round — short wait then try again.
+            # Cap at 5s to avoid blocking a gunicorn worker for too long.
             if round_num < 2:
-                wait_s = _parse_retry_after(last_error or "", default=15.0)
+                wait_s = min(_parse_retry_after(last_error or "", default=5.0), 5.0)
                 logger.warning(
                     "All %d LLM keys failed (round %d) -- waiting %.0fs before retry",
                     n, round_num + 1, wait_s,

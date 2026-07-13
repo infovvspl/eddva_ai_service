@@ -161,7 +161,7 @@ def _extract_api_key(request) -> str:
     Extract API key from request in priority order:
     1. X-API-Key header (direct calls)
     2. Authorization: Bearer <key> (NestJS ai-bridge calls)
-    3. ?api_key= query param (browser testing only)
+    ?api_key= query param is NOT supported — it leaks keys into server logs.
     """
     api_key = request.headers.get("X-API-Key")
     if api_key:
@@ -171,7 +171,7 @@ def _extract_api_key(request) -> str:
     if auth_header.startswith("Bearer "):
         return auth_header[7:].strip()
 
-    return request.GET.get("api_key", "")
+    return ""
 
 
 class TenantAuthMiddleware:

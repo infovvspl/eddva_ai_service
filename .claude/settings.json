@@ -20,7 +20,10 @@
       "Bash(xargs echo \"M3 telemetry in origin/dev:\")",
       "Bash(xargs echo \"H4 gitignore in origin/dev:\")",
       "Bash(grep -cE \"^db.sqlite3$|generated_note_images/.*png\")",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(MSYS_NO_PATHCONV=1 git show origin/main:.github/workflows/deploy.yml)",
+      "Bash(MSYS_NO_PATHCONV=1 git show origin/dev:.github/workflows/deploy.yml)",
+      "Bash(xargs echo \"middleware api_key refs:\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\HP\\Desktop\\VVSPL\\AI_Study\\ai_study_project"
