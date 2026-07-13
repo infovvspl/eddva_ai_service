@@ -1,0 +1,18 @@
+# Minimal dependency set for running the test suite in CI.
+#
+# The tests exercise settings, middleware, the prompt/vertical registries, the
+# concurrency gate and the bridge views. None of that needs the heavy runtime
+# extras (torch, rdkit, easyocr, faster-whisper, sentence-transformers) — those
+# are imported lazily inside the functions that use them, so CI stays fast
+# (~30s instead of pulling several GB of wheels).
+#
+# If a test ever fails in CI with ModuleNotFoundError, add the module here
+# rather than switching CI to the full requirements.txt.
+
+django>=4.2
+djangorestframework>=3.14
+django-cors-headers>=4.0
+python-dotenv>=1.0
+httpx>=0.27
+requests>=2.31
+redis>=5.0

@@ -1,0 +1,44 @@
+name: Tests
+
+# Merge gate. The deploy workflows ship whatever is on the branch without ever
+# running a test — which is how a stale assertion sat broken in the suite while
+# deploys stayed green. Run the suite on every push and PR to dev/main.
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+jobs:
+  test:
+    name: Django test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # DEBUG=true keeps the production guards (ALLOWED_HOSTS / REDIS_URL must be
+      # set) from tripping in CI, where neither is configured.
+      DJANGO_DEBUG: "true"
+      DJANGO_SECRET_KEY: "ci-only-not-a-real-secret"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.ci.txt
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Migrations are in sync with the models
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run tests
+        run: python manage.py test ai_services -v2
