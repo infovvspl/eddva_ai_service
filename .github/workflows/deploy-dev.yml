@@ -36,12 +36,13 @@ jobs:
           DB_HOST: ${{ secrets.AI_DB_HOST }}
           DB_PORT: ${{ secrets.AI_DB_PORT }}
           CORS_ALLOWED_ORIGINS: ${{ secrets.DEV_AI_CORS_ORIGINS }}
+          REDIS_URL: ${{ secrets.DEV_REDIS_URL }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 25m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,REDIS_URL
           script: |
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -81,7 +82,10 @@ jobs:
             printf 'CORS_ALLOWED_ORIGINS=%s\n' "$CORS_ALLOWED_ORIGINS" >> .env
             printf 'NESTJS_INTERNAL_URL=http://localhost:3001\n' >> .env
             printf 'INTERNAL_API_KEY=edva_internal_ai_log_2026\n' >> .env
-            printf 'REDIS_OPTIONAL=true\n' >> .env
+            # Redis is REQUIRED (caching, token caps, cross-worker concurrency).
+            # Dev uses Redis DB 1 so it never shares cache keys with prod (DB 0)
+            # on the same box. Override via the DEV_REDIS_URL secret.
+            printf 'REDIS_URL=%s\n' "${REDIS_URL:-redis://127.0.0.1:6379/1}" >> .env
 
             # Install dependencies (requirements.txt has gunicorn, groq, django-cors-headers)
             venv/bin/pip install -r requirements.txt --quiet

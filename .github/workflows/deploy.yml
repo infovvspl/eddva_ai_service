@@ -30,12 +30,13 @@ jobs:
           DB_HOST: ${{ secrets.AI_DB_HOST }}
           DB_PORT: ${{ secrets.AI_DB_PORT }}
           INTERNAL_API_KEY: ${{ secrets.INTERNAL_API_KEY }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 20m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,INTERNAL_API_KEY
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,INTERNAL_API_KEY,REDIS_URL
           script: |
             set -e
             AI_DIR=/home/ubuntu/eddva_ai_service
@@ -63,7 +64,11 @@ jobs:
             printf 'DB_PORT=%s\n'               "$DB_PORT"             >> .env
             printf 'NESTJS_INTERNAL_URL=http://localhost:3000\n'      >> .env
             printf 'INTERNAL_API_KEY=%s\n'      "$INTERNAL_API_KEY"    >> .env
-            printf 'REDIS_OPTIONAL=true\n'                             >> .env
+            # Redis is REQUIRED: backs response caching, per-tenant token caps and
+            # cross-worker concurrency limits. Redis runs on this box; prod uses DB 0
+            # (dev uses DB 1) so the two never share cache keys. Override via the
+            # REDIS_URL secret to point at a managed Redis.
+            printf 'REDIS_URL=%s\n' "${REDIS_URL:-redis://127.0.0.1:6379/0}"  >> .env
 
             echo "Installing Python dependencies..."
             source venv/bin/activate
