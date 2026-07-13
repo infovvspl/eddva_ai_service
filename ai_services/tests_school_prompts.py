@@ -1,0 +1,140 @@
+"""
+Locks in the school (Classes 1-10) vertical prompt layer.
+
+Two things must hold for every school prompt:
+  1. NO competitive-exam framing leaks through (JEE / NEET / IIT / AIIMS / UPSC).
+  2. The base prompt's OUTPUT FORMAT / JSON SCHEMA is preserved byte-for-byte —
+     the views parse against it, so a school variant that drifts from the schema
+     would silently break response parsing.
+
+Both are guaranteed by deriving school prompts from the base (prompts/school.py)
+rather than hand-writing a second copy.
+"""
+
+import re
+
+from django.test import SimpleTestCase
+
+from ai_services.core.prompt_templates import (
+    TEMPLATES, VERTICAL_OVERRIDES, get_template,
+)
+from ai_services.core.prompts.school import (
+    SCHOOL_AUDIENCE, SCHOOL_DISABLED_FEATURES, SCHOOL_OVERRIDE_FEATURES, schoolify,
+)
+from ai_services.core.verticals import get_profile
+
+COMPETITIVE = re.compile(r"(?i)\b(jee|neet|iit|aiims|upsc)\b")
+
+# Prompts a school user can actually be served: no override AND not gated off.
+# (A disabled feature's prompt never reaches school, so its competitive framing
+# is harmless — e.g. interview_prep talks about IIT/AIIMS but 403s for school.)
+SHAREABLE = [
+    f for f in TEMPLATES
+    if f not in SCHOOL_OVERRIDE_FEATURES and f not in SCHOOL_DISABLED_FEATURES
+]
+
+
+class SchoolPromptsHaveNoCompetitiveFramingTests(SimpleTestCase):
+    def test_every_school_override_is_free_of_competitive_framing(self):
+        for feature in SCHOOL_OVERRIDE_FEATURES:
+            if feature not in TEMPLATES:
+                continue
+            system = get_template(feature, "school").system
+            leaked = COMPETITIVE.findall(system)
+            self.assertFalse(
+                leaked,
+                f"school prompt for '{feature}' leaks competitive framing: {set(leaked)}",
+            )
+
+    def test_school_prompts_carry_the_audience_block(self):
+        for feature in SCHOOL_OVERRIDE_FEATURES:
+            if feature not in TEMPLATES:
+                continue
+            self.assertIn(
+                "Classes 1-10", get_template(feature, "school").system,
+                f"school prompt for '{feature}' is missing the audience block",
+            )
+
+    def test_coaching_keeps_its_competitive_framing(self):
+        # Regression guard: schoolify() must not have mutated the base prompts.
+        self.assertIn("JEE", get_template("test_generate", "coaching").system)
+        self.assertIn("JEE", get_template("tutor_session", "coaching").system)
+
+
+class SchoolPromptsPreserveOutputSchemaTests(SimpleTestCase):
+    """The derived prompt must keep the base's schema — parsing depends on it."""
+
+    def test_json_schema_lines_survive_schoolify(self):
+        # Every '"key":' line in the base schema must still be present in the
+        # school variant. This is what makes deriving safe vs hand-writing.
+        for feature in SCHOOL_OVERRIDE_FEATURES:
+            if feature not in TEMPLATES:
+                continue
+            base = TEMPLATES[feature].system
+            school = get_template(feature, "school").system
+            for key in re.findall(r'"(\w+)"\s*:', base):
+                self.assertIn(
+                    f'"{key}"', school,
+                    f"school prompt for '{feature}' dropped schema key '{key}'",
+                )
+
+    def test_user_template_is_identical_to_base(self):
+        for feature in SCHOOL_OVERRIDE_FEATURES:
+            if feature not in TEMPLATES:
+                continue
+            self.assertEqual(
+                get_template(feature, "school").user_template,
+                TEMPLATES[feature].user_template,
+            )
+
+    def test_school_prompt_is_base_plus_audience(self):
+        # The derivation is exactly: audience block + neutralised base.
+        f = "notes_analyze"
+        self.assertTrue(get_template(f, "school").system.startswith(SCHOOL_AUDIENCE))
+
+
+class SharedPromptsAreCleanTests(SimpleTestCase):
+    def test_prompts_shared_with_school_have_no_competitive_framing(self):
+        """A prompt with NO school override is served as-is to school users, so it
+        must be vertical-neutral. If this fails, that feature needs an override."""
+        for feature in SHAREABLE:
+            if feature in ("doubt_resolve",):
+                continue  # doubt is handled in bridge._build_solver_system_prompt
+            system = TEMPLATES[feature].system
+            leaked = COMPETITIVE.findall(system)
+            self.assertFalse(
+                leaked,
+                f"'{feature}' has no school override but its base prompt contains "
+                f"{set(leaked)} — add it to SCHOOL_OVERRIDE_FEATURES",
+            )
+
+
+class SchoolFeatureGatingTests(SimpleTestCase):
+    def test_resume_and_interview_are_disabled_for_school(self):
+        school = get_profile("school")
+        self.assertFalse(school.allows_feature("resume_analyze"))
+        self.assertFalse(school.allows_feature("interview_prep"))
+
+    def test_school_still_allows_normal_features(self):
+        school = get_profile("school")
+        for f in ("tutor_session", "test_generate", "quiz_generate", "plan_generate"):
+            self.assertTrue(school.allows_feature(f))
+
+    def test_coaching_allows_everything(self):
+        coaching = get_profile("coaching")
+        for f in ("resume_analyze", "interview_prep", "tutor_session"):
+            self.assertTrue(coaching.allows_feature(f))
+
+
+class SchoolifyUnitTests(SimpleTestCase):
+    def test_neutralises_common_phrases(self):
+        out = schoolify("You are a tutor for JEE/NEET students preparing for competitive exams.")
+        self.assertNotIn("JEE", out)
+        self.assertNotIn("NEET", out)
+        self.assertIn("Classes 1-10", out)
+
+    def test_does_not_touch_the_schema(self):
+        base = 'Return JSON:\n{\n  "score": <float>,\n  "feedback": "<text>"\n}'
+        out = schoolify(base)
+        self.assertIn('"score"', out)
+        self.assertIn('"feedback"', out)

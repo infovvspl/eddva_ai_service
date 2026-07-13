@@ -4225,7 +4225,10 @@ def generate_quiz_questions(request):
 
 
 
-    template = get_template("quiz_generate")
+    # Vertical-aware: quiz_generate builds the system prompt directly from the
+    # template (it does not go through ai_call), so the vertical must be passed
+    # here or school users would silently get the coaching prompt.
+    template = get_template("quiz_generate", getattr(request, "vertical", "coaching"))
     all_questions = []
     last_meta = {}
     all_latencies = []

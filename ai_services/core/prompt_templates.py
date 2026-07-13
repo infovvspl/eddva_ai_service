@@ -831,12 +831,8 @@ EVALUATE_BATCH_SYSTEM = (
     "logical coherence, accuracy, and appropriate difficulty.\n" + _EVALUATE_SCHEMA
 )
 
-EVALUATE_BATCH_SCHOOL_SYSTEM = (
-    "You are an expert academic evaluator and fact-checker for the CBSE / ICSE / State-board "
-    "school curriculum for Classes 1-10.\n"
-    "Your task is to evaluate a batch of generated educational questions for factual correctness, "
-    "logical coherence, accuracy, and grade-appropriate difficulty for school students.\n" + _EVALUATE_SCHEMA
-)
+# (The school variant of evaluate_batch is DERIVED from the base prompt by
+#  prompts/school.schoolify(), like every other school override.)
 
 
 CAREER_GUIDANCE_SYSTEM = """You are EDVA Career Advisor,
@@ -1108,13 +1104,26 @@ TEMPLATES: Dict[str, PromptTemplate] = {
 #  its prompt dynamically in bridge._build_solver_system_prompt(), which is made
 #  vertical-aware directly there.
 # ══════════════════════════════════════════════════════════════════════════════
+from ai_services.core.prompts.school import schoolify, SCHOOL_OVERRIDE_FEATURES
+
+# School variants are DERIVED from the base prompts (see prompts/school.py):
+# competitive framing is neutralised and a Classes 1-10 audience block is
+# prepended, while the base prompt's output format / JSON schema is left byte
+# identical (the views parse against it). Deriving also means a future edit to a
+# base prompt is inherited automatically — there is no second copy to forget.
+#
+# Features NOT listed in SCHOOL_OVERRIDE_FEATURES simply fall back to base, and
+# features that make no sense for Classes 1-10 (resume_analyze, interview_prep)
+# are gated off in verticals.PROFILES rather than given a nonsensical variant.
 VERTICAL_OVERRIDES: Dict[str, Dict[str, PromptTemplate]] = {
-    "evaluate_batch": {
+    feature: {
         "school": PromptTemplate(
-            system=EVALUATE_BATCH_SCHOOL_SYSTEM,
-            user_template=TEMPLATES["evaluate_batch"].user_template,
-        ),
-    },
+            system=schoolify(TEMPLATES[feature].system),
+            user_template=TEMPLATES[feature].user_template,
+        )
+    }
+    for feature in SCHOOL_OVERRIDE_FEATURES
+    if feature in TEMPLATES
 }
 
 

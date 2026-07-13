@@ -43,14 +43,20 @@ class VerticalProfile:
     boards: Tuple[str, ...] = ()
     # Inclusive grade range this vertical serves, e.g. (11, 12) or (1, 10).
     grade_range: Tuple[int, int] = ()
-    # Features available to this vertical. None => all features enabled.
+    # Allowlist of features for this vertical. None => all features enabled.
     # (Per-tenant toggles in Institute.features_enabled apply on top of this.)
     enabled_features: Optional[frozenset] = None
+    # Denylist — features that make no sense for this vertical. Applied after the
+    # allowlist. Usually the easier of the two to maintain: a vertical normally
+    # wants everything EXCEPT a couple of features.
+    disabled_features: frozenset = frozenset()
     # Free-form, vertical-specific knobs for future use (no engine coupling).
     extra: Dict[str, str] = field(default_factory=dict)
 
     def allows_feature(self, feature: str) -> bool:
         """Whether this vertical exposes a given feature at all."""
+        if feature in self.disabled_features:
+            return False
         if self.enabled_features is None:
             return True
         return feature in self.enabled_features
@@ -74,7 +80,12 @@ PROFILES: Dict[str, VerticalProfile] = {
         default_exam_mode="school",
         boards=("CBSE", "ICSE", "State Board"),
         grade_range=(1, 10),
-        enabled_features=None,  # all features (school-specific prompts layered separately)
+        # All features EXCEPT the ones that are meaningless for Classes 1-10
+        # (a 10-year-old has no résumé and is not prepping for college
+        # interviews). Gating them off returns a clear 403 instead of generating
+        # nonsense. School-specific prompts for everything else are derived in
+        # ai_services/core/prompts/school.py.
+        disabled_features=frozenset({"resume_analyze", "interview_prep"}),
     ),
 }
 
