@@ -111,6 +111,16 @@ def ai_call_text(
     institute_id = getattr(request, "institute_id", "default")
     vertical = getattr(request, "vertical", "base")
 
+    # Vertical-level gate first: some features are meaningless for a vertical
+    # (e.g. resume_analyze / interview_prep for Classes 1-10). Return a clear 403
+    # rather than generating nonsense for a 10-year-old.
+    profile = getattr(request, "profile", None)
+    if profile is not None and not profile.allows_feature(feature):
+        return Response(
+            {"error": f"Feature '{feature}' is not available for the '{vertical}' vertical"},
+            status=403,
+        )
+
     if institute and not institute.is_feature_enabled(feature):
         return Response(
             {"error": f"Feature '{feature}' is not enabled for your plan", "plan": institute.plan},
@@ -201,6 +211,16 @@ def ai_call(
     vertical = getattr(request, "vertical", "base")
 
     # 1. Check feature is enabled for this tenant
+    # Vertical-level gate first: some features are meaningless for a vertical
+    # (e.g. resume_analyze / interview_prep for Classes 1-10). Return a clear 403
+    # rather than generating nonsense for a 10-year-old.
+    profile = getattr(request, "profile", None)
+    if profile is not None and not profile.allows_feature(feature):
+        return Response(
+            {"error": f"Feature '{feature}' is not available for the '{vertical}' vertical"},
+            status=403,
+        )
+
     if institute and not institute.is_feature_enabled(feature):
         return Response(
             {"error": f"Feature '{feature}' is not enabled for your plan", "plan": institute.plan},
