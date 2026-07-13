@@ -16,3 +16,15 @@ python-dotenv>=1.0
 httpx>=0.27
 requests>=2.31
 redis>=5.0
+
+# Scientific-solver imports. Needed so the tests can import
+# ai_services.solver.scientific_solver and assert that the JEE/NEET formula
+# knowledge base is used for coaching but skipped for school. These are modest
+# wheels (unlike torch), so CI stays fast.
+numpy==1.26.4
+sympy==1.14.0
+scipy==1.17.1
+matplotlib==3.10.9
+rdkit==2026.3.1
+Pint==0.25.3
+PubChemPy==1.0.5

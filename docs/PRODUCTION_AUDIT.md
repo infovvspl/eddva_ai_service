@@ -17,7 +17,28 @@ Method: static review of settings, middleware, core (LLM/cache/rate-limit), the 
 | Observability | 🟡 Medium | Sync usage writes; mislabeled telemetry; swallowed errors |
 | CI / tests | 🟡 Medium | Tests exist but not run in CI |
 
-**Verdict:** solid foundations, but **not production-ready until C1 is fixed** and the High items are addressed.
+**Verdict (original):** solid foundations, but **not production-ready until C1 is fixed** and the High items are addressed.
+
+---
+
+## ✅ STATUS: ALL FINDINGS CLOSED (2026-07-13)
+
+| # | Finding | Resolution |
+|---|---|---|
+| **C1** | Unsandboxed `exec()` of LLM-generated code | Runs in an isolated subprocess: hard timeout, secret-stripped env, POSIX rlimits. **Verified in prod** (`model_used: scientific_solver`). Flags: `SOLVER_EXEC_ENABLED`, `SOLVER_EXEC_TIMEOUT`. |
+| **H1** | Concurrency cap was per-worker | Redis ZSET + atomic Lua script + leased slots. Enforced across all workers. |
+| **H2** | Redis optional → caps unenforced, cache off | Required in prod; wired into both deploys (prod DB 0 / dev DB 1). Confirmed connected. |
+| **H3** | Unpinned dependencies | All 46 pinned to the exact versions running in production (`pip freeze` on the live box). |
+| **H4** | DB + 62 images committed to git | Purged from tracking; `.gitignore` updated. |
+| **M1** | Master key could act as any tenant | Mitigated — only `is_service_account` keys may switch tenant via `X-Tenant-ID`. |
+| **M2** | Synchronous usage writes on request path | `UsageLog` writes now run on a daemon thread. |
+| **M3** | Mislabeled telemetry | Real vertical + correct `feature_id` + correct token fields. |
+| **L2** | No CI test gate | `Tests` workflow: system check + migration-drift check + 62 tests on every push/PR. |
+
+### Beyond the audit — the service didn't actually work
+The audit fixes were real, but the service was **serving nothing** on EC2 and a green deploy hid it. Five bugs, each masking the next: blank `ALLOWED_HOSTS` (400 on every request) → empty CI env vars shadowing `.env` → an empty tenant table (401) → a missing optional import killing the solver → a duplicate definition silently discarding 20 valid Groq keys. All fixed and verified end-to-end on dev **and** prod with real answers.
+
+**A green deploy is not a working service.** Verify with one authenticated request.
 
 ---
 

@@ -56,16 +56,37 @@ scientific solver instead of the LLM.
 
 ## What currently differs by vertical
 
-| Feature | coaching (base) | school |
+| Area | coaching (base) | school |
 |---|---|---|
-| `doubt` (`_build_solver_system_prompt`) | "JEE/NEET Subject Matter Expert", JEE/NEET framing | "CBSE/ICSE School Teacher (Classes 1–10)", no JEE/NEET |
-| `evaluate_batch` | CBSE/JEE/NEET evaluator | CBSE/ICSE school (Classes 1–10) evaluator |
-| `content/generate` | exam target defaults to JEE | defaults to Class 10 board rules (no competitive framing) when none supplied |
-| all other features | shared base prompt | shared base prompt (no override yet) |
+| **16 registry prompts** — tutor, feedback, test, quiz, plan, syllabus, notes, content, career, evaluate, … | JEE/NEET / competitive framing | derived school variant: Classes 1-10, CBSE/ICSE/State board, simple language, board-exam style |
+| `doubt` (`bridge._build_solver_system_prompt`) | "CBSE/NEET Subject Matter Expert" | "CBSE/ICSE School Teacher (Classes 1-10)", zero JEE/NEET |
+| `content/generate` | exam target defaults to JEE | defaults to Class 10 board rules |
+| **Scientific-solver formula KB** | grounded with the JEE/NEET formula sheets in `data/knowledge_base/` | **skipped** — IIT-JEE formulae would push a Class-6 answer above grade level |
+| `resume_analyze`, `interview_prep` | available | **403 (gated off)** — a 10-year-old has no résumé and is not prepping for college interviews |
+| everything else | shared base prompt | shared base prompt |
 | model provider | Groq | Groq (same) |
 
-Everything not listed is shared — adding a school variant later is just a new
-entry in `VERTICAL_OVERRIDES` (prompts) or `VERTICAL_MODEL_OVERRIDES` (models).
+### How the school prompts are built (important)
+
+School prompts are **derived from the base at import time** by
+`ai_services/core/prompts/school.py::schoolify()` — competitive framing is
+neutralised and a Classes 1-10 audience block is prepended. They are deliberately
+NOT hand-written second copies, because:
+
+* the base prompts embed the exact JSON schema the views parse — a hand-written
+  variant that drifted from it would silently break response parsing (a test
+  asserts every schema key survives `schoolify()`);
+* an edit to a base prompt is inherited by the school variant automatically —
+  there is no second copy to forget to update.
+
+To give a feature a school variant: add its name to `SCHOOL_OVERRIDE_FEATURES`.
+To gate one off for a vertical: add it to that profile's `disabled_features`.
+
+### The guard that keeps this honest
+
+`tests_school_prompts.py` asserts that **any prompt WITHOUT a school override is
+free of competitive framing**. So if someone later adds "for JEE aspirants" to a
+shared prompt, CI fails instead of quietly leaking it to school students.
 
 ## Adding a new vertical
 
