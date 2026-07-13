@@ -373,8 +373,36 @@ class ScientificSolver:
         
         code = self._clean_generated_code(llm_resp["content"])
         syntax_error = self._code_is_valid_python(code)
+
         if syntax_error:
-            logger.warning("Scientific code generation produced invalid Python: %s", syntax_error)
+            # The model sometimes wraps the code in JSON/prose, or just emits
+            # malformed Python (observed in prod: "unmatched '}'"). One bad
+            # generation shouldn't kill the solver — retry once, deterministically,
+            # with an explicit "raw Python only" instruction. Log a snippet so the
+            # failure is diagnosable instead of silent.
+            logger.warning(
+                "Scientific code generation produced invalid Python (%s) — retrying once. Snippet: %r",
+                syntax_error, code[:200],
+            )
+            retry_resp = self.llm.complete(
+                system_prompt=system_prompt + (
+                    "\n\nCRITICAL OUTPUT RULE: Respond with ONLY raw, executable Python source code. "
+                    "No JSON. No markdown code fences. No prose, headings, or commentary. "
+                    "The very first character of your response must be the first character of the code."
+                ),
+                user_prompt=user_prompt,
+                model="llama-3.3-70b-versatile",
+                temperature=0.0,
+                json_mode=False,
+            )
+            code = self._clean_generated_code(retry_resp["content"])
+            syntax_error = self._code_is_valid_python(code)
+
+        if syntax_error:
+            logger.warning(
+                "Scientific code generation still invalid after retry: %s | snippet: %r",
+                syntax_error, code[:200],
+            )
             return {
                 "success": False,
                 "error": f"Generated solver code was invalid Python: {syntax_error}",
