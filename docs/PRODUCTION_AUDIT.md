@@ -46,10 +46,17 @@ The generated code is influenced by attacker-controllable doubt text (prompt inj
 
 ## 🟠 HIGH
 
-### H1 — Concurrency limit is per-worker, not global
-`ai_services/core/rate_limiter.py` (semaphores are in-memory; the code comment says *"For true multi-worker concurrency enforcement, move this to Redis"*).
-With 3 gunicorn workers, `Institute.max_concurrent_requests` is effectively **3×** the configured value, and noisy-neighbor protection doesn't hold across workers.
-**Fix:** implement the concurrency gate in Redis (e.g. `INCR`/`DECR` with TTL or a Lua token bucket).
+### H1 — Concurrency limit is per-worker, not global — ✅ FIXED
+`ai_services/core/rate_limiter.py`: semaphores were in-memory, so with N gunicorn
+workers `Institute.max_concurrent_requests` was effectively **N×** the configured
+value and noisy-neighbour protection didn't hold across workers.
+
+**Fixed:** the gate is now a Redis ZSET of in-flight slot tokens, taken with an
+**atomic Lua script** (prune → count → add), so the cap holds across every worker.
+Each slot carries a **lease** (`CONCURRENCY_LEASE_SECONDS`, default 180s > gunicorn's
+120s timeout) so a worker SIGKILLed mid-request cannot leak a slot forever. If Redis
+is unavailable it degrades to the old per-process semaphore and logs a warning.
+Covered by `ai_services/tests_concurrency.py`.
 
 ### H2 — Redis is optional in prod → budgets unenforced, caching disabled
 `ai_study_project/settings.py` only **warns** when `REDIS_URL` is unset in prod; `cache.py` and `rate_limiter.py` then fall back to **per-worker in-memory**. Consequences if Redis is missing/misconfigured:
