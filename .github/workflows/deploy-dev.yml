@@ -42,12 +42,15 @@ jobs:
           # override an already-set (even empty) env var — which would shadow the
           # REDIS_URL we write into .env and crash settings.py.
           DEV_REDIS_URL: ${{ secrets.DEV_REDIS_URL }}
+          # Optional override for the backend base URL (not named NESTJS_INTERNAL_URL,
+          # so an unset secret can't shadow the value we write to .env).
+          DEV_NESTJS_URL: ${{ secrets.DEV_NESTJS_URL }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 25m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL,GROQ_API_KEYS
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL,GROQ_API_KEYS,DEV_NESTJS_URL
           script: |
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -108,7 +111,12 @@ jobs:
             printf 'DB_HOST=%s\n' "$DB_HOST" >> .env
             printf 'DB_PORT=%s\n' "$DB_PORT" >> .env
             printf 'CORS_ALLOWED_ORIGINS=%s\n' "$CORS_VALUE" >> .env
-            printf 'NESTJS_INTERNAL_URL=http://localhost:3001\n' >> .env
+            # The NestJS backend runs on a DIFFERENT EC2 box, so localhost is nobody here:
+            # usage logging was failing with "Connection refused" on every AI call and no
+            # usage/billing data was reaching the backend. Point at the real host.
+            # (Backend dev = dev-api.eddva.in, port 3001. Swap for the private VPC IP if
+            #  you'd rather keep this traffic off the public internet.)
+            printf 'NESTJS_INTERNAL_URL=%s\n' "${DEV_NESTJS_URL:-https://dev-api.eddva.in}" >> .env
             printf 'INTERNAL_API_KEY=edva_internal_ai_log_2026\n' >> .env
             # Redis is REQUIRED (response cache, token caps, cross-worker concurrency).
             # Dev uses Redis DB 1 so it never shares cache keys with prod (DB 0).

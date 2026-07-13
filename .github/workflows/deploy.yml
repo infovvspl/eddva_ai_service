@@ -36,12 +36,15 @@ jobs:
           # override an already-set (even empty) env var — which would shadow the
           # REDIS_URL we write into .env and crash settings.py.
           PROD_REDIS_URL: ${{ secrets.REDIS_URL }}
+          # Optional override for the backend base URL (not named NESTJS_INTERNAL_URL,
+          # so an unset secret can't shadow the value we write to .env).
+          PROD_NESTJS_URL: ${{ secrets.PROD_NESTJS_URL }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 20m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,INTERNAL_API_KEY,PROD_REDIS_URL,GROQ_API_KEYS
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,INTERNAL_API_KEY,PROD_REDIS_URL,GROQ_API_KEYS,PROD_NESTJS_URL
           script: |
             set -e
             AI_DIR=/home/ubuntu/eddva_ai_service
@@ -79,7 +82,12 @@ jobs:
             printf 'DB_PASSWORD=%s\n'           "$DB_PASSWORD"         >> .env
             printf 'DB_HOST=%s\n'               "$DB_HOST"             >> .env
             printf 'DB_PORT=%s\n'               "$DB_PORT"             >> .env
-            printf 'NESTJS_INTERNAL_URL=http://localhost:3000\n'      >> .env
+            # The NestJS backend runs on a DIFFERENT EC2 box, so localhost is nobody here:
+            # usage logging failed with "Connection refused" on every AI call, so no
+            # usage/billing data reached the backend. Point at the real host.
+            # (Backend prod = api.eddva.in, port 3000. Swap for the private VPC IP if you
+            #  would rather keep this traffic off the public internet.)
+            printf 'NESTJS_INTERNAL_URL=%s\n'   "${PROD_NESTJS_URL:-https://api.eddva.in}" >> .env
             printf 'INTERNAL_API_KEY=%s\n'      "$INTERNAL_API_KEY"    >> .env
             # Redis is REQUIRED — it backs the response cache, per-tenant token caps
             # and cross-worker concurrency limits. Redis runs on this box; prod uses
