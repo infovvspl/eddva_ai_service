@@ -1,27 +1,73 @@
 import os
-import pdfplumber
-import faiss
 import numpy as np
 import pickle
 import logging
-from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Any
 
 logger = logging.getLogger("ai_services.formula_retriever")
+
+# The formula knowledge base is an OPTIONAL enhancement: it retrieves verified
+# formulas from indexed PDFs to ground the scientific solver. Its dependencies
+# (sentence-transformers -> torch, faiss, pdfplumber) are heavy and are NOT
+# installed in production, so importing them at module level took the whole
+# scientific solver down with an ImportError ("No module named
+# 'sentence_transformers'") — the doubt endpoint then silently fell back to the
+# plain LLM for every science question.
+#
+# Import them defensively instead. Without them the retriever simply returns no
+# formulas and the solver still runs; with them, it enriches the prompt.
+try:
+    from sentence_transformers import SentenceTransformer
+    import faiss
+    _KB_AVAILABLE = True
+    _KB_IMPORT_ERROR = None
+except Exception as _exc:  # ImportError, or a broken/partial install
+    SentenceTransformer = None
+    faiss = None
+    _KB_AVAILABLE = False
+    _KB_IMPORT_ERROR = _exc
+
+try:
+    import pdfplumber  # only needed to (re)build the index, never to query it
+except Exception:
+    pdfplumber = None
+
 
 class FormulaRetriever:
     def __init__(self, data_dir: str = "data/knowledge_base", index_path: str = "data/formula_index.faiss"):
         self.data_dir = data_dir
         self.index_path = index_path
         self.metadata_path = index_path.replace(".faiss", ".pkl")
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
         self.index = None
         self.chunks = []
-        
+        self.model = None
+
+        if not _KB_AVAILABLE:
+            logger.info(
+                "Formula knowledge base disabled (%s). The scientific solver still "
+                "runs; it just won't be grounded with retrieved formulas.",
+                _KB_IMPORT_ERROR,
+            )
+            return
+
+        try:
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        except Exception as e:
+            logger.warning("Could not load embedding model (%s) — formula KB disabled.", e)
+            self.model = None
+            return
+
         # Load index if exists
         self.load_index()
 
+    @property
+    def available(self) -> bool:
+        """True when the KB can actually answer queries."""
+        return bool(self.model is not None and self.index is not None)
+
     def load_index(self):
+        if not _KB_AVAILABLE or self.model is None:
+            return
         if os.path.exists(self.index_path) and os.path.exists(self.metadata_path):
             try:
                 self.index = faiss.read_index(self.index_path)
@@ -34,8 +80,15 @@ class FormulaRetriever:
 
     def index_pdfs(self):
         """Processes all PDFs in data_dir and builds a FAISS index."""
+        if not _KB_AVAILABLE or self.model is None or pdfplumber is None:
+            raise RuntimeError(
+                "Cannot build the formula index: the knowledge-base extras are not "
+                "installed (need sentence-transformers, faiss, pdfplumber). "
+                f"Import error: {_KB_IMPORT_ERROR}"
+            )
+
         all_text_chunks = []
-        
+
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
             
@@ -80,13 +133,23 @@ class FormulaRetriever:
         logger.info(f"Successfully indexed {len(all_text_chunks)} formula chunks.")
 
     def retrieve(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """Returns relevant formula snippets for a query."""
-        if self.index is None or not self.chunks:
+        """
+        Return relevant formula snippets for a query.
+
+        Returns [] when the knowledge base is unavailable (extras not installed,
+        or no index built) — the solver then runs without formula grounding
+        rather than failing.
+        """
+        if not self.available or not self.chunks:
             return []
 
-        query_vector = self.model.encode([query]).astype('float32')
-        distances, indices = self.index.search(query_vector, top_k)
-        
+        try:
+            query_vector = self.model.encode([query]).astype('float32')
+            distances, indices = self.index.search(query_vector, top_k)
+        except Exception as e:
+            logger.warning("Formula retrieval failed (%s) — continuing without it.", e)
+            return []
+
         results = []
         for i in indices[0]:
             if i != -1 and i < len(self.chunks):

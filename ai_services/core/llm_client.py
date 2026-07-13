@@ -36,31 +36,16 @@ def _next_key_offset() -> int:
         return idx
 
 # -- Groq config (multi-key pool for rate-limit rotation) ----------------------
+#
+# get_groq_api_keys() is the single source of truth. It reads ALL supported forms:
+#   GROQ_API_KEY  |  GROQ_API_KEYS (comma-separated)  |  GROQ_API_KEY_1..N
+#
+# This used to be followed by a second, hardcoded GROQ_API_KEYS = [...] built only
+# from GROQ_API_KEY and GROQ_API_KEY_1..20, which SHADOWED the line above and
+# silently discarded any keys supplied via the comma-separated GROQ_API_KEYS.
+# That is exactly how production ended up with "No GROQ_API_KEY configured" while
+# holding 20 valid keys in the environment. Do not reintroduce it.
 GROQ_API_KEYS: list[str] = get_groq_api_keys()
-_GROQ_KEYS_RAW = [
-    os.getenv("GROQ_API_KEY", ""),
-    os.getenv("GROQ_API_KEY_1", ""),
-    os.getenv("GROQ_API_KEY_2", ""),
-    os.getenv("GROQ_API_KEY_3", ""),
-    os.getenv("GROQ_API_KEY_4", ""),
-    os.getenv("GROQ_API_KEY_5", ""),
-    os.getenv("GROQ_API_KEY_6", ""),
-    os.getenv("GROQ_API_KEY_7", ""),
-    os.getenv("GROQ_API_KEY_8", ""),
-    os.getenv("GROQ_API_KEY_9", ""),
-    os.getenv("GROQ_API_KEY_10", ""),
-    os.getenv("GROQ_API_KEY_11", ""),
-    os.getenv("GROQ_API_KEY_12", ""),
-    os.getenv("GROQ_API_KEY_13", ""),
-    os.getenv("GROQ_API_KEY_14", ""),
-    os.getenv("GROQ_API_KEY_15", ""),
-    os.getenv("GROQ_API_KEY_16", ""),
-    os.getenv("GROQ_API_KEY_17", ""),
-    os.getenv("GROQ_API_KEY_18", ""),
-    os.getenv("GROQ_API_KEY_19", ""),
-    os.getenv("GROQ_API_KEY_20", ""),
-]
-GROQ_API_KEYS: list[str] = [k for k in _GROQ_KEYS_RAW if k]
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 

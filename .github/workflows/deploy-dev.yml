@@ -19,6 +19,7 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
@@ -46,7 +47,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 25m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL,GROQ_API_KEYS
           script: |
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -65,14 +66,37 @@ jobs:
             git fetch https://$GH_PAT@github.com/infovvspl/eddva_ai_service.git dev
             git reset --hard FETCH_HEAD
 
+            # Resolve values that MUST NOT be blank. An unset CI secret arrives as an
+            # empty string, and writing that to .env silently breaks the service:
+            #   ALLOWED_HOSTS=""  -> Django 400s EVERY request (DisallowedHost)
+            #   AI_API_KEY=""     -> no tenant can be seeded, so every request 401s
+            # Both actually happened. Default them instead of writing blanks.
+            ALLOWED_HOSTS_VALUE="${ALLOWED_HOSTS:-dev-ai.eddva.in,localhost,127.0.0.1}"
+            CORS_VALUE="${CORS_ALLOWED_ORIGINS:-https://dev.eddva.in,https://dev-api.eddva.in}"
+            AI_API_KEY_VALUE="${AI_API_KEY:-apexiq-dev-secret-key-2026}"
+
+            # CRITICAL: export the RESOLVED values back over the empty ones.
+            # ssh-action exports every var listed in `envs:` — including secrets that
+            # are unset, which arrive as EMPTY strings. load_dotenv() does not override
+            # an already-set env var (even an empty one), so an empty ALLOWED_HOSTS in
+            # the environment SHADOWS the value we just wrote to .env: `migrate` then
+            # dies with "ALLOWED_HOSTS is empty in production", and gunicorn would boot
+            # the same way because pm2 inherits this shell's environment.
+            export ALLOWED_HOSTS="$ALLOWED_HOSTS_VALUE"
+            export CORS_ALLOWED_ORIGINS="$CORS_VALUE"
+            export AI_API_KEY="$AI_API_KEY_VALUE"
+
             # Write .env (printf avoids leading-whitespace issues from heredoc)
             printf 'GROQ_API_KEY=%s\n' "$GROQ_API_KEY" > .env
+            # Optional: comma-separated list of Groq keys for rotation (the client
+            # reads GROQ_API_KEY, GROQ_API_KEYS, or GROQ_API_KEY_1..N).
+            printf 'GROQ_API_KEYS=%s\n' "$GROQ_API_KEYS" >> .env
             printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY" >> .env
             printf 'SERPAPI_KEY=%s\n' "$SERPAPI_KEY" >> .env
             printf 'SARVAM_API_KEY=%s\n' "$SARVAM_API_KEY" >> .env
             printf 'DJANGO_SECRET_KEY=%s\n' "$DJANGO_SECRET_KEY" >> .env
-            printf 'ALLOWED_HOSTS=%s\n' "$ALLOWED_HOSTS" >> .env
-            printf 'AI_API_KEY=%s\n' "$AI_API_KEY" >> .env
+            printf 'ALLOWED_HOSTS=%s\n' "$ALLOWED_HOSTS_VALUE" >> .env
+            printf 'AI_API_KEY=%s\n' "$AI_API_KEY_VALUE" >> .env
             printf 'WHISPER_MODEL=%s\n' "$WHISPER_MODEL" >> .env
             printf 'WHISPER_DEVICE=%s\n' "$WHISPER_DEVICE" >> .env
             printf 'WHISPER_COMPUTE_TYPE=%s\n' "$WHISPER_COMPUTE_TYPE" >> .env
@@ -83,7 +107,7 @@ jobs:
             printf 'DB_PASSWORD=%s\n' "$DB_PASSWORD" >> .env
             printf 'DB_HOST=%s\n' "$DB_HOST" >> .env
             printf 'DB_PORT=%s\n' "$DB_PORT" >> .env
-            printf 'CORS_ALLOWED_ORIGINS=%s\n' "$CORS_ALLOWED_ORIGINS" >> .env
+            printf 'CORS_ALLOWED_ORIGINS=%s\n' "$CORS_VALUE" >> .env
             printf 'NESTJS_INTERNAL_URL=http://localhost:3001\n' >> .env
             printf 'INTERNAL_API_KEY=edva_internal_ai_log_2026\n' >> .env
             # Redis is REQUIRED (response cache, token caps, cross-worker concurrency).
@@ -100,8 +124,13 @@ jobs:
             # Django migrations
             venv/bin/python manage.py migrate --noinput
 
-            # Ensure the NestJS ai-bridge service account has is_service_account=True
-            venv/bin/python manage.py shell -c "from ai_services.models import Institute; sa=Institute.objects.filter(api_key='${AI_API_KEY}').first(); sa and not sa.is_service_account and (setattr(sa,'is_service_account',True) or setattr(sa,'slug',sa.slug or 'apexiq-nestjs-service') or sa.save()) or print('ok')" || true
+            # Ensure the NestJS ai-bridge service-account tenant EXISTS.
+            # Every request is authenticated against the Institute table, so with an
+            # empty table the service 401s everything. The previous inline snippet only
+            # *updated* an already-existing row and never created one — which is why the
+            # tenant table stayed empty and the service was unusable. Not `|| true`:
+            # if this fails we want the deploy to go red, not ship a dead service.
+            venv/bin/python manage.py ensure_service_account --api-key "$AI_API_KEY_VALUE"
 
             # Restart: delete + start so the fresh .env is picked up
             mkdir -p $HOME/logs

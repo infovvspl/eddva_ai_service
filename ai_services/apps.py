@@ -15,6 +15,29 @@ class AiServicesConfig(AppConfig):
         from ai_services.core.llm_client import _get_groq_client, check_groq_keys
         from ai_services.core.rate_limiter import UsageLimiter
 
+        # ── SQLite tuning ─────────────────────────────────────────────────────
+        # Every request writes a UsageLog row. SQLite locks the whole file on
+        # write, so with multiple gunicorn workers that serialises and can raise
+        # "database is locked". WAL lets readers proceed during a write, and the
+        # busy_timeout makes a blocked writer wait rather than fail instantly.
+        # (No-op on Postgres.)
+        from django.db.backends.signals import connection_created
+        from django.dispatch import receiver
+
+        @receiver(connection_created)
+        def _tune_sqlite(sender, connection, **kwargs):
+            if connection.vendor != "sqlite":
+                return
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("PRAGMA journal_mode=WAL;")
+                    cursor.execute("PRAGMA synchronous=NORMAL;")
+                    cursor.execute("PRAGMA busy_timeout=20000;")
+            except Exception as exc:  # never block startup on a pragma
+                logger.warning("Could not apply SQLite pragmas: %s", exc)
+
+        self._tune_sqlite = _tune_sqlite  # keep a strong ref (receivers are weak)
+
         # ── LLM Client Init ───────────────────────────────────────────────────
         try:
             _get_groq_client()

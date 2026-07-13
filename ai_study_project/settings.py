@@ -32,7 +32,25 @@ if not _secret:
         )
 SECRET_KEY = _secret
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() in ("true", "1", "yes")
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0").split(",")
+# ALLOWED_HOSTS — fail loud rather than silently rejecting everything.
+#
+# The deploy writes .env from CI secrets; an unset secret lands here as an EMPTY
+# string, and `"".split(",")` == [""], which is not a valid host. Django then
+# answers EVERY request with 400 (DisallowedHost) — the service looks "up" (the
+# deploy is green, Redis connects) while serving nothing. That actually happened.
+# So: default only when the value is genuinely absent, and refuse to boot in
+# production when it is empty.
+_allowed_hosts = os.getenv("ALLOWED_HOSTS", "").strip()
+if not _allowed_hosts:
+    if DEBUG:
+        _allowed_hosts = "localhost,127.0.0.1,0.0.0.0"
+    else:
+        raise RuntimeError(
+            "ALLOWED_HOSTS is empty in production. Django would reject EVERY request "
+            "with 400 (DisallowedHost). Set it in .env / the deploy workflow, e.g. "
+            "ALLOWED_HOSTS=ai.eddva.in,localhost,127.0.0.1"
+        )
+ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts.split(",") if h.strip()]
 
 # ── Apps ─────────────────────────────────────────────────────────────────────
 INSTALLED_APPS = [
@@ -109,11 +127,29 @@ if _db_engine:
         }
     }
 else:
-    # Dev fallback: SQLite
+    # SQLite. Fine for dev, and workable in production at low traffic — but note
+    # SQLite locks the whole file on write and we write a UsageLog row on every
+    # request, so concurrent workers can hit "database is locked". The busy
+    # timeout below makes writers WAIT for the lock instead of failing instantly;
+    # WAL mode (set in ai_services/apps.py) lets readers run during a write.
+    if not DEBUG:
+        import warnings
+        warnings.warn(
+            "DB_ENGINE is not set — running PRODUCTION on SQLite (db.sqlite3). "
+            "Acceptable at low traffic, but writes serialise on a single file lock "
+            "and the data lives only on this box's disk (lost if the instance is "
+            "replaced). Set DB_ENGINE/DB_NAME/DB_USER/DB_PASSWORD/DB_HOST to move "
+            "to Postgres.",
+            stacklevel=1,
+        )
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": BASE_DIR / "db.sqlite3",
+            "OPTIONS": {
+                # Wait for a busy write lock instead of erroring immediately.
+                "timeout": int(os.getenv("SQLITE_TIMEOUT", "20")),
+            },
         }
     }
 
