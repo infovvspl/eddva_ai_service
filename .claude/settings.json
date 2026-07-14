@@ -29,7 +29,17 @@
       "Bash(MSYS_NO_PATHCONV=1 git show main:.github/workflows/deploy.yml)",
       "Bash(python manage.py test ai_services.tests_concurrency -v2)",
       "Bash(grep -E \"ok$|FAIL|ERROR|Ran |OK|test_\")",
-      "Bash(python manage.py test ai_services.tests_verticals ai_services.tests_content_vertical ai_services.tests_concurrency -v1)"
+      "Bash(python manage.py test ai_services.tests_verticals ai_services.tests_content_vertical ai_services.tests_concurrency -v1)",
+      "Bash(python manage.py ensure_service_account --api-key apexiq-dev-secret-key-2026)",
+      "Bash(PYTHONPATH=. python -c ' *)",
+      "Skill(schedule)",
+      "Skill(schedule:*)",
+      "Bash(xargs echo \"  bare 'except:' :\")",
+      "Bash(grep -cE \"pass\\\\s*$\")",
+      "Bash(xargs echo \"  'except Exception: pass' \\(swallowed\\):\")",
+      "Bash(xargs echo \"  print\\(\\) calls:\")",
+      "Bash(xargs echo \" no-timeout HTTP calls:\")",
+      "Bash(xargs echo \"  markers:\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\HP\\Desktop\\VVSPL\\AI_Study\\ai_study_project"

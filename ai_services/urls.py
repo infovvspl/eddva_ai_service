@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     feedback, notes, content, test, career,
-    personalization, admin_api, bridge, evaluate,
+    personalization, admin_api, bridge, evaluate, ppt,
 )
 
 urlpatterns = [
@@ -67,6 +67,11 @@ urlpatterns = [
 
     # AI Engine Health (teacher/admin panel)
     path("ai/health", bridge.ai_engine_health),
+
+    # PPT Generator (Groq slide content + Serper images; .pptx assembly is client-side)
+    path("ppt/generate", ppt.generate_presentation),
+    path("ppt/regenerate-slide", ppt.regenerate_slide),
+    path("ppt/search-image", ppt.search_image),
 
     # Batch Question Evaluator (QA for AI-generated questions)
     path("evaluate/batch", evaluate.evaluate_batch),
