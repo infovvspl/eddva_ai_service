@@ -3,12 +3,16 @@
 # made builds non-reproducible — a silent upstream release could break or
 # backdoor a deploy. Every version below is one that is already known to work.
 #
-# NOTE (worth acting on): plain `torch` pulls the CUDA build, which drags in the
-# whole nvidia stack (nvidia-cublas, cuda-toolkit, cudnn, triton — several GB) on
-# a CPU-only box. To install CPU-only wheels instead, run pip with:
-#     pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-# That is a big win on deploy time and disk. Not baked in here because it changes
-# how torch resolves, and this file's job is to reproduce the known-good set.
+# torch is pinned to the CPU build. Plain `torch==2.12.0` resolves to the CUDA
+# wheel from PyPI, which drags in the entire nvidia stack (cuda-toolkit, cublas,
+# cudnn, triton — several GB) on a box that has no GPU. The `+cpu` pins below,
+# together with the PyTorch CPU index, force the CPU wheels instead.
+# Verified working on the dev box: torch 2.12.0+cpu, torchvision 0.27.0+cpu,
+# easyocr imports, doubt endpoint returns correct answers.
+#
+# torchvision is pinned explicitly (it is otherwise pulled in transitively by
+# easyocr, which would drag the CUDA build back in on the next deploy).
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 # ── Django + DRF (production runtime) ─────────────────────────────────────────
 Django==5.2.14
@@ -52,7 +56,8 @@ pdfplumber==0.11.4
 pdf2image==1.17.0
 
 # ── NLP / ML ──────────────────────────────────────────────────────────────────
-torch==2.12.0
+torch==2.12.0+cpu
+torchvision==0.27.0+cpu
 transformers==4.41.2
 tokenizers==0.19.1
 huggingface-hub==0.24.7
