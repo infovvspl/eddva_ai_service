@@ -33,31 +33,59 @@ class Command(BaseCommand):
                 "no request can authenticate."
             )
 
+        # Look the tenant up by SLUG, not by api_key.
+        #
+        # There is exactly ONE service-account tenant; the API key is a property of
+        # it, not its identity. Keying on api_key was wrong twice over:
+        #   * rotating the key tried to CREATE a second row, which blew up on the
+        #     unique slug ("UNIQUE constraint failed: ai_services_institute.slug");
+        #   * even if it had succeeded, the OLD key would have stayed active — a
+        #     backdoor that survives every rotation.
+        # Keying on slug makes rotation an update: the new key works, the old one
+        # stops working immediately.
         institute, created = Institute.objects.get_or_create(
-            api_key=api_key,
+            slug=opts["slug"],
             defaults={
                 "name": opts["name"],
-                "slug": opts["slug"],
+                "api_key": api_key,
                 "vertical": opts["vertical"],
                 "is_active": True,
                 "is_service_account": True,
             },
         )
 
-        # Repair an existing row that is inactive or not marked as a service
-        # account (a service account is what may switch tenant via X-Tenant-ID).
+        # Rotate the key onto the existing row, and repair a tenant that is inactive
+        # or not flagged as a service account (only a service account may switch
+        # tenant via X-Tenant-ID).
         changed = []
+        if institute.api_key != api_key:
+            institute.api_key = api_key      # rotation: new key works, old one dies
+            changed.append("api_key")
         if not institute.is_active:
             institute.is_active = True
             changed.append("is_active")
         if not institute.is_service_account:
             institute.is_service_account = True
             changed.append("is_service_account")
-        if not institute.slug:
-            institute.slug = opts["slug"]
-            changed.append("slug")
         if changed:
             institute.save(update_fields=changed)
+
+        # Belt and braces: make sure no OTHER active tenant is still carrying the
+        # weak default key. Otherwise `apexiq-dev-secret-key-2026` — which is in the
+        # git history and the docs — stays a valid credential on an internet-facing
+        # service.
+        WEAK_DEFAULT = "apexiq-dev-secret-key-2026"
+        if api_key != WEAK_DEFAULT:
+            stale = (
+                Institute.objects
+                .filter(api_key=WEAK_DEFAULT, is_active=True)
+                .exclude(pk=institute.pk)
+                .update(is_active=False)
+            )
+            if stale:
+                self.stdout.write(self.style.WARNING(
+                    f"Deactivated {stale} tenant(s) still using the weak default API key"
+                ))
 
         # The middleware caches Institute lookups for 5 minutes — drop it so the
         # new/updated row is picked up immediately after a deploy.
