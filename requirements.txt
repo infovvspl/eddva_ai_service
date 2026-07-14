@@ -42,7 +42,10 @@ PubChemPy==1.0.5
 
 # ── Speech-to-text / media ────────────────────────────────────────────────────
 faster-whisper==1.2.1
-openai-whisper==20250625
+# NOTE: openai-whisper was REMOVED — it is not imported anywhere in the deployed
+# app (transcription uses faster-whisper / ctranslate2, see bridge.py), and it
+# dragged in `triton`. xgboost was removed for the same reason: unused, and it
+# dragged in `nvidia-nccl-cu12`. Both were leftovers from the retired FastAPI app.
 moviepy==2.2.1
 yt-dlp==2026.3.17
 PyAudio==0.2.14
@@ -67,7 +70,6 @@ spacy==3.8.14
 nltk==3.9.4
 rake-nltk==1.0.6
 scikit-learn==1.8.0
-xgboost==3.2.0
 networkx==3.6.1
 datasketch==1.6.5
 faiss-cpu==1.8.0
