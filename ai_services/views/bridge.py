@@ -2427,9 +2427,14 @@ GROQ_MODELS = {
 
 
 
-def _select_doubt_model(subject: str, question_type: str) -> str:
+def _select_doubt_model(subject: str, question_type: str, vertical: str = "coaching") -> str:
+    # Coaching math routes to Qwen — strong on JEE/NEET-level symbolic work, but the
+    # priciest model (~$3/M output, 4-5x the others). School math (Classes 1-10) is
+    # far simpler, so it routes to GPT-OSS-120B instead: a capable reasoning model at
+    # a fraction of the output cost ($0.60/M vs $3.00/M). GPT-OSS is already handled
+    # as a reasoning model downstream, so nothing else changes.
     if subject == "math":
-        return GROQ_MODELS["math"]
+        return GROQ_MODELS["reasoning"] if vertical == "school" else GROQ_MODELS["math"]
     if question_type in ("numerical", "derivation", "graph", "organic"):
         return GROQ_MODELS["reasoning"]
     return GROQ_MODELS["general"]
@@ -2824,7 +2829,7 @@ def resolve_doubt(request):
 
     # ── Step 2: Route to correct model, build prompt, solve ───────────────────
     vertical = getattr(request, "vertical", "coaching")
-    model = _select_doubt_model(subject, qtype)
+    model = _select_doubt_model(subject, qtype, vertical)
     print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model} | Vertical: {vertical}")
     solver_system = _build_solver_system_prompt(subject, qtype, mode, vertical)
     user_prompt = (
