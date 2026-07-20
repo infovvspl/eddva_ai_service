@@ -24,7 +24,29 @@ NCERT = re.compile(r"(?i)\bncert\b")
 
 class BoardRegistryTests(SimpleTestCase):
     def test_seeded_boards(self):
-        self.assertEqual(set(BOARDS), {"cbse", "icse", "state"})
+        self.assertEqual(set(BOARDS), {"cbse", "icse", "state", "ib"})
+
+    def test_every_board_the_admin_ui_offers_is_supported(self):
+        """
+        The school admin UI (eddva_frontend school/admin/Institutes.jsx) offers
+        exactly these options. A board offered there but missing here would be
+        silently normalised to CBSE — i.e. an IB school served CBSE content.
+        Keep this list in sync when the UI adds a board.
+        """
+        for ui_value, expected in [
+            ("CBSE", "cbse"),
+            ("ICSE", "icse"),
+            ("State Board", "state"),
+            ("IB", "ib"),
+        ]:
+            self.assertEqual(
+                normalize_board(ui_value), expected,
+                f"admin UI offers {ui_value!r} but it does not map to {expected!r}",
+            )
+
+    def test_model_choices_match_the_registry(self):
+        from ai_services.models import Institute
+        self.assertEqual({k for k, _ in Institute.BOARD_CHOICES}, set(BOARDS))
 
     def test_default_is_cbse(self):
         self.assertEqual(DEFAULT_BOARD, "cbse")
@@ -55,6 +77,12 @@ class BoardInstructionContentTests(SimpleTestCase):
         text = board_instruction("state")
         self.assertFalse(NCERT.search(text))
         self.assertNotIn("CISCE", text)
+
+    def test_ib_is_international_not_indian_board_framed(self):
+        text = board_instruction("ib")
+        self.assertFalse(NCERT.search(text))
+        self.assertNotIn("CISCE", text)
+        self.assertIn("International Baccalaureate", text)
 
     def test_every_board_forbids_cross_board_references(self):
         for key in BOARDS:

@@ -82,6 +82,20 @@ BOARDS: Dict[str, BoardProfile] = {
             "in subject naming, depth and answer style."
         ),
     ),
+    "ib": BoardProfile(
+        key="ib",
+        display_name="IB",
+        authority="the International Baccalaureate Organization",
+        textbooks="IB-approved resources for the programme",
+        guidance=(
+            "- Follow the IB programme framework (PYP / MYP / DP as appropriate for the "
+            "year group), not an Indian national board syllabus.\n"
+            "- Use IB conventions: inquiry-led explanations, conceptual understanding and "
+            "real-world application over rote recall; criterion-referenced assessment "
+            "language rather than Indian board mark schemes.\n"
+            "- Use international spelling and units, and avoid India-specific exam framing."
+        ),
+    ),
     "state": BoardProfile(
         key="state",
         display_name="State Board",
@@ -102,6 +116,8 @@ _ALIASES = {
     "cbse": "cbse", "central board of secondary education": "cbse", "ncert": "cbse",
     "icse": "icse", "cisce": "icse", "isc": "icse",
     "state": "state", "state board": "state", "stateboard": "state",
+    "ib": "ib", "international baccalaureate": "ib", "ib board": "ib",
+    "pyp": "ib", "myp": "ib", "ib dp": "ib",
 }
 
 
