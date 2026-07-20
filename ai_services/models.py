@@ -22,11 +22,14 @@ class Institute(models.Model):
         ("school", "School (Class 1-10)"),
     ]
 
-    # Keep in sync with ai_services.core.boards.BOARDS
+    # Keep in sync with ai_services.core.boards.BOARDS AND with the board options the
+    # admin UI offers (eddva_frontend school/admin/Institutes.jsx): CBSE, ICSE,
+    # State Board, IB.
     BOARD_CHOICES = [
         ("cbse", "CBSE (NCERT)"),
         ("icse", "ICSE / CISCE"),
         ("state", "State Board"),
+        ("ib", "IB (International Baccalaureate)"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
