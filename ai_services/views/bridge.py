@@ -4993,6 +4993,9 @@ def generate_topic_content(request):
     exam_target   = (data.get("examTarget") or data.get("exam_target") or "").strip()
     course_name   = (data.get("courseName") or data.get("course_name") or "").strip()
     extra_context = data.get("extraContext", "").strip()
+    # Language: 'english' (default/None) → Groq/llama; 'hindi' → Groq with Devanagari instruction;
+    # 'odia' → Gemini (Groq/llama are weak at Odia script, same as for STT notes).
+    language = str(data.get("language") or "").strip().lower()
 
     question_count_val = data.get("questionCount") or data.get("question_count")
     try:
@@ -5105,7 +5108,21 @@ def generate_topic_content(request):
             if exam_rule else ""
         )
     )
-
+    # Language-aware instruction appended to system prompt
+    if language == "hindi":
+        system_prompt += (
+            "\n\nLANGUAGE REQUIREMENT — MANDATORY: Write ALL content entirely in Hindi using Devanagari script. "
+            "This includes all headings, explanations, questions, answer choices, and solutions. "
+            "Do NOT mix English prose into the output. Technical terms (e.g. formula names, chemical symbols, "
+            "mathematical symbols) may remain in their standard notation."
+        )
+    elif language == "odia":
+        system_prompt += (
+            "\n\nLANGUAGE REQUIREMENT — MANDATORY: Write ALL content entirely in Odia using Odia script (\u0b13\u0b21\u0b3c\u0b3f\u0b06). "
+            "This includes all headings, explanations, questions, answer choices, and solutions. "
+            "Do NOT mix English or Hindi prose into the output. Technical terms and mathematical symbols "
+            "may remain in their standard notation."
+        )
 
 
     # Build user prompt with course + exam prominently at the top
@@ -5151,9 +5168,147 @@ def generate_topic_content(request):
     institute_id = _resolve_institute_id(request)
     user_id_tc = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     logger.info(
-        "generate_topic_content | course=%s | exam=%s | subject=%s | topic=%s | type=%s",
-        course_name or "—", exam_target or "—", subject_name or "—", topic_name[:40], content_type,
+        "generate_topic_content | course=%s | exam=%s | subject=%s | topic=%s | type=%s | language=%s",
+        course_name or "—", exam_target or "—", subject_name or "—", topic_name[:40], content_type, language or "english",
     )
+
+    # ── Odia: route to Gemini (Groq/llama are weak at Odia script) ───────────
+    if language == "odia" and GEMINI_ODIA_NOTES_ENABLED and has_gemini_api_key():
+        try:
+            try:
+                from google import genai
+                from google.genai import types as _gtypes
+            except Exception as _genai_exc:
+                raise RuntimeError(f"google-genai unavailable for Odia content: {_genai_exc}") from _genai_exc
+
+            _odia_content = None
+            _odia_exc_last = None
+            for _key_idx, _api_key in get_rotated_gemini_keys():
+                try:
+                    _client = genai.Client(api_key=_api_key)
+                    _max_tok_odia = 8192 if content_type in {"dpp", "pyq"} else 4096
+                    try:
+                        _resp = _client.models.generate_content(
+                            model=GEMINI_ODIA_NOTES_MODEL,
+                            contents=[user_prompt],
+                            config=_gtypes.GenerateContentConfig(
+                                system_instruction=system_prompt,
+                                temperature=0.7,
+                                max_output_tokens=_max_tok_odia,
+                                thinking_config=_gtypes.ThinkingConfig(thinking_budget=0),
+                            ),
+                        )
+                    except TypeError:
+                        _resp = _client.models.generate_content(
+                            model=GEMINI_ODIA_NOTES_MODEL,
+                            contents=[user_prompt],
+                            config=_gtypes.GenerateContentConfig(
+                                system_instruction=system_prompt,
+                                temperature=0.7,
+                                max_output_tokens=_max_tok_odia,
+                            ),
+                        )
+                    _odia_content = str(getattr(_resp, "text", "") or "").strip()
+                    _odia_content = re.sub(r"^```(?:markdown)?\s*", "", _odia_content, flags=re.IGNORECASE).strip()
+                    _odia_content = re.sub(r"\s*```$", "", _odia_content).strip()
+                    logger.info(
+                        "generate_topic_content Odia/Gemini OK | key=%d/%d | model=%s | chars=%d",
+                        _key_idx, gemini_key_count(), GEMINI_ODIA_NOTES_MODEL, len(_odia_content),
+                    )
+                    break
+                except Exception as _key_exc:
+                    _odia_exc_last = _key_exc
+                    msg = str(_key_exc)
+                    if is_gemini_permanent_key_error(msg):
+                        mark_gemini_key_disabled(_api_key)
+                        logger.warning("Gemini key %d/%d disabled for permanent error: %s", _key_idx, gemini_key_count(), msg[:180])
+                        continue
+                    if is_gemini_retryable_error(msg):
+                        logger.warning("Gemini key %d/%d retryable; rotating: %s", _key_idx, gemini_key_count(), msg[:180])
+                        continue
+                    raise RuntimeError(f"Gemini Odia content failed: {_key_exc}") from _key_exc
+
+            if not _odia_content:
+                raise RuntimeError(f"Gemini Odia content empty or all keys exhausted: {_odia_exc_last}")
+
+            # Apply the same post-processing as the Groq path
+            _odia_content = _normalize_generated_math_markdown(_odia_content)
+            if content_type == "pyq":
+                _odia_content = _normalize_pyq_exam_tags(_odia_content)
+
+            # DPP/PYQ: retry once via Gemini if MCQ options are incomplete
+            if content_type in {"dpp", "pyq"} and _has_incomplete_mcq_options(_odia_content):
+                logger.warning("generate_topic_content Odia: incomplete MCQ options; regenerating once via Gemini")
+                _retry_prompt_odia = (
+                    user_prompt
+                    + "\n\nYOUR PREVIOUS OUTPUT HAD EMPTY OR MISSING MCQ OPTION TEXT. Regenerate the complete document. "
+                      "Every MCQ must contain four non-empty choices. Never output a bare option letter. Keep each option on one line."
+                )
+                _retry_odia = None
+                for _key_r, _api_key_r in get_rotated_gemini_keys():
+                    try:
+                        _client_r = genai.Client(api_key=_api_key_r)
+                        try:
+                            _resp_r = _client_r.models.generate_content(
+                                model=GEMINI_ODIA_NOTES_MODEL,
+                                contents=[_retry_prompt_odia],
+                                config=_gtypes.GenerateContentConfig(
+                                    system_instruction=system_prompt,
+                                    temperature=0.35,
+                                    max_output_tokens=8192,
+                                    thinking_config=_gtypes.ThinkingConfig(thinking_budget=0),
+                                ),
+                            )
+                        except TypeError:
+                            _resp_r = _client_r.models.generate_content(
+                                model=GEMINI_ODIA_NOTES_MODEL,
+                                contents=[_retry_prompt_odia],
+                                config=_gtypes.GenerateContentConfig(
+                                    system_instruction=system_prompt,
+                                    temperature=0.35,
+                                    max_output_tokens=8192,
+                                ),
+                            )
+                        _retry_odia = str(getattr(_resp_r, "text", "") or "").strip()
+                        _retry_odia = re.sub(r"^```(?:markdown)?\s*", "", _retry_odia, flags=re.IGNORECASE).strip()
+                        _retry_odia = re.sub(r"\s*```$", "", _retry_odia).strip()
+                        break
+                    except Exception as _r_exc:
+                        logger.warning("Gemini Odia MCQ retry key error: %s", _r_exc)
+                        continue
+                if _retry_odia:
+                    _odia_content = _normalize_generated_math_markdown(_retry_odia)
+                    if content_type == "pyq":
+                        _odia_content = _normalize_pyq_exam_tags(_odia_content)
+                    if _has_incomplete_mcq_options(_odia_content):
+                        raise RuntimeError("Gemini Odia MCQ retry still incomplete; falling back to Groq")
+
+            try:
+                log_usage(
+                    institute_id=institute_id,
+                    institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
+                    feature_id=f'content_{content_type}_odia' if content_type else 'content_generate_odia',
+                    feature_category='content',
+                    model_used=GEMINI_ODIA_NOTES_MODEL,
+                    latency_ms=int((time.time() - _start_time) * 1000),
+                    success=True,
+                    user_id=user_id_tc,
+                )
+            except Exception:
+                pass
+            return Response({
+                "content": _odia_content,
+                "contentType": content_type,
+                "topicName": topic_name,
+                "_meta": {"model": GEMINI_ODIA_NOTES_MODEL, "latency_ms": round((time.time() - _start_time) * 1000)},
+            })
+        except Exception as odia_exc:
+            logger.warning(
+                "generate_topic_content Odia/Gemini failed (%s) — falling back to Groq", odia_exc
+            )
+            # Fall through to Groq below
+
+
     try:
         llm_result = get_llm().complete(
             system_prompt=system_prompt,
