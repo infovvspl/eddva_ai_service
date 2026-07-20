@@ -22,6 +22,13 @@ class Institute(models.Model):
         ("school", "School (Class 1-10)"),
     ]
 
+    # Keep in sync with ai_services.core.boards.BOARDS
+    BOARD_CHOICES = [
+        ("cbse", "CBSE (NCERT)"),
+        ("icse", "ICSE / CISCE"),
+        ("state", "State Board"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     slug = models.SlugField(unique=True, help_text="URL-safe identifier, e.g. 'allen-kota'")
@@ -33,6 +40,18 @@ class Institute(models.Model):
         help_text=(
             "Product vertical this tenant belongs to. Selects prompt/model variants. "
             "Can be overridden per-request via the X-Vertical header."
+        ),
+    )
+    board = models.CharField(
+        max_length=32,
+        choices=BOARD_CHOICES,
+        default="cbse",
+        db_index=True,
+        help_text=(
+            "Education board for a school tenant (CBSE / ICSE / State). Selects syllabus, "
+            "textbook and paper-pattern framing. Usually supplied per-request via the "
+            "X-Board header (the backend reads it from institutes.board); this is the "
+            "fallback when the header is absent."
         ),
     )
     api_key = models.CharField(
@@ -126,6 +145,10 @@ class UsageLog(models.Model):
     vertical = models.CharField(
         max_length=32, default="coaching", db_index=True,
         help_text="Vertical this call was served under (for per-vertical usage/billing breakdown)",
+    )
+    board = models.CharField(
+        max_length=32, default="", blank=True, db_index=True,
+        help_text="Education board this call was served under (school tenants), for per-board usage breakdown",
     )
     model_used = models.CharField(max_length=64)
     prompt_tokens = models.IntegerField(default=0)
