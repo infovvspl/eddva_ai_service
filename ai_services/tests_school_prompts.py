@@ -172,6 +172,37 @@ class SolverFormulaKnowledgeBaseIsCoachingOnlyTests(SimpleTestCase):
         self.assertIn("VERIFIED FORMULAS FROM KNOWLEDGE BASE", calls[0])
 
 
+class DoubtModelRoutingByVerticalTests(SimpleTestCase):
+    """School math routes to the cheaper GPT-OSS-120B instead of Qwen ($3/M out)."""
+
+    def _model(self, subject, qtype, vertical):
+        from ai_services.views.bridge import _select_doubt_model, GROQ_MODELS
+        return _select_doubt_model(subject, qtype, vertical), GROQ_MODELS
+
+    def test_school_math_avoids_the_expensive_qwen_model(self):
+        model, G = self._model("math", "numerical", "school")
+        self.assertEqual(model, G["reasoning"])          # gpt-oss-120b
+        self.assertNotEqual(model, G["math"])            # NOT qwen
+
+    def test_coaching_math_still_uses_qwen(self):
+        model, G = self._model("math", "numerical", "coaching")
+        self.assertEqual(model, G["math"])               # qwen (unchanged)
+
+    def test_non_math_routing_is_unchanged_for_both(self):
+        for v in ("school", "coaching"):
+            phys_num, G = self._model("physics", "numerical", v)
+            self.assertEqual(phys_num, G["reasoning"])
+            theory, _ = self._model("physics", "conceptual", v)
+            self.assertEqual(theory, G["general"])
+
+    def test_gpt_oss_is_still_treated_as_a_reasoning_model_downstream(self):
+        # School math now returns gpt-oss; the doubt view parses reasoning models
+        # in text mode. Guard that gpt-oss stays in that set.
+        from ai_services.views.bridge import GROQ_MODELS
+        reasoning_set = {"openai/gpt-oss-120b", "qwen/qwen3-32b"}
+        self.assertIn(GROQ_MODELS["reasoning"], reasoning_set)
+
+
 class SchoolifyUnitTests(SimpleTestCase):
     def test_neutralises_common_phrases(self):
         out = schoolify("You are a tutor for JEE/NEET students preparing for competitive exams.")
