@@ -24,6 +24,7 @@ from ai_services.core.cache import ResponseCache
 from ai_services.core.rate_limiter import UsageLimiter
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
+from ai_services.core.boards import board_instruction
 from ai_services.core.usage_logger import log_usage as _log_usage_nestjs
 
 logger = logging.getLogger("ai_services.views")
@@ -94,6 +95,32 @@ def _log_usage_to_db(institute, institute_id: str, feature: str, result: dict, c
     t.start()
 
 
+
+def _cache_scope(vertical: str, board: str) -> str:
+    """
+    Cache namespace. School answers are board-specific (a CBSE answer must never be
+    served to an ICSE school), so the board joins the key for the school vertical.
+    Coaching keys keep their existing shape, so coaching cache stays warm.
+    """
+    if (vertical or "").lower() == "school" and board:
+        return f"{vertical}-{board}"
+    return vertical
+
+
+def _apply_board(system_prompt: str, vertical: str, board: str) -> str:
+    """
+    Prepend board framing (CBSE / ICSE / State) to a SCHOOL system prompt.
+
+    The school prompts are derived at import time and cannot know the board, which
+    is per-request — so the board block is layered on here. Applied to the school
+    vertical only: coaching targets JEE/NEET, where the school board is not the
+    governing syllabus, and adding it there would change coaching behaviour.
+    """
+    if (vertical or "").lower() != "school":
+        return system_prompt
+    return board_instruction(board) + system_prompt
+
+
 def ai_call_text(
     request,
     feature: str,
@@ -110,6 +137,7 @@ def ai_call_text(
     institute = getattr(request, "institute", None)
     institute_id = getattr(request, "institute_id", "default")
     vertical = getattr(request, "vertical", "base")
+    board = getattr(request, "board", "")
 
     # Vertical-level gate first: some features are meaningless for a vertical
     # (e.g. resume_analyze / interview_prep for Classes 1-10). Return a clear 403
@@ -133,7 +161,7 @@ def ai_call_text(
 
     try:
         if not skip_cache:
-            cached = _cache.get(institute_id, feature, user_prompt, vertical)
+            cached = _cache.get(institute_id, feature, user_prompt, _cache_scope(vertical, board))
             if cached is not None:
                 _log_usage_to_db(institute, institute_id, feature, {}, cache_hit=True, vertical=vertical)
                 return Response({**cached, "_meta": {"source": "cache", "model": "cached", "institute": institute_id, "vertical": vertical}})
@@ -146,9 +174,10 @@ def ai_call_text(
 
         template = get_template(feature, vertical)
         model = get_model_for_task(feature, vertical)
+        system_prompt = _apply_board(template.system, vertical, board)
         try:
             result = _llm.complete(
-                system_prompt=template.system,
+                system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 model=model,
                 temperature=temperature,
@@ -164,7 +193,7 @@ def ai_call_text(
         response_data = wrap_fn(text)
 
         if not skip_cache:
-            _cache.set(institute_id, feature, user_prompt, response_data, vertical)
+            _cache.set(institute_id, feature, user_prompt, response_data, _cache_scope(vertical, board))
         _limiter.record_usage(institute_id, result["usage"]["total_tokens"])
         _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False, vertical=vertical)
 
@@ -209,6 +238,7 @@ def ai_call(
     institute = getattr(request, "institute", None)
     institute_id = getattr(request, "institute_id", "default")
     vertical = getattr(request, "vertical", "base")
+    board = getattr(request, "board", "")
 
     # 1. Check feature is enabled for this tenant
     # Vertical-level gate first: some features are meaningless for a vertical
@@ -236,18 +266,18 @@ def ai_call(
         )
 
     try:
-        return _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip_cache, max_tokens, vertical)
+        return _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip_cache, max_tokens, vertical, board)
     finally:
         # Always release the concurrency slot
         _limiter.release_concurrency_slot(institute_id)
 
 
-def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip_cache, max_tokens=4096, vertical="base") -> Response:
+def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip_cache, max_tokens=4096, vertical="base", board="") -> Response:
     """Inner pipeline after concurrency slot is acquired."""
 
     # 3. Tenant- + vertical-scoped cache lookup
     if not skip_cache:
-        cached = _cache.get(institute_id, feature, user_prompt, vertical)
+        cached = _cache.get(institute_id, feature, user_prompt, _cache_scope(vertical, board))
         if cached is not None:
             # Log cache hit for billing
             _log_usage_to_db(institute, institute_id, feature, {}, cache_hit=True, vertical=vertical)
@@ -274,10 +304,11 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
     # 5. LLM call with right-sized model (vertical-aware prompt + model)
     template = get_template(feature, vertical)
     model = get_model_for_task(feature, vertical)
+    system_prompt = _apply_board(template.system, vertical, board)
 
     try:
         result = _llm.complete(
-            system_prompt=template.system,
+            system_prompt=system_prompt,
             user_prompt=user_prompt,
             model=model,
             temperature=temperature,
@@ -290,7 +321,7 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
 
     # 6. Tenant- + vertical-scoped cache store
     if not skip_cache and isinstance(result["content"], dict):
-        _cache.set(institute_id, feature, user_prompt, result["content"], vertical)
+        _cache.set(institute_id, feature, user_prompt, result["content"], _cache_scope(vertical, board))
 
     # 7. Record usage (Redis for real-time + DB for billing)
     _limiter.record_usage(institute_id, result["usage"]["total_tokens"])

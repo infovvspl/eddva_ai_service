@@ -2546,26 +2546,43 @@ _DOUBT_VERTICAL_FRAMING = {
         "theory_role":     "JEE/NEET Subject Matter Expert",
         "numerical_rigor": "MANDATORY JEE/NEET GOLD RULES",
     },
+    # NOTE: the school entries are templates — {board} / {textbooks} are filled from
+    # the request's board (CBSE/ICSE/State) by _doubt_framing(). They used to hardcode
+    # "NCERT", which is CBSE's textbook body and simply wrong for an ICSE school.
     "school": {
-        "theory_role":     "CBSE/ICSE School Teacher for Classes 1-10",
-        "numerical_rigor": "MANDATORY SCHOOL-LEVEL (NCERT) CONCEPT RULES",
+        "theory_role":     "{board} School Teacher for Classes 1-10",
+        "numerical_rigor": "MANDATORY SCHOOL-LEVEL ({textbooks}) CONCEPT RULES",
     },
 }
 
 
-def _doubt_framing(vertical: str) -> dict:
-    """Resolve doubt-prompt framing for a vertical, falling back to coaching/base."""
-    return _DOUBT_VERTICAL_FRAMING.get(vertical or "coaching", _DOUBT_VERTICAL_FRAMING["coaching"])
+def _doubt_framing(vertical: str, board: str = "") -> dict:
+    """
+    Resolve doubt-prompt framing for a vertical, filling in the board for school.
+
+    School framing is board-specific: an ICSE school follows CISCE and its prescribed
+    books, not NCERT (which is CBSE's). Coaching framing is board-independent.
+    """
+    framing = _DOUBT_VERTICAL_FRAMING.get(vertical or "coaching", _DOUBT_VERTICAL_FRAMING["coaching"])
+    if (vertical or "").lower() != "school":
+        return framing
+
+    from ai_services.core.boards import get_board
+    profile = get_board(board)
+    return {
+        k: v.replace("{board}", profile.display_name).replace("{textbooks}", profile.textbooks)
+        for k, v in framing.items()
+    }
 
 
-def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed", vertical: str = "coaching") -> str:
+def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed", vertical: str = "coaching", board: str = "") -> str:
     """
     CLEANED & RE-PRIORITIZED SOLVER PROMPT.
 
     `vertical` selects the academic framing (competitive exam vs school); the
     underlying scientific/format rules are identical across verticals.
     """
-    framing = _doubt_framing(vertical)
+    framing = _doubt_framing(vertical, board)
     subject_rules = _SUBJECT_RULES.get(subject, "")
     is_numerical = qtype.lower() in ("numerical", "derivation")
     is_mcq = qtype.lower() == "mcq"
@@ -2831,7 +2848,8 @@ def resolve_doubt(request):
     vertical = getattr(request, "vertical", "coaching")
     model = _select_doubt_model(subject, qtype, vertical)
     print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model} | Vertical: {vertical}")
-    solver_system = _build_solver_system_prompt(subject, qtype, mode, vertical)
+    board = getattr(request, "board", "")
+    solver_system = _build_solver_system_prompt(subject, qtype, mode, vertical, board)
     user_prompt = (
         f"Topic: {data.get('topicId', 'general')}\n\n"
         f"Question:\n{combined_question}"
@@ -4708,26 +4726,29 @@ _EXAM_TARGET_RULES: dict[str, str] = {
         "- Biology questions must use correct scientific/taxonomic names (italicised)\n"
         "- Physics/Chemistry: NEET pattern — conceptual recall over heavy derivation"
     ),
+    # The class_* rules are TEMPLATES: {board}/{textbooks} are substituted from the
+    # tenant's board by _resolve_exam_rule(). They previously hardcoded CBSE/NCERT,
+    # which is wrong for an ICSE school (ICSE follows CISCE, not NCERT).
     "class_12": (
-        "TARGET: Class 12 Board Exam (CBSE)\n"
+        "TARGET: Class 12 Board Exam ({board})\n"
         "STRICT CONSTRAINTS — NEVER VIOLATE:\n"
         "- Question styles: 1-mark MCQ/assertion, 2-mark short answer, 3-mark derivation, 5-mark long answer, case-study\n"
-        "- Strictly NCERT Class 12 syllabus — every definition and example from NCERT\n"
+        "- Strictly the {board} Class 12 syllabus — every definition and example from {textbooks}\n"
         "- DO NOT generate JEE advanced multi-step or NEET trap questions\n"
         "- Difficulty: Board exam moderate level — test conceptual understanding, not tricks"
     ),
     "class_11": (
-        "TARGET: Class 11 Board Exam (CBSE)\n"
+        "TARGET: Class 11 Board Exam ({board})\n"
         "STRICT CONSTRAINTS — NEVER VIOLATE:\n"
         "- Same board pattern as Class 12 but strictly Class 11 syllabus only\n"
-        "- NCERT Class 11 aligned — definitions, basic numericals, conceptual recall\n"
+        "- Aligned to {textbooks} for Class 11 — definitions, basic numericals, conceptual recall\n"
         "- Do not use Class 12 topics. Do not use competitive exam pattern."
     ),
     "class_10": (
-        "TARGET: Class 10 Board Exam (CBSE)\n"
+        "TARGET: Class 10 Board Exam ({board})\n"
         "STRICT CONSTRAINTS — NEVER VIOLATE:\n"
         "- Question styles: MCQ, 2-mark, 3-mark, 5-mark\n"
-        "- CBSE Class 10 NCERT aligned — simple foundational concepts\n"
+        "- Aligned to {textbooks} for Class 10 — simple foundational concepts\n"
         "- Simple language. No advanced derivations. No competitive exam traps."
     ),
 }
@@ -4738,6 +4759,21 @@ _EXAM_TARGET_RULES: dict[str, str] = {
 
 def _resolve_exam_rule(exam_target: str, board: str = "CBSE") -> str:
     """Normalise raw examTarget string and return the matching rule block."""
+def _resolve_exam_rule(exam_target: str, board: str = "") -> str:
+    """
+    Normalise raw examTarget and return the matching rule block.
+
+    The class_* (school board) rules are templates: {board}/{textbooks} are filled
+    from the tenant's board, so an ICSE school gets CISCE framing instead of the
+    NCERT/CBSE wording these rules used to hardcode. JEE/NEET rules are unaffected.
+    """
+    def _fill(rule: str) -> str:
+        if "{board}" not in rule and "{textbooks}" not in rule:
+            return rule
+        from ai_services.core.boards import get_board
+        p = get_board(board)
+        return rule.replace("{board}", p.display_name).replace("{textbooks}", p.textbooks)
+
     t = (exam_target or "").lower().strip()
     if not t:
         return ""
@@ -4751,6 +4787,11 @@ def _resolve_exam_rule(exam_target: str, board: str = "CBSE") -> str:
         return _EXAM_TARGET_RULES["class_11"].replace("CBSE", board)
     if "10" in t:
         return _EXAM_TARGET_RULES["class_10"].replace("CBSE", board)
+        return _fill(_EXAM_TARGET_RULES["class_12"])
+    if "11" in t:
+        return _fill(_EXAM_TARGET_RULES["class_11"])
+    if "10" in t:
+        return _fill(_EXAM_TARGET_RULES["class_10"])
     return ""
 
 
@@ -5094,6 +5135,7 @@ def generate_topic_content(request):
 
     # Build exam-specific constraint block — injected first in system prompt
     exam_rule = _resolve_exam_rule(exam_target, board)
+    exam_rule = _resolve_exam_rule(exam_target, getattr(request, "board", ""))
 
 
 

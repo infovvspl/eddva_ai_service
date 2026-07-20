@@ -112,12 +112,39 @@ jobs:
             echo "Ensuring service-account tenant..."
             python manage.py ensure_service_account --api-key "$AI_API_KEY_VALUE"
 
-            echo "Restarting AI service..."
-            sudo systemctl restart eddva-ai
+            # Prod is managed by pm2 (ai-service-prod → start.sh), not systemd.
+            #
+            # The old systemd unit `eddva-ai` was left enabled alongside pm2 and the two
+            # fought over port 8000: whichever lost exited, pm2 restarted it, and the
+            # loop ran up ~78,000 restarts. `eddva-ai` is now stopped and disabled — do
+            # NOT restart it here, because `systemctl restart` starts a unit even when it
+            # is disabled, which would recreate the conflict on every deploy.
+            echo "Restarting AI service (pm2)..."
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+            if pm2 describe ai-service-prod > /dev/null 2>&1; then
+              pm2 restart ai-service-prod --update-env
+            else
+              # First run after the systemd → pm2 move: create the process.
+              pm2 start "$AI_DIR/start.sh" --name ai-service-prod --cwd "$AI_DIR"
+            fi
+            pm2 save
 
             echo "Health check..."
-            sleep 5
-            sudo systemctl is-active eddva-ai && echo "✅ AI service is running" || \
-              (sudo journalctl -u eddva-ai --lines 20 --no-pager && exit 1)
+            sleep 6
+            # Check the app actually answers, not just that a process exists — a green
+            # process that 400s/500s every request is not a working service.
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/ai/health \
+                     -H "Host: ai.eddva.in" \
+                     -H "X-API-Key: $AI_API_KEY_VALUE" \
+                     -H 'Content-Type: application/json' -d '{}' || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "✅ AI service is running (health check HTTP $code)"
+            else
+              echo "❌ Health check returned HTTP $code"
+              pm2 logs ai-service-prod --lines 30 --nostream || true
+              exit 1
+            fi
 
             echo "AI Service deployed successfully at $(date)"
