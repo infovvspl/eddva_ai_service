@@ -2868,7 +2868,7 @@ def resolve_doubt(request):
         from ai_services.solver.scientific_solver import scientific_solver
 
         if subject in ("physics", "chemistry", "mathematics", "math", "science"):
-            logger.info("[DOUBT RESOLVER] Routing to scientific solver for %s/%s (vertical=%s)", subject, qtype, vertical)
+            logger.info("[DOUBT RESOLVER] Routing to scientific solver for %s/%s (vertical=%s, board=%s)", subject, qtype, vertical, board or "—")
             # Pass the vertical: the solver's formula knowledge base is built from
             # JEE/NEET formula sheets, so it is used for coaching only — a Class 1-10
             # answer must not be grounded with IIT-JEE formulae.
@@ -5202,7 +5202,11 @@ def generate_topic_content(request):
     institute_id = _resolve_institute_id(request)
     user_id_tc = data.get('userId') or data.get('user_id') or data.get('studentId') or ''
     logger.info(
-        "generate_topic_content | course=%s | exam=%s | subject=%s | topic=%s | type=%s | language=%s",
+        # vertical/board are logged so the resolved personalisation is observable in
+        # prod: without them there is no way to confirm an ICSE school actually got
+        # ICSE framing rather than silently falling back to the CBSE default.
+        "generate_topic_content | vertical=%s | board=%s | course=%s | exam=%s | subject=%s | topic=%s | type=%s | language=%s",
+        getattr(request, "vertical", "—"), getattr(request, "board", "—"),
         course_name or "—", exam_target or "—", subject_name or "—", topic_name[:40], content_type, language or "english",
     )
 
