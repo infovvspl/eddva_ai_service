@@ -4736,7 +4736,7 @@ _EXAM_TARGET_RULES: dict[str, str] = {
 
 
 
-def _resolve_exam_rule(exam_target: str) -> str:
+def _resolve_exam_rule(exam_target: str, board: str = "CBSE") -> str:
     """Normalise raw examTarget string and return the matching rule block."""
     t = (exam_target or "").lower().strip()
     if not t:
@@ -4746,11 +4746,11 @@ def _resolve_exam_rule(exam_target: str) -> str:
     if "neet" in t:
         return _EXAM_TARGET_RULES["neet"]
     if "12" in t:
-        return _EXAM_TARGET_RULES["class_12"]
+        return _EXAM_TARGET_RULES["class_12"].replace("CBSE", board)
     if "11" in t:
-        return _EXAM_TARGET_RULES["class_11"]
+        return _EXAM_TARGET_RULES["class_11"].replace("CBSE", board)
     if "10" in t:
-        return _EXAM_TARGET_RULES["class_10"]
+        return _EXAM_TARGET_RULES["class_10"].replace("CBSE", board)
     return ""
 
 
@@ -4899,7 +4899,7 @@ def _normalize_generated_math_markdown(markdown: str) -> str:
 
 
 _EXAM_YEAR_TAG = (
-    r"(?:CBSE(?:\s+Class\s+\d+)?\s+\d{4}|CLASS\s+\d+\s+\d{4}|"
+    r"(?:[A-Za-z\s]+(?:\s+Class\s+\d+)?\s+\d{4}|CLASS\s+\d+\s+\d{4}|"
     r"NEET(?:\s+UG)?\s+\d{4}|JEE(?:\s+(?:Main|Advanced))?\s+\d{4})"
 )
 
@@ -4993,6 +4993,7 @@ def generate_topic_content(request):
     exam_target   = (data.get("examTarget") or data.get("exam_target") or "").strip()
     course_name   = (data.get("courseName") or data.get("course_name") or "").strip()
     extra_context = data.get("extraContext", "").strip()
+    board         = str(data.get("board") or "CBSE").strip()
     # Language: 'english' (default/None) → Groq/llama; 'hindi' → Groq with Devanagari instruction;
     # 'odia' → Gemini (Groq/llama are weak at Odia script, same as for STT notes).
     language = str(data.get("language") or "").strip().lower()
@@ -5066,7 +5067,7 @@ def generate_topic_content(request):
     type_instruction = active_prompts.get(
         content_type,
         active_prompts["lesson"],
-    ).replace("{topic_name}", topic_name).replace("{subject_name}", subject_name).replace("{chapter_name}", chapter_name)
+    ).replace("{topic_name}", topic_name).replace("{subject_name}", subject_name).replace("{chapter_name}", chapter_name).replace("CBSE", board)
 
     type_instruction = (
         type_instruction
@@ -5092,7 +5093,7 @@ def generate_topic_content(request):
 
 
     # Build exam-specific constraint block — injected first in system prompt
-    exam_rule = _resolve_exam_rule(exam_target)
+    exam_rule = _resolve_exam_rule(exam_target, board)
 
 
 
