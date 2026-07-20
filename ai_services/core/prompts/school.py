@@ -29,8 +29,11 @@ SCHOOL_AUDIENCE = (
     "State-board syllabus. They are NOT competitive-exam aspirants.\n"
     "- Pitch every explanation at the student's class level. Use simple, everyday "
     "language and short sentences; explain any term you introduce.\n"
-    "- Stay inside the NCERT / board textbook scope. Do NOT pull in topics from "
-    "higher classes.\n"
+    # Board-neutral on purpose: the specific board (CBSE/ICSE/State) and its
+    # textbooks are supplied per-request by the BOARD CONTEXT block that
+    # core/boards.py prepends. Naming NCERT here would mis-frame ICSE schools.
+    "- Stay inside the prescribed textbook scope for the class and board. Do NOT "
+    "pull in topics from higher classes.\n"
     # Deliberately does NOT name JEE/NEET here: naming them still plants the
     # token in a school prompt (and the test suite asserts school prompts are
     # free of competitive framing). Describe the pattern to avoid instead.
@@ -59,7 +62,10 @@ _REPLACEMENTS = [
     ("JEE and NEET", "the school board curriculum"),
     ("expert JEE and NEET teacher", "expert school teacher for Classes 1-10"),
     ("top colleges (IIT, AIIMS, NIT, etc.)", "reputed schools and Class 11 streams"),
-    ("NCERT/JEE/NEET syllabus", "NCERT / board syllabus"),
+    # Board-neutral: the board's own textbooks are named by the BOARD CONTEXT block.
+    ("NCERT/JEE/NEET syllabus", "the prescribed board syllabus"),
+    ("NCERT keywords", "prescribed-textbook keywords"),
+    ("NCERT", "the prescribed textbook"),
     ("CBSE, JEE, and NEET curriculum", "CBSE / ICSE / State-board curriculum (Classes 1-10)"),
     ("CBSE/NEET", "CBSE / ICSE / State board"),
 ]

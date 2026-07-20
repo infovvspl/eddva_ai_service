@@ -30,6 +30,11 @@ from ai_services.core.verticals import (
     get_profile,
     env_default_vertical,
 )
+from ai_services.core.boards import (
+    normalize_board,
+    get_board,
+    env_default_board,
+)
 
 logger = logging.getLogger("ai_services.middleware")
 
@@ -156,6 +161,24 @@ def _resolve_vertical(request, institute) -> str:
     return env_default_vertical()
 
 
+def _resolve_board(request, institute) -> str:
+    """
+    Resolve the education board with the same precedence as the vertical:
+        X-Board header  >  Institute.board  >  DEFAULT_BOARD env  >  "cbse"
+
+    The backend reads the real value from its `institutes.board` column and sends it
+    as X-Board, so the header is the normal path; Institute.board is the fallback.
+    Always returns a valid board key (unknown/typo values normalise to the default).
+    """
+    explicit = (request.headers.get("X-Board") or request.GET.get("board") or "").strip()
+    if explicit:
+        return normalize_board(explicit)
+    institute_board = getattr(institute, "board", None) if institute else None
+    if institute_board:
+        return normalize_board(institute_board)
+    return env_default_board()
+
+
 def _extract_api_key(request) -> str:
     """
     Extract API key from request in priority order:
@@ -200,6 +223,8 @@ class TenantAuthMiddleware:
             request.institute_id = "anonymous"
             request.vertical = _resolve_vertical(request, None)
             request.profile = get_profile(request.vertical)
+            request.board = _resolve_board(request, None)
+            request.board_profile = get_board(request.board)
             return self.get_response(request)
 
         # Extract API key (from X-API-Key or Bearer token)
@@ -271,6 +296,8 @@ class TenantAuthMiddleware:
             request.institute_id = str(institute.external_tenant_id or institute.slug)
         request.vertical = _resolve_vertical(request, institute)
         request.profile = get_profile(request.vertical)
+        request.board = _resolve_board(request, institute)
+        request.board_profile = get_board(request.board)
 
         response = self.get_response(request)
 
@@ -278,6 +305,7 @@ class TenantAuthMiddleware:
         response["X-Institute"] = institute.slug
         response["X-Plan"] = institute.plan
         response["X-Vertical"] = request.vertical
+        response["X-Board"] = request.board
 
         return response
 
