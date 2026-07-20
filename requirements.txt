@@ -88,7 +88,7 @@ python-multipart==0.0.22
 # addition. The embedding model is loaded LAZILY (first retrieval only), so it
 # costs nothing at boot or in the solver's sandbox subprocess.
 #
-# NOTE: the KB is used for the COACHING vertical only — grounding a Class 1-10
+# NOTE: the KB is used for the COACHING vertical only — grounding a Class 1-12
 # answer with IIT-JEE formulae would push it above grade level (see
 # scientific_solver.solve). If it cannot be loaded, formula_retriever degrades
 # gracefully and the solver still runs.

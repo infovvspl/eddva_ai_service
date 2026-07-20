@@ -1,5 +1,5 @@
 """
-Locks in the school (Classes 1-10) vertical prompt layer.
+Locks in the school (Classes 1-12) vertical prompt layer.
 
 Two things must hold for every school prompt:
   1. NO competitive-exam framing leaks through (JEE / NEET / IIT / AIIMS / UPSC).
@@ -51,7 +51,7 @@ class SchoolPromptsHaveNoCompetitiveFramingTests(SimpleTestCase):
             if feature not in TEMPLATES:
                 continue
             self.assertIn(
-                "Classes 1-10", get_template(feature, "school").system,
+                "Classes 1-12", get_template(feature, "school").system,
                 f"school prompt for '{feature}' is missing the audience block",
             )
 
@@ -129,7 +129,7 @@ class SchoolFeatureGatingTests(SimpleTestCase):
 class SolverFormulaKnowledgeBaseIsCoachingOnlyTests(SimpleTestCase):
     """
     The formula KB is built from JEE/NEET formula sheets (data/knowledge_base/).
-    Grounding a Class 1-10 answer with IIT-JEE formulae would push it above grade
+    Grounding a Class 1-12 answer with IIT-JEE formulae would push it above grade
     level, so retrieval must be skipped for the school vertical.
     """
 
@@ -163,7 +163,7 @@ class SolverFormulaKnowledgeBaseIsCoachingOnlyTests(SimpleTestCase):
     def test_school_does_not_query_the_jee_formula_bank(self):
         retrieved, calls = self._solve_and_capture("school")
         self.assertEqual(retrieved, [], "school must NOT be grounded with JEE/NEET formulae")
-        self.assertIn("Classes 1-10", calls[0])
+        self.assertIn("Classes 1-12", calls[0])
         self.assertNotIn("VERIFIED FORMULAS FROM KNOWLEDGE BASE", calls[0])
 
     def test_coaching_does_query_the_formula_bank(self):
@@ -208,7 +208,7 @@ class SchoolifyUnitTests(SimpleTestCase):
         out = schoolify("You are a tutor for JEE/NEET students preparing for competitive exams.")
         self.assertNotIn("JEE", out)
         self.assertNotIn("NEET", out)
-        self.assertIn("Classes 1-10", out)
+        self.assertIn("Classes 1-12", out)
 
     def test_does_not_touch_the_schema(self):
         base = 'Return JSON:\n{\n  "score": <float>,\n  "feedback": "<text>"\n}'

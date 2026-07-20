@@ -321,7 +321,7 @@ class ScientificSolver:
         # Step 1.1: Retrieve relevant formulas from the Knowledge Base (PDFs).
         #
         # The KB is built from JEE/NEET formula sheets (see data/knowledge_base/:
-        # IIT-JEE-Formula-PCM, NEET/JEE maths formulae, ...). Grounding a Class 1-10
+        # IIT-JEE-Formula-PCM, NEET/JEE maths formulae, ...). Grounding a Class 1-12
         # answer with IIT-JEE formulae would push it above grade level, so the KB is
         # used for the coaching vertical only. School answers are solved from first
         # principles at board level instead.
@@ -335,7 +335,7 @@ class ScientificSolver:
 
         # Step 1.2: Generate Solution Code
         audience = (
-            "a school tutor app for Classes 1-10 (CBSE/ICSE/State board). Keep the "
+            "a school tutor app for Classes 1-12 (CBSE/ICSE/State board). Keep the "
             "method at board level — no competitive-exam shortcuts or advanced tricks"
             if is_school else
             "a JEE/NEET/CBSE tutor app"

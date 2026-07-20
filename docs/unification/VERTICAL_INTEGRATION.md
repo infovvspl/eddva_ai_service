@@ -58,8 +58,8 @@ scientific solver instead of the LLM.
 
 | Area | coaching (base) | school |
 |---|---|---|
-| **16 registry prompts** — tutor, feedback, test, quiz, plan, syllabus, notes, content, career, evaluate, … | JEE/NEET / competitive framing | derived school variant: Classes 1-10, CBSE/ICSE/State board, simple language, board-exam style |
-| `doubt` (`bridge._build_solver_system_prompt`) | "CBSE/NEET Subject Matter Expert" | "CBSE/ICSE School Teacher (Classes 1-10)", zero JEE/NEET |
+| **16 registry prompts** — tutor, feedback, test, quiz, plan, syllabus, notes, content, career, evaluate, … | JEE/NEET / competitive framing | derived school variant: Classes 1-12, CBSE/ICSE/State board, simple language, board-exam style |
+| `doubt` (`bridge._build_solver_system_prompt`) | "CBSE/NEET Subject Matter Expert" | "CBSE/ICSE School Teacher (Classes 1-12)", zero JEE/NEET |
 | `content/generate` | exam target defaults to JEE | defaults to Class 10 board rules |
 | **Scientific-solver formula KB** | grounded with the JEE/NEET formula sheets in `data/knowledge_base/` | **skipped** — IIT-JEE formulae would push a Class-6 answer above grade level |
 | `resume_analyze`, `interview_prep` | available | **403 (gated off)** — a 10-year-old has no résumé and is not prepping for college interviews |
@@ -70,7 +70,7 @@ scientific solver instead of the LLM.
 
 School prompts are **derived from the base at import time** by
 `ai_services/core/prompts/school.py::schoolify()` — competitive framing is
-neutralised and a Classes 1-10 audience block is prepended. They are deliberately
+neutralised and a Classes 1-12 audience block is prepended. They are deliberately
 NOT hand-written second copies, because:
 
 * the base prompts embed the exact JSON schema the views parse — a hand-written

@@ -2429,7 +2429,7 @@ GROQ_MODELS = {
 
 def _select_doubt_model(subject: str, question_type: str, vertical: str = "coaching") -> str:
     # Coaching math routes to Qwen — strong on JEE/NEET-level symbolic work, but the
-    # priciest model (~$3/M output, 4-5x the others). School math (Classes 1-10) is
+    # priciest model (~$3/M output, 4-5x the others). School math (Classes 1-12) is
     # far simpler, so it routes to GPT-OSS-120B instead: a capable reasoning model at
     # a fraction of the output cost ($0.60/M vs $3.00/M). GPT-OSS is already handled
     # as a reasoning model downstream, so nothing else changes.
@@ -2550,7 +2550,7 @@ _DOUBT_VERTICAL_FRAMING = {
     # the request's board (CBSE/ICSE/State) by _doubt_framing(). They used to hardcode
     # "NCERT", which is CBSE's textbook body and simply wrong for an ICSE school.
     "school": {
-        "theory_role":     "{board} School Teacher for Classes 1-10",
+        "theory_role":     "{board} School Teacher for Classes 1-12",
         "numerical_rigor": "MANDATORY SCHOOL-LEVEL ({textbooks}) CONCEPT RULES",
     },
 }
@@ -2870,7 +2870,7 @@ def resolve_doubt(request):
         if subject in ("physics", "chemistry", "mathematics", "math", "science"):
             logger.info("[DOUBT RESOLVER] Routing to scientific solver for %s/%s (vertical=%s, board=%s)", subject, qtype, vertical, board or "—")
             # Pass the vertical: the solver's formula knowledge base is built from
-            # JEE/NEET formula sheets, so it is used for coaching only — a Class 1-10
+            # JEE/NEET formula sheets, so it is used for coaching only — a Class 1-12
             # answer must not be grounded with IIT-JEE formulae.
             scientific_res = async_to_sync(scientific_solver.solve)(combined_question, mode, vertical)
             if scientific_res and ("brief" in scientific_res or "detailed" in scientific_res):

@@ -1,7 +1,7 @@
 """
 Education-board registry — the second axis of personalisation, after `vertical`.
 
-`vertical` says WHO the learner is (school Classes 1-10 vs coaching JEE/NEET).
+`vertical` says WHO the learner is (school Classes 1-12 vs coaching JEE/NEET).
 `board`    says WHICH SYLLABUS they follow (CBSE, ICSE/CISCE, State).
 
 Why this exists: the school prompts used to hardcode "NCERT" and

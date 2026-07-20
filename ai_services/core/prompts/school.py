@@ -1,5 +1,5 @@
 """
-School vertical (Classes 1-10) prompt layer.
+School vertical (Classes 1-12) prompt layer.
 
 DESIGN — derive, don't duplicate.
 Each school system prompt is generated FROM its coaching/base counterpart at
@@ -25,7 +25,7 @@ import re
 # ── The school audience contract, prepended to every school system prompt ─────
 SCHOOL_AUDIENCE = (
     "AUDIENCE — READ FIRST (overrides any conflicting instruction below):\n"
-    "You are teaching SCHOOL students in Classes 1-10 following the CBSE / ICSE / "
+    "You are teaching SCHOOL students in Classes 1-12 following the CBSE / ICSE / "
     "State-board syllabus. They are NOT competitive-exam aspirants.\n"
     "- Pitch every explanation at the student's class level. Use simple, everyday "
     "language and short sentences; explain any term you introduce.\n"
@@ -50,23 +50,23 @@ SCHOOL_AUDIENCE = (
 # ── Phrase-level neutralisation (longest/most specific first) ──────────────────
 _REPLACEMENTS = [
     ("expert academic evaluator for Indian competitive exam preparation (JEE, NEET, UPSC, etc.)",
-     "expert academic evaluator for CBSE / ICSE / State-board school exams (Classes 1-10)"),
-    ("students preparing for competitive exams", "school students in Classes 1-10"),
+     "expert academic evaluator for CBSE / ICSE / State-board school exams (Classes 1-12)"),
+    ("students preparing for competitive exams", "school students in Classes 1-12"),
     ("Indian competitive exams", "the CBSE / ICSE / State-board school curriculum"),
     ("competitive exam preparation", "school board exam preparation"),
     ("competitive exams", "school board exams"),
     ("competitive exam", "school board exam"),
-    ("JEE/NEET students", "school students in Classes 1-10"),
-    ("JEE and NEET students", "school students in Classes 1-10"),
+    ("JEE/NEET students", "school students in Classes 1-12"),
+    ("JEE and NEET students", "school students in Classes 1-12"),
     ("JEE/NEET", "school board exam"),
     ("JEE and NEET", "the school board curriculum"),
-    ("expert JEE and NEET teacher", "expert school teacher for Classes 1-10"),
+    ("expert JEE and NEET teacher", "expert school teacher for Classes 1-12"),
     ("top colleges (IIT, AIIMS, NIT, etc.)", "reputed schools and Class 11 streams"),
     # Board-neutral: the board's own textbooks are named by the BOARD CONTEXT block.
     ("NCERT/JEE/NEET syllabus", "the prescribed board syllabus"),
     ("NCERT keywords", "prescribed-textbook keywords"),
     ("NCERT", "the prescribed textbook"),
-    ("CBSE, JEE, and NEET curriculum", "CBSE / ICSE / State-board curriculum (Classes 1-10)"),
+    ("CBSE, JEE, and NEET curriculum", "CBSE / ICSE / State-board curriculum (Classes 1-12)"),
     ("CBSE/NEET", "CBSE / ICSE / State board"),
 ]
 
@@ -84,7 +84,7 @@ _TOKEN_SWEEP = [
 
 
 def schoolify(system_prompt: str) -> str:
-    """Turn a coaching/base system prompt into its school (Classes 1-10) variant.
+    """Turn a coaching/base system prompt into its school (Classes 1-12) variant.
 
     Only the *framing* is rewritten — the output format / JSON schema in the base
     prompt is left untouched, because the views parse against it.
@@ -118,7 +118,7 @@ SCHOOL_OVERRIDE_FEATURES = (
     "evaluate_batch",
 )
 
-# Not meaningful for Classes 1-10 — gated off for the school vertical instead of
+# Not meaningful for Classes 1-12 — gated off for the school vertical instead of
 # being given a nonsensical school variant (see verticals.PROFILES).
 SCHOOL_DISABLED_FEATURES = frozenset({
     "resume_analyze",   # 10-year-olds do not have résumés
