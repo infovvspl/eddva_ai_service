@@ -76,7 +76,10 @@ def is_gemini_permanent_key_error(message: str) -> bool:
             "invalid api key",
             "permission denied",
             "unauthorized",
+            "unauthenticated",
             "forbidden",
+            "invalid_argument",
+            "invalid argument",
         )
     )
 

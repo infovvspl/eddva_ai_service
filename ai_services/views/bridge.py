@@ -1826,7 +1826,8 @@ def _gemini_odia_generate(system_prompt: str, user_prompt: str, *, max_tokens: i
             if is_gemini_retryable_error(msg):
                 logger.warning("Gemini key %d/%d retryable error; rotating to next key: %s", key_index, gemini_key_count(), msg[:220])
                 continue
-            raise RuntimeError(f"Gemini Odia notes failed: {exc}") from exc
+            logger.warning("Gemini Odia notes key %d/%d unexpected error; trying next key: %s", key_index, gemini_key_count(), msg[:220])
+            continue
     else:
         raise RuntimeError(f"Gemini Odia notes failed across all {gemini_key_count()} key(s): {last_exc}") from last_exc
 
@@ -4202,7 +4203,8 @@ def _gemini_complete(system_prompt: str, user_prompt: str, max_tokens: int, temp
             if is_gemini_retryable_error(msg):
                 logger.warning("Gemini key %d/%d retryable error; rotating to next key: %s", key_index, gemini_key_count(), msg[:220])
                 continue
-            raise RuntimeError(f"Gemini generation failed: {exc}") from exc
+            logger.warning("Gemini Parallel Complete key %d/%d unexpected error; trying next key: %s", key_index, gemini_key_count(), msg[:220])
+            continue
     else:
         raise RuntimeError(f"Gemini generation failed across all {gemini_key_count()} key(s): {last_exc}") from last_exc
 
@@ -5346,7 +5348,8 @@ def generate_topic_content(request):
                     if is_gemini_retryable_error(msg):
                         logger.warning("Gemini key %d/%d retryable; rotating: %s", _key_idx, gemini_key_count(), msg[:180])
                         continue
-                    raise RuntimeError(f"Gemini Odia content failed: {_key_exc}") from _key_exc
+                    logger.warning("Gemini Odia content key %d/%d unexpected error; trying next key: %s", _key_idx, gemini_key_count(), msg[:180])
+                    continue
 
             if not _odia_content:
                 raise RuntimeError(f"Gemini Odia content empty or all keys exhausted: {_odia_exc_last}")
