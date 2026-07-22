@@ -29,6 +29,19 @@ SARVAM_CHUNK    = 900          # Sarvam hard limit is ~1 000 chars; use 900 for 
 SARVAM_STT_ENDPOINT = os.getenv("SARVAM_STT_ENDPOINT", "https://api.sarvam.ai/speech-to-text")
 SARVAM_STT_MODEL = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
 SARVAM_STT_MODE = os.getenv("SARVAM_STT_MODE", "transcribe")
+
+
+def _get_sarvam_api_keys() -> list[str]:
+    keys: list[str] = []
+    single = os.getenv("SARVAM_API_KEY", "").strip()
+    if single:
+        keys.append(single)
+    for i in range(1, 11):
+        k = os.getenv(f"SARVAM_API_KEY_{i}", "").strip()
+        if k:
+            keys.append(k)
+    seen: set[str] = set()
+    return [k for k in keys if k not in seen and not seen.add(k)]
 SARVAM_CHAT_ENDPOINT = os.getenv("SARVAM_CHAT_ENDPOINT", "https://api.sarvam.ai/v1/chat/completions")
 SARVAM_CHAT_MODEL = os.getenv("SARVAM_CHAT_MODEL", "sarvam-105b")
 
@@ -317,13 +330,14 @@ def transcribe_file(
     responses under ~30 seconds). Use language='od' for Odia, which maps to
     Sarvam's BCP-47 code 'od-IN'.
     """
-    api_key = os.getenv("SARVAM_API_KEY", SARVAM_API_KEY)
-    if not api_key:
+    if not audio_path or not os.path.exists(audio_path):
+        raise RuntimeError(f"Audio chunk does not exist: {audio_path}")
+
+    api_keys = _get_sarvam_api_keys()
+    if not api_keys:
         raise RuntimeError(
             "SARVAM_API_KEY is not set -- add it to .env to enable Sarvam speech-to-text"
         )
-    if not audio_path or not os.path.exists(audio_path):
-        raise RuntimeError(f"Audio chunk does not exist: {audio_path}")
 
     language_code = _to_sarvam_code(language)
     form_data = {
@@ -334,45 +348,49 @@ def transcribe_file(
         form_data["language_code"] = language_code
 
     last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            with open(audio_path, "rb") as f:
-                resp = _requests.post(
-                    SARVAM_STT_ENDPOINT,
-                    headers={"api-subscription-key": api_key},
-                    files={"file": (os.path.basename(audio_path), f, "audio/mpeg")},
-                    data=form_data,
-                    timeout=timeout,
+    for key_idx, api_key in enumerate(api_keys):
+        for attempt in range(3):
+            try:
+                with open(audio_path, "rb") as f:
+                    resp = _requests.post(
+                        SARVAM_STT_ENDPOINT,
+                        headers={"api-subscription-key": api_key},
+                        files={"file": (os.path.basename(audio_path), f, "audio/mpeg")},
+                        data=form_data,
+                        timeout=timeout,
+                    )
+                if resp.status_code in (429, 503) and attempt < 2:
+                    retry_after = resp.headers.get("Retry-After")
+                    wait = float(retry_after) if retry_after and retry_after.isdigit() else (2 ** attempt) * 2
+                    logger.warning("Sarvam STT rate-limited/service busy; retrying in %.1fs", wait)
+                    time.sleep(wait)
+                    continue
+                if resp.status_code == 402:
+                    logger.warning("Sarvam STT key %d/%d out of credits; trying next key", key_idx + 1, len(api_keys))
+                    last_error = RuntimeError(f"Sarvam STT API error {resp.status_code}: {resp.text[:200]}")
+                    break  # try next key
+                if resp.status_code != 200:
+                    raise RuntimeError(f"Sarvam STT API error {resp.status_code}: {resp.text[:500]}")
+                data = resp.json()
+                transcript = str(data.get("transcript") or "").strip()
+                if not transcript:
+                    raise RuntimeError("Sarvam STT returned an empty transcript field")
+                logger.debug(
+                    "Sarvam STT chunk OK | key=%d | lang=%s | detected=%s | chars=%d",
+                    key_idx + 1, language_code, data.get("language_code"), len(transcript),
                 )
-            if resp.status_code in (429, 503) and attempt < 2:
-                retry_after = resp.headers.get("Retry-After")
-                wait = float(retry_after) if retry_after and retry_after.isdigit() else (2 ** attempt) * 2
-                logger.warning("Sarvam STT rate-limited/service busy; retrying in %.1fs", wait)
-                time.sleep(wait)
-                continue
-            if resp.status_code == 402:
-                raise RuntimeError(f"Sarvam STT API error {resp.status_code}: {resp.text[:500]}")
-            if resp.status_code != 200:
-                raise RuntimeError(f"Sarvam STT API error {resp.status_code}: {resp.text[:500]}")
-            data = resp.json()
-            transcript = str(data.get("transcript") or "").strip()
-            if not transcript:
-                raise RuntimeError("Sarvam STT returned an empty transcript field")
-            logger.debug(
-                "Sarvam STT chunk OK | lang=%s | detected=%s | chars=%d",
-                language_code,
-                data.get("language_code"),
-                len(transcript),
-            )
-            return transcript
-        except Exception as exc:
-            last_error = exc
-            msg = str(exc).lower()
-            if "402" in str(exc) or "insufficient_quota" in msg or "no credits" in msg:
-                break  # billing error — no point retrying
-            if attempt < 2:
-                time.sleep((2 ** attempt) * 1.5)
-                continue
-            break
+                return transcript
+            except Exception as exc:
+                last_error = exc
+                msg = str(exc).lower()
+                if "402" in str(exc) or "insufficient_quota" in msg or "no credits" in msg:
+                    logger.warning("Sarvam STT key %d/%d out of credits; trying next key", key_idx + 1, len(api_keys))
+                    break  # try next key
+                if attempt < 2:
+                    time.sleep((2 ** attempt) * 1.5)
+                    continue
+                break
+        else:
+            continue  # inner loop completed without break (all retries exhausted but not billing) - try next key
 
-    raise RuntimeError(f"Sarvam STT failed: {last_error}") from last_error
+    raise RuntimeError(f"Sarvam STT failed (all {len(api_keys)} key(s) exhausted): {last_error}") from last_error
