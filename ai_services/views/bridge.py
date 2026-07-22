@@ -2846,24 +2846,62 @@ def resolve_doubt(request):
 
     # ── Step 2: Route to correct model, build prompt, solve ───────────────────
     vertical = getattr(request, "vertical", "coaching")
-    model = _select_doubt_model(subject, qtype, vertical)
-    print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model} | Vertical: {vertical}")
+    language = (data.get("language") or "").strip().lower()
+
+    # Auto-detect regional scripts from the question text itself so that
+    # even if the frontend forgets to send `language`, the routing still works.
+    import unicodedata as _ud
+    def _has_odia_chars(text):
+        return any(0x0B00 <= ord(c) <= 0x0B7F for c in (text or ""))
+    def _has_devanagari_chars(text):
+        return any(0x0900 <= ord(c) <= 0x097F for c in (text or ""))
+
+    if not language:
+        if _has_odia_chars(combined_question):
+            language = "odia"
+            print("[DOUBT RESOLVER] Auto-detected Odia script in question — overriding language to 'odia'")
+        elif _has_devanagari_chars(combined_question):
+            language = "hindi"
+            print("[DOUBT RESOLVER] Auto-detected Devanagari script in question — overriding language to 'hindi'")
+
+    is_odia = language in ("odia", "od", "or", "or-in", "od-in")
+    is_hindi = language in ("hindi", "hi", "hi-in")
+    use_gemini = is_odia
+
+    if use_gemini:
+        model = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+    else:
+        model = _select_doubt_model(subject, qtype, vertical)
+
+    print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model} | Vertical: {vertical} | Language: {language}")
     board = getattr(request, "board", "")
     solver_system = _build_solver_system_prompt(subject, qtype, mode, vertical, board)
+
+    if is_odia:
+        solver_system += (
+            "\n\nCRITICAL LANGUAGE REQUIREMENT: You MUST answer and explain everything in ODIA language (ଓଡ଼ିଆ). "
+            "All text strings in the JSON fields ('answer', 'solution', 'final_answer', 'verification', 'key_concept') "
+            "MUST be written in Odia script and vocabulary. Do not write explanations in English."
+        )
+    elif is_hindi:
+        solver_system += (
+            "\n\nCRITICAL LANGUAGE REQUIREMENT: You MUST answer and explain everything in HINDI language (हिंदी). "
+            "All text strings in the JSON fields ('answer', 'solution', 'final_answer', 'verification', 'key_concept') "
+            "MUST be written in Devanagari script and vocabulary. Do not write explanations in English."
+        )
+
     user_prompt = (
         f"Topic: {data.get('topicId', 'general')}\n\n"
         f"Question:\n{combined_question}"
     )
 
-
-
     is_reasoning_model = model in {"openai/gpt-oss-120b", "qwen/qwen3-32b"}
-
-
 
     # Step 2a: Try the scientific solver (symbolic compute) for science/math doubts.
     # It is exact when it works; on any failure we transparently fall back to the LLM.
     try:
+        if use_gemini:
+            raise NotImplementedError("Scientific solver not supported for regional languages")
         if subject in ("physics", "chemistry", "mathematics", "math", "science"):
             from asgiref.sync import async_to_sync
             from ai_services.solver.scientific_solver import scientific_solver
@@ -2883,7 +2921,42 @@ def resolve_doubt(request):
     except Exception as solver_err:
         logger.warning("[DOUBT RESOLVER] Scientific solver bypassed/failed (%s). Using LLM.", solver_err)
         try:
-            if is_reasoning_model:
+            if use_gemini:
+                # Use Gemini complete!
+                solve_result = _gemini_complete(
+                    system_prompt=solver_system,
+                    user_prompt=user_prompt,
+                    max_tokens=3500,
+                    temperature=0.1,
+                )
+                raw_content = solve_result["content"]
+                
+                # Extract and parse JSON
+                parsed = {}
+                import json as _json
+                import re as _re
+                
+                # Clean think tags if any
+                clean_content = _re.sub(r"<think>.*?</think>", "", raw_content, flags=_re.DOTALL | _re.IGNORECASE)
+                clean_content = _re.sub(r"<think>.*", "", clean_content, flags=_re.DOTALL | _re.IGNORECASE)
+                
+                # Strip markdown code blocks
+                clean_content = _re.sub(r"^```(?:json|JSON)?\s*", "", clean_content, flags=_re.IGNORECASE).strip()
+                clean_content = _re.sub(r"\s*```$", "", clean_content).strip()
+                
+                start = clean_content.find("{")
+                end = clean_content.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    json_str = clean_content[start : end + 1]
+                else:
+                    json_str = clean_content
+                    
+                try:
+                    parsed = _json.loads(json_str)
+                except Exception as parse_err:
+                    logger.warning("[DOUBT RESOLVER] Gemini Odia JSON parse failed: %s. raw: %s", parse_err, raw_content)
+                    parsed = {}
+            elif is_reasoning_model:
                 # Reasoning models output <think> blocks — use text mode and parse manually.
                 solve_result = get_llm().complete(
                     system_prompt=solver_system,
