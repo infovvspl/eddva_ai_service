@@ -642,7 +642,10 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                         part = _sarvam_transcribe_file(chunk_file, language="od")
                     except Exception as exc:
                         msg = str(exc)
-                        if "duration exceeds the maximum limit" in msg.lower():
+                        msg_lower = msg.lower()
+                        if "402" in msg or "insufficient_quota" in msg_lower or "no credits" in msg_lower:
+                            raise RuntimeError(f"Sarvam API out of credits — aborting transcription: {msg}")
+                        if "duration exceeds the maximum limit" in msg_lower:
                             logger.warning(
                                 "Sarvam Odia STT chunk %d/%d exceeded 30s; splitting into 15s subchunks",
                                 idx + 1, len(chunks),

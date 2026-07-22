@@ -350,6 +350,8 @@ def transcribe_file(
                 logger.warning("Sarvam STT rate-limited/service busy; retrying in %.1fs", wait)
                 time.sleep(wait)
                 continue
+            if resp.status_code == 402:
+                raise RuntimeError(f"Sarvam STT API error {resp.status_code}: {resp.text[:500]}")
             if resp.status_code != 200:
                 raise RuntimeError(f"Sarvam STT API error {resp.status_code}: {resp.text[:500]}")
             data = resp.json()
@@ -365,6 +367,9 @@ def transcribe_file(
             return transcript
         except Exception as exc:
             last_error = exc
+            msg = str(exc).lower()
+            if "402" in str(exc) or "insufficient_quota" in msg or "no credits" in msg:
+                break  # billing error — no point retrying
             if attempt < 2:
                 time.sleep((2 ** attempt) * 1.5)
                 continue
