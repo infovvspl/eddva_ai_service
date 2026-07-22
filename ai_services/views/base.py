@@ -140,7 +140,7 @@ def ai_call_text(
     board = getattr(request, "board", "")
 
     # Vertical-level gate first: some features are meaningless for a vertical
-    # (e.g. resume_analyze / interview_prep for Classes 1-10). Return a clear 403
+    # (e.g. resume_analyze / interview_prep for Classes 1-12). Return a clear 403
     # rather than generating nonsense for a 10-year-old.
     profile = getattr(request, "profile", None)
     if profile is not None and not profile.allows_feature(feature):
@@ -242,7 +242,7 @@ def ai_call(
 
     # 1. Check feature is enabled for this tenant
     # Vertical-level gate first: some features are meaningless for a vertical
-    # (e.g. resume_analyze / interview_prep for Classes 1-10). Return a clear 403
+    # (e.g. resume_analyze / interview_prep for Classes 1-12). Return a clear 403
     # rather than generating nonsense for a 10-year-old.
     profile = getattr(request, "profile", None)
     if profile is not None and not profile.allows_feature(feature):

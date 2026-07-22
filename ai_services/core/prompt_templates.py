@@ -1107,13 +1107,13 @@ TEMPLATES: Dict[str, PromptTemplate] = {
 from ai_services.core.prompts.school import schoolify, SCHOOL_OVERRIDE_FEATURES
 
 # School variants are DERIVED from the base prompts (see prompts/school.py):
-# competitive framing is neutralised and a Classes 1-10 audience block is
+# competitive framing is neutralised and a Classes 1-12 audience block is
 # prepended, while the base prompt's output format / JSON schema is left byte
 # identical (the views parse against it). Deriving also means a future edit to a
 # base prompt is inherited automatically — there is no second copy to forget.
 #
 # Features NOT listed in SCHOOL_OVERRIDE_FEATURES simply fall back to base, and
-# features that make no sense for Classes 1-10 (resume_analyze, interview_prep)
+# features that make no sense for Classes 1-12 (resume_analyze, interview_prep)
 # are gated off in verticals.PROFILES rather than given a nonsensical variant.
 VERTICAL_OVERRIDES: Dict[str, Dict[str, PromptTemplate]] = {
     feature: {

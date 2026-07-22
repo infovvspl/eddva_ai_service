@@ -13,7 +13,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='institute',
             name='vertical',
-            field=models.CharField(choices=[('coaching', 'Coaching (JEE/NEET/Competitive)'), ('school', 'School (Class 1-10)')], db_index=True, default='coaching', help_text='Product vertical this tenant belongs to. Selects prompt/model variants. Can be overridden per-request via the X-Vertical header.', max_length=32),
+            field=models.CharField(choices=[('coaching', 'Coaching (JEE/NEET/Competitive)'), ('school', 'School (Class 1-12)')], db_index=True, default='coaching', help_text='Product vertical this tenant belongs to. Selects prompt/model variants. Can be overridden per-request via the X-Vertical header.', max_length=32),
         ),
         migrations.AddField(
             model_name='usagelog',

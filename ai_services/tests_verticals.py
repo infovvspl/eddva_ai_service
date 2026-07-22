@@ -81,7 +81,7 @@ class EvaluateFeatureTests(SimpleTestCase):
         self.assertIsNot(base, school)
         self.assertNotIn("JEE", school.system)
         self.assertNotIn("NEET", school.system)
-        self.assertIn("Classes 1-10", school.system)
+        self.assertIn("Classes 1-12", school.system)
 
     def test_base_keeps_competitive_framing(self):
         self.assertIn("JEE", get_template("evaluate_batch", "coaching").system)

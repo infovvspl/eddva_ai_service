@@ -1826,7 +1826,8 @@ def _gemini_odia_generate(system_prompt: str, user_prompt: str, *, max_tokens: i
             if is_gemini_retryable_error(msg):
                 logger.warning("Gemini key %d/%d retryable error; rotating to next key: %s", key_index, gemini_key_count(), msg[:220])
                 continue
-            raise RuntimeError(f"Gemini Odia notes failed: {exc}") from exc
+            logger.warning("Gemini Odia notes key %d/%d unexpected error; trying next key: %s", key_index, gemini_key_count(), msg[:220])
+            continue
     else:
         raise RuntimeError(f"Gemini Odia notes failed across all {gemini_key_count()} key(s): {last_exc}") from last_exc
 
@@ -2429,7 +2430,7 @@ GROQ_MODELS = {
 
 def _select_doubt_model(subject: str, question_type: str, vertical: str = "coaching") -> str:
     # Coaching math routes to Qwen — strong on JEE/NEET-level symbolic work, but the
-    # priciest model (~$3/M output, 4-5x the others). School math (Classes 1-10) is
+    # priciest model (~$3/M output, 4-5x the others). School math (Classes 1-12) is
     # far simpler, so it routes to GPT-OSS-120B instead: a capable reasoning model at
     # a fraction of the output cost ($0.60/M vs $3.00/M). GPT-OSS is already handled
     # as a reasoning model downstream, so nothing else changes.
@@ -2550,7 +2551,7 @@ _DOUBT_VERTICAL_FRAMING = {
     # the request's board (CBSE/ICSE/State) by _doubt_framing(). They used to hardcode
     # "NCERT", which is CBSE's textbook body and simply wrong for an ICSE school.
     "school": {
-        "theory_role":     "{board} School Teacher for Classes 1-10",
+        "theory_role":     "{board} School Teacher for Classes 1-12",
         "numerical_rigor": "MANDATORY SCHOOL-LEVEL ({textbooks}) CONCEPT RULES",
     },
 }
@@ -2864,13 +2865,13 @@ def resolve_doubt(request):
     # Step 2a: Try the scientific solver (symbolic compute) for science/math doubts.
     # It is exact when it works; on any failure we transparently fall back to the LLM.
     try:
-        from asgiref.sync import async_to_sync
-        from ai_services.solver.scientific_solver import scientific_solver
-
         if subject in ("physics", "chemistry", "mathematics", "math", "science"):
+            from asgiref.sync import async_to_sync
+            from ai_services.solver.scientific_solver import scientific_solver
+
             logger.info("[DOUBT RESOLVER] Routing to scientific solver for %s/%s (vertical=%s, board=%s)", subject, qtype, vertical, board or "—")
             # Pass the vertical: the solver's formula knowledge base is built from
-            # JEE/NEET formula sheets, so it is used for coaching only — a Class 1-10
+            # JEE/NEET formula sheets, so it is used for coaching only — a Class 1-12
             # answer must not be grounded with IIT-JEE formulae.
             scientific_res = async_to_sync(scientific_solver.solve)(combined_question, mode, vertical)
             if scientific_res and ("brief" in scientific_res or "detailed" in scientific_res):
@@ -4129,7 +4130,8 @@ def _gemini_complete(system_prompt: str, user_prompt: str, max_tokens: int, temp
             if is_gemini_retryable_error(msg):
                 logger.warning("Gemini key %d/%d retryable error; rotating to next key: %s", key_index, gemini_key_count(), msg[:220])
                 continue
-            raise RuntimeError(f"Gemini generation failed: {exc}") from exc
+            logger.warning("Gemini Parallel Complete key %d/%d unexpected error; trying next key: %s", key_index, gemini_key_count(), msg[:220])
+            continue
     else:
         raise RuntimeError(f"Gemini generation failed across all {gemini_key_count()} key(s): {last_exc}") from last_exc
 
@@ -4757,6 +4759,8 @@ _EXAM_TARGET_RULES: dict[str, str] = {
 
 
 
+def _resolve_exam_rule(exam_target: str, board: str = "CBSE") -> str:
+    """Normalise raw examTarget string and return the matching rule block."""
 def _resolve_exam_rule(exam_target: str, board: str = "") -> str:
     """
     Normalise raw examTarget and return the matching rule block.
@@ -4780,6 +4784,11 @@ def _resolve_exam_rule(exam_target: str, board: str = "") -> str:
     if "neet" in t:
         return _EXAM_TARGET_RULES["neet"]
     if "12" in t:
+        return _EXAM_TARGET_RULES["class_12"].replace("CBSE", board)
+    if "11" in t:
+        return _EXAM_TARGET_RULES["class_11"].replace("CBSE", board)
+    if "10" in t:
+        return _EXAM_TARGET_RULES["class_10"].replace("CBSE", board)
         return _fill(_EXAM_TARGET_RULES["class_12"])
     if "11" in t:
         return _fill(_EXAM_TARGET_RULES["class_11"])
@@ -4933,7 +4942,7 @@ def _normalize_generated_math_markdown(markdown: str) -> str:
 
 
 _EXAM_YEAR_TAG = (
-    r"(?:CBSE(?:\s+Class\s+\d+)?\s+\d{4}|CLASS\s+\d+\s+\d{4}|"
+    r"(?:[A-Za-z\s]+(?:\s+Class\s+\d+)?\s+\d{4}|CLASS\s+\d+\s+\d{4}|"
     r"NEET(?:\s+UG)?\s+\d{4}|JEE(?:\s+(?:Main|Advanced))?\s+\d{4})"
 )
 
@@ -5027,6 +5036,7 @@ def generate_topic_content(request):
     exam_target   = (data.get("examTarget") or data.get("exam_target") or "").strip()
     course_name   = (data.get("courseName") or data.get("course_name") or "").strip()
     extra_context = data.get("extraContext", "").strip()
+    board         = str(data.get("board") or "CBSE").strip()
     # Language: 'english' (default/None) → Groq/llama; 'hindi' → Groq with Devanagari instruction;
     # 'odia' → Gemini (Groq/llama are weak at Odia script, same as for STT notes).
     language = str(data.get("language") or "").strip().lower()
@@ -5100,7 +5110,7 @@ def generate_topic_content(request):
     type_instruction = active_prompts.get(
         content_type,
         active_prompts["lesson"],
-    ).replace("{topic_name}", topic_name).replace("{subject_name}", subject_name).replace("{chapter_name}", chapter_name)
+    ).replace("{topic_name}", topic_name).replace("{subject_name}", subject_name).replace("{chapter_name}", chapter_name).replace("CBSE", board)
 
     type_instruction = (
         type_instruction
@@ -5126,6 +5136,7 @@ def generate_topic_content(request):
 
 
     # Build exam-specific constraint block — injected first in system prompt
+    exam_rule = _resolve_exam_rule(exam_target, board)
     exam_rule = _resolve_exam_rule(exam_target, getattr(request, "board", ""))
 
 
@@ -5264,7 +5275,8 @@ def generate_topic_content(request):
                     if is_gemini_retryable_error(msg):
                         logger.warning("Gemini key %d/%d retryable; rotating: %s", _key_idx, gemini_key_count(), msg[:180])
                         continue
-                    raise RuntimeError(f"Gemini Odia content failed: {_key_exc}") from _key_exc
+                    logger.warning("Gemini Odia content key %d/%d unexpected error; trying next key: %s", _key_idx, gemini_key_count(), msg[:180])
+                    continue
 
             if not _odia_content:
                 raise RuntimeError(f"Gemini Odia content empty or all keys exhausted: {_odia_exc_last}")

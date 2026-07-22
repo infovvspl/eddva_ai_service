@@ -19,7 +19,7 @@ class Institute(models.Model):
 
     VERTICAL_CHOICES = [
         ("coaching", "Coaching (JEE/NEET/Competitive)"),
-        ("school", "School (Class 1-10)"),
+        ("school", "School (Class 1-12)"),
     ]
 
     # Keep in sync with ai_services.core.boards.BOARDS AND with the board options the

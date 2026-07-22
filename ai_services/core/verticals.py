@@ -2,7 +2,7 @@
 Vertical registry — the single source of truth for "what makes each product
 vertical different".
 
-A *vertical* (e.g. "coaching" for JEE/NEET, "school" for class 1-10) is a thin
+A *vertical* (e.g. "coaching" for JEE/NEET, "school" for class 1-12) is a thin
 configuration layer over the shared AI engine. Everything is shared by default;
 a vertical only declares the handful of things that genuinely differ from the
 canonical base (currently: prompt overrides, model overrides, enabled features,
@@ -76,11 +76,11 @@ PROFILES: Dict[str, VerticalProfile] = {
     ),
     "school": VerticalProfile(
         key="school",
-        display_name="School (Class 1-10)",
+        display_name="School (Class 1-12)",
         default_exam_mode="school",
         boards=("CBSE", "ICSE", "State Board"),
         grade_range=(1, 10),
-        # All features EXCEPT the ones that are meaningless for Classes 1-10
+        # All features EXCEPT the ones that are meaningless for Classes 1-12
         # (a 10-year-old has no résumé and is not prepping for college
         # interviews). Gating them off returns a clear 403 instead of generating
         # nonsense. School-specific prompts for everything else are derived in

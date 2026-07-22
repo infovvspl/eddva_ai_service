@@ -5,31 +5,18 @@ import json
 import ast
 import logging
 import traceback
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
-import numpy as np
-import sympy as sp
-from scipy import integrate, optimize, stats
-from rdkit import Chem
-from rdkit.Chem import Descriptors, AllChem
-import pint
-import pubchempy as pcp
 import httpx
 import subprocess
 from typing import Any, Dict, Optional, List
 from ai_services.core.llm_client import get_llm
 from ai_services.solver.formula_retriever import formula_retriever
 
-try:
-    from openbabel import openbabel as ob
-except ImportError:
-    ob = None
-
 class RuleBasedChiralDetector:
     """Helper to detect and explain chiral centers using RDKit."""
     @staticmethod
     def detect(mol: Any) -> List[Dict[str, Any]]:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
         if not mol: return []
         # Ensure hydrogens are present for accurate chirality detection
         mol_with_hs = Chem.AddHs(mol)
@@ -61,6 +48,7 @@ class StepValidator:
     @staticmethod
     def verify_substitution(original, candidate):
         """Mathematically verify a substitution using SymPy simplification."""
+        import sympy as sp
         try:
             # Assume original and candidate are SymPy expressions or strings
             diff = sp.simplify(original - candidate)
@@ -71,6 +59,7 @@ class StepValidator:
 
     @staticmethod
     def validate_steps(steps: List[str]) -> List[Dict[str, Any]]:
+        import sympy as sp
         results = []
         parsed_steps = []
         
@@ -150,28 +139,11 @@ class MaximaFallback:
             return "Maxima not available via CLI."
 
 logger = logging.getLogger("ai_services.scientific_solver")
-ureg = pint.UnitRegistry()
 
 class ScientificSolver:
     def __init__(self):
         self.llm = get_llm()
-        self.allowed_modules = {
-            "np": np,
-            "sp": sp,
-            "plt": plt,
-            "integrate": integrate,
-            "optimize": optimize,
-            "stats": stats,
-            "Chem": Chem,
-            "Descriptors": Descriptors,
-            "AllChem": AllChem,
-            "pcp": pcp,
-            "ureg": ureg,
-            "ChiralDetector": RuleBasedChiralDetector,
-            "StepValidator": StepValidator,
-            "OpenBabel": OpenBabelFallback,
-            "Maxima": MaximaFallback,
-        }
+        self.allowed_modules = {}
 
     def _clean_generated_code(self, content: str) -> str:
         """Extract executable Python from an LLM response."""
@@ -321,7 +293,7 @@ class ScientificSolver:
         # Step 1.1: Retrieve relevant formulas from the Knowledge Base (PDFs).
         #
         # The KB is built from JEE/NEET formula sheets (see data/knowledge_base/:
-        # IIT-JEE-Formula-PCM, NEET/JEE maths formulae, ...). Grounding a Class 1-10
+        # IIT-JEE-Formula-PCM, NEET/JEE maths formulae, ...). Grounding a Class 1-12
         # answer with IIT-JEE formulae would push it above grade level, so the KB is
         # used for the coaching vertical only. School answers are solved from first
         # principles at board level instead.
@@ -335,7 +307,7 @@ class ScientificSolver:
 
         # Step 1.2: Generate Solution Code
         audience = (
-            "a school tutor app for Classes 1-10 (CBSE/ICSE/State board). Keep the "
+            "a school tutor app for Classes 1-12 (CBSE/ICSE/State board). Keep the "
             "method at board level — no competitive-exam shortcuts or advanced tricks"
             if is_school else
             "a JEE/NEET/CBSE tutor app"

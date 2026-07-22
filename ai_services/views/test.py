@@ -311,8 +311,9 @@ def generate_practice_test(request):
     db_chapters = [str(c).strip() for c in chapters_raw if str(c).strip()] if isinstance(chapters_raw, list) else []
     vertical = getattr(request, "vertical", "coaching")
     exam_target = (data.get("exam_target") or "").strip().lower()
+    board = str(data.get("board") or "CBSE").strip()
     if not exam_target and vertical == "school":
-        exam_target = "class 10"  # CBSE / School default
+        exam_target = "class 10"  # School default
 
     qtype = (data.get("type") or data.get("question_type") or "mcq").strip().lower()
     style = (data.get("style") or "").strip().lower()
@@ -522,13 +523,13 @@ def generate_practice_test(request):
                 if difficulty == "medium"
                 else "NEET foundation — direct NCERT-fact MCQ with mild trickiness"
             )
-        else:  # CBSE / school
+        else:  # school
             diff_context = (
-                "CBSE board hard tier — HOTS (Higher Order Thinking Skill) question with application twist"
+                f"{board} board hard tier — HOTS (Higher Order Thinking Skill) question with application twist"
                 if difficulty == "hard"
-                else "CBSE board standard — direct concept application, board-paper style"
+                else f"{board} board standard — direct concept application, board-paper style"
                 if difficulty == "medium"
-                else "CBSE foundation — definition or simple recall question"
+                else f"{board} foundation — definition or simple recall question"
             )
     else:
         diff_context = (
