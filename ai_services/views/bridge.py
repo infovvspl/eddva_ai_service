@@ -2864,10 +2864,10 @@ def resolve_doubt(request):
     # Step 2a: Try the scientific solver (symbolic compute) for science/math doubts.
     # It is exact when it works; on any failure we transparently fall back to the LLM.
     try:
-        from asgiref.sync import async_to_sync
-        from ai_services.solver.scientific_solver import scientific_solver
-
         if subject in ("physics", "chemistry", "mathematics", "math", "science"):
+            from asgiref.sync import async_to_sync
+            from ai_services.solver.scientific_solver import scientific_solver
+
             logger.info("[DOUBT RESOLVER] Routing to scientific solver for %s/%s (vertical=%s, board=%s)", subject, qtype, vertical, board or "—")
             # Pass the vertical: the solver's formula knowledge base is built from
             # JEE/NEET formula sheets, so it is used for coaching only — a Class 1-12
