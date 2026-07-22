@@ -22,6 +22,9 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          SARVAM_API_KEY_1: ${{ secrets.SARVAM_API_KEY_1 }}
+          SARVAM_API_KEY_2: ${{ secrets.SARVAM_API_KEY_2 }}
+          SARVAM_API_KEY_3: ${{ secrets.SARVAM_API_KEY_3 }}
           DJANGO_SECRET_KEY: ${{ secrets.PROD_DJANGO_SECRET_KEY || secrets.DEV_DJANGO_SECRET_KEY }}
           AI_API_KEY: ${{ secrets.PROD_AI_API_KEY || secrets.DEV_AI_API_KEY }}
           DB_ENGINE: ${{ secrets.AI_DB_ENGINE }}
@@ -44,7 +47,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 20m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,INTERNAL_API_KEY,PROD_REDIS_URL,GROQ_API_KEYS,PROD_NESTJS_URL
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,SARVAM_API_KEY_1,SARVAM_API_KEY_2,SARVAM_API_KEY_3,DJANGO_SECRET_KEY,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,INTERNAL_API_KEY,PROD_REDIS_URL,GROQ_API_KEYS,PROD_NESTJS_URL
           script: |
             set -e
             AI_DIR=/home/ubuntu/eddva_ai_service
@@ -71,6 +74,9 @@ jobs:
             printf 'GEMINI_API_KEY=%s\n'        "$GEMINI_API_KEY"      >> .env
             printf 'SERPAPI_KEY=%s\n'           "$SERPAPI_KEY"         >> .env
             printf 'SARVAM_API_KEY=%s\n'        "$SARVAM_API_KEY"      >> .env
+            printf 'SARVAM_API_KEY_1=%s\n'      "$SARVAM_API_KEY_1"    >> .env
+            printf 'SARVAM_API_KEY_2=%s\n'      "$SARVAM_API_KEY_2"    >> .env
+            printf 'SARVAM_API_KEY_3=%s\n'      "$SARVAM_API_KEY_3"    >> .env
             printf 'DJANGO_SECRET_KEY=%s\n'     "$DJANGO_SECRET_KEY"   >> .env
             printf 'AI_API_KEY=%s\n'            "$AI_API_KEY_VALUE"    >> .env
             printf 'DJANGO_DEBUG=false\n'                              >> .env
@@ -135,10 +141,9 @@ jobs:
             sleep 6
             # Check the app actually answers, not just that a process exists — a green
             # process that 400s/500s every request is not a working service.
-            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/ai/health \
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X GET http://127.0.0.1:8000/ai/health \
                      -H "Host: ai.eddva.in" \
-                     -H "X-API-Key: $AI_API_KEY_VALUE" \
-                     -H 'Content-Type: application/json' -d '{}' || echo 000)
+                     -H "X-API-Key: $AI_API_KEY_VALUE" || echo 000)
             if [ "$code" = "200" ]; then
               echo "✅ AI service is running (health check HTTP $code)"
             else
