@@ -102,19 +102,17 @@ def _resolve_institute_id(request) -> str:
 
 @api_view(["POST"])
 def search_educational_images(request):
-    """Search Google Images through SerpApi without exposing its API key."""
+    """Search for educational images. Uses Serper when configured, Wikipedia otherwise."""
     query = str(request.data.get("query") or "").strip()
     if not query:
         return Response({"error": "Missing query"}, status=400)
     try:
         limit = int(request.data.get("limit") or 5)
+        # search_google_images never raises on missing key — falls back to Wikipedia
         images = search_google_images(query, limit, request.data.get("language") or "")
         return Response({"images": images, "provider": "serpapi"})
-    except RuntimeError as error:
-        logger.warning("SerpApi image search unavailable: %s", error)
-        return Response({"error": str(error)}, status=503)
     except Exception as error:
-        logger.warning("SerpApi image search failed: %s", error)
+        logger.warning("Image search failed: %s", error)
         return Response({"error": "Image search failed"}, status=502)
 
 
