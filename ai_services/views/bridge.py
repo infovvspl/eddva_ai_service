@@ -6152,6 +6152,18 @@ def regenerate_single_note_image(request):
     })
 
 
+def _parse_sections_from_llm_content(raw: str) -> list:
+    """Extract a JSON sections list from an LLM response, tolerating markdown fences and preamble."""
+    content = raw.replace("```json", "").replace("```", "").strip()
+    # If the model added preamble text, find the outermost JSON object
+    brace = content.find("{")
+    if brace > 0:
+        content = content[brace:]
+    parsed = json.loads(content)
+    sections = parsed.get("sections", parsed)
+    return sections if isinstance(sections, list) else []
+
+
 @api_view(["POST"])
 def extract_image_search_terms(request):
     data = request.data
@@ -6177,37 +6189,30 @@ NOTES:
 {truncated}"""
 
     norm_lang = _normalize_lecture_language(language)
+    gemini_exc: Exception | None = None
+
     if norm_lang == "od":
         logger.info("extract_image_search_terms: routing through Gemini for language 'od'")
         try:
             res = _gemini_complete(system_prompt, user_prompt, max_tokens=1024, temperature=0.3)
-            content = res.get("content", "").strip()
-            content = content.replace("```json", "").replace("```", "").strip()
-            parsed = json.loads(content)
-            sections = parsed.get("sections", parsed)
-            if not isinstance(sections, list):
-                sections = []
+            sections = _parse_sections_from_llm_content(res.get("content", ""))
             return Response({"sections": sections})
         except Exception as exc:
-            logger.warning("Gemini extract headings failed: %s", exc)
-            return Response({"error": f"Gemini failed: {str(exc)}"}, status=502)
-    else:
-        logger.info("extract_image_search_terms: routing through Groq for language %r", language)
-        try:
-            llm_result = get_llm("notes_analyze")(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                max_tokens=1024,
-                temperature=0.3,
-                json_mode=True,
-            )
-            content = llm_result.get("content", "").strip()
-            content = content.replace("```json", "").replace("```", "").strip()
-            parsed = json.loads(content)
-            sections = parsed.get("sections", parsed)
-            if not isinstance(sections, list):
-                sections = []
-            return Response({"sections": sections})
-        except Exception as exc:
-            logger.warning("Groq extract headings failed: %s", exc)
-            return Response({"error": f"Groq failed: {str(exc)}"}, status=502)
+            gemini_exc = exc
+            logger.warning("Gemini extract headings failed, falling back to Groq: %s", exc)
+
+    logger.info("extract_image_search_terms: routing through Groq for language %r", language)
+    try:
+        llm_result = get_llm("notes_analyze")(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=1024,
+            temperature=0.3,
+            json_mode=True,
+        )
+        sections = _parse_sections_from_llm_content(llm_result.get("content", ""))
+        return Response({"sections": sections})
+    except Exception as exc:
+        logger.warning("Groq extract headings failed: %s", exc)
+        err_detail = f"Groq failed: {exc}" if gemini_exc is None else f"Gemini failed: {gemini_exc}; Groq fallback also failed: {exc}"
+        return Response({"error": err_detail}, status=502)
