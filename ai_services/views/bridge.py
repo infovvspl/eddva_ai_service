@@ -4833,8 +4833,6 @@ _EXAM_TARGET_RULES: dict[str, str] = {
 
 
 
-def _resolve_exam_rule(exam_target: str, board: str = "CBSE") -> str:
-    """Normalise raw examTarget string and return the matching rule block."""
 def _resolve_exam_rule(exam_target: str, board: str = "") -> str:
     """
     Normalise raw examTarget and return the matching rule block.
@@ -4858,11 +4856,6 @@ def _resolve_exam_rule(exam_target: str, board: str = "") -> str:
     if "neet" in t:
         return _EXAM_TARGET_RULES["neet"]
     if "12" in t:
-        return _EXAM_TARGET_RULES["class_12"].replace("CBSE", board)
-    if "11" in t:
-        return _EXAM_TARGET_RULES["class_11"].replace("CBSE", board)
-    if "10" in t:
-        return _EXAM_TARGET_RULES["class_10"].replace("CBSE", board)
         return _fill(_EXAM_TARGET_RULES["class_12"])
     if "11" in t:
         return _fill(_EXAM_TARGET_RULES["class_11"])
