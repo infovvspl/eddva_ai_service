@@ -6201,7 +6201,7 @@ NOTES:
 
     logger.info("extract_image_search_terms: routing through Groq for language %r", language)
     try:
-        llm_result = get_llm("notes_analyze")(
+        llm_result = get_llm().complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             max_tokens=1024,
