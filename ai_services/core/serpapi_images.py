@@ -12,7 +12,7 @@ SERPER_SEARCH_URL = "https://google.serper.dev/images"
 
 def search_google_images(query: str, limit: int = 5, language: str = "") -> list[dict]:
     logger.info("search_google_images: query=%r, limit=%r, language=%r", query, limit, language)
-    api_key = (os.getenv("SERPER_API_KEY") or os.getenv("SERPER_KEY") or "").strip()
+    api_key = (os.getenv("SERPER_API_KEY") or os.getenv("SERPER_KEY") or os.getenv("SERPAPI_KEY") or "").strip()
     if not api_key:
         raise RuntimeError("SERPER_API_KEY or SERPER_KEY is not configured")
 
