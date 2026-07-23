@@ -6204,11 +6204,17 @@ NOTES:
         llm_result = get_llm().complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            model="llama-3.1-8b-instant",
             max_tokens=1024,
             temperature=0.3,
             json_mode=True,
         )
-        sections = _parse_sections_from_llm_content(llm_result.get("content", ""))
+        content = llm_result.get("content", {})
+        if isinstance(content, dict):
+            raw = content.get("sections", [])
+            sections = raw if isinstance(raw, list) else []
+        else:
+            sections = _parse_sections_from_llm_content(str(content))
         return Response({"sections": sections})
     except Exception as exc:
         logger.warning("Groq extract headings failed: %s", exc)
