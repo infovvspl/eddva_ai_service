@@ -26,10 +26,17 @@ class SerpApiImageSearchTests(unittest.TestCase):
         self.assertEqual(request_post.call_args.kwargs["json"]["hl"], "or")
         self.assertEqual(request_post.call_args.kwargs["json"]["gl"], "in")
 
-    def test_requires_api_key(self):
-        with patch.dict(os.environ, {"SERPER_API_KEY": "", "SERPER_KEY": ""}, clear=False):
-            with self.assertRaisesRegex(RuntimeError, "SERPER_API_KEY or SERPER_KEY"):
-                search_google_images("polynomial graph")
+    @patch("ai_services.core.serpapi_images._search_wikipedia_images", return_value=[])
+    def test_no_key_falls_back_to_wikipedia_not_raises(self, mock_wiki):
+        """No Serper key → graceful Wikipedia fallback, no RuntimeError raised."""
+        with patch.dict(
+            os.environ,
+            {"SERPER_API_KEY": "", "SERPER_KEY": "", "SERPAPI_KEY": ""},
+            clear=False,
+        ):
+            results = search_google_images("polynomial graph")
+        mock_wiki.assert_called_once()
+        self.assertIsInstance(results, list)
 
 
 if __name__ == "__main__":
