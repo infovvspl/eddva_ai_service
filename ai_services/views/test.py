@@ -208,7 +208,7 @@ def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int)
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
-                        temperature=0.4,
+                        temperature=0.7,
                         max_output_tokens=max_tokens,
                         response_mime_type="application/json",
                         thinking_config=types.ThinkingConfig(thinking_budget=0),
@@ -220,7 +220,7 @@ def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int)
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
-                        temperature=0.4,
+                        temperature=0.7,
                         max_output_tokens=max_tokens,
                         response_mime_type="application/json",
                     ),
@@ -314,6 +314,11 @@ def generate_practice_test(request):
     board = str(data.get("board") or "CBSE").strip()
     if not exam_target and vertical == "school":
         exam_target = "class 10"  # School default
+
+    seed = data.get("seed") or data.get("random_seed")
+    if not seed:
+        import uuid
+        seed = str(uuid.uuid4())[:8]
 
     qtype = (data.get("type") or data.get("question_type") or "mcq").strip().lower()
     style = (data.get("style") or "").strip().lower()
@@ -947,6 +952,7 @@ def generate_practice_test(request):
         f"Generate {num_questions} distinct {qtype} questions.\n"
         f"Curriculum scope: {curriculum_context}\n"
         f"Difficulty: {difficulty}. This should be a {diff_context}.\n"
+        f"Randomization Seed: {seed} (Ensure this generation is unique and randomized based on this seed).\n"
         f"{type_instr}\n\n"
         f"{subject_rule}\n\n"
         f"{heuristic_block}\n"
@@ -967,7 +973,7 @@ def generate_practice_test(request):
     )
 
     institute_id = getattr(request, "institute_id", "default")
-    template = get_template("test_generate")
+    template = get_template("test_generate", vertical)
 
     logger.info(
         "generate_practice_test | exam=%s | diff=%s | subject=%s | chapter=%s | topic=%s | type=%s | style=%s | n=%d | lang=%s",
@@ -1007,7 +1013,10 @@ def generate_practice_test(request):
             }
         except Exception as e:
             logger.error("Gemini Odia generation failed: %s", e)
-            cached = question_bank.get_random(subject, chapter, difficulty, qtype, num_questions)
+            cached = question_bank.get_random(
+                subject, chapter, difficulty, qtype, num_questions,
+                institute_id=institute_id, vertical=vertical
+            )
             if cached:
                 logger.info("Gemini failed — serving %d cached questions from question bank", len(cached))
                 return JsonResponse({
@@ -1022,7 +1031,7 @@ def generate_practice_test(request):
                 system_prompt=template.system,
                 user_prompt=user_prompt,
                 model="llama-3.3-70b-versatile",
-                temperature=0.4,
+                temperature=0.7,
                 max_tokens=max_output_tokens,
                 json_mode=True,
                 institute_id=institute_id,
@@ -1030,7 +1039,10 @@ def generate_practice_test(request):
         except RuntimeError as e:
             logger.error("LLM complete failed: %s", e)
             # Try question bank fallback before returning error
-            cached = question_bank.get_random(subject, chapter, difficulty, qtype, num_questions)
+            cached = question_bank.get_random(
+                subject, chapter, difficulty, qtype, num_questions,
+                institute_id=institute_id, vertical=vertical
+            )
             if cached:
                 logger.info("LLM failed — serving %d cached questions from question bank", len(cached))
                 return JsonResponse({
@@ -1057,7 +1069,10 @@ def generate_practice_test(request):
 
     # Save successfully generated questions to the question bank for future fallback
     if parsed.get("questions"):
-        question_bank.save(subject, chapter, difficulty, qtype, parsed["questions"])
+        question_bank.save(
+            subject, chapter, difficulty, qtype, parsed["questions"],
+            institute_id=institute_id, vertical=vertical
+        )
 
     logger.info(
         "generate_practice_test: OK | type=%s | style=%s | returned=%d questions",
