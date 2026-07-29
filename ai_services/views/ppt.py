@@ -55,14 +55,18 @@ You are an expert educational presentation designer creating classroom PPT slide
 • No trailing commas before } or ].
 
 ═══ BULLET POINT STANDARD (most important rule) ═══
-Each bullet point must be ONE complete, informative sentence of 12–20 words.
+Each bullet point must be ONE complete, informative sentence of 12–30 words.
 It must state a clear fact, include a specific detail, and be understandable on its own.
 
-  ✗ TOO SHORT (fragment — rejected): "Located in Pakistan" / "Hot climate"
-  ✗ TOO LONG (essay — rejected): a 40-word run-on sentence.
-  ✓ CORRECT LENGTH (12–20 words):
+═══ ACADEMIC RIGOUR & COURSE CONTENT ═══
+• Generates high-quality actual course content for the specific class, subject, and chapter.
+• For numerical, physics, chemistry, or math chapters, you MUST include clear step-by-step mathematical derivations, relevant formulas, and worked numerical examples.
+• Formulas must use standard LaTeX wrapped in double dollar signs: $$formula$$ (e.g. $$E = mc^2$$ or $$\\vec{F} = m\\vec{a}$$). Ensure double backslashes are used for LaTeX commands (e.g. \\\\frac for fraction) so they survive JSON parsing.
+
+  ✗ TOO SHORT (fragment — rejected): "Located in Pakistan" / "Formula is F=ma"
+  ✓ CORRECT LENGTH & FORMULA (12–30 words):
       "The Harappan civilisation (3300–1300 BCE) covered 1.25 million sq km across modern Pakistan and India."
-      "Cities like Mohenjo-daro used a precise grid layout with wide roads and brick-lined drainage systems."
+      "Newton's Second Law states that force is directly proportional to acceleration, expressed as the formula $$\\vec{F} = m\\vec{a}$$."
 
 ═══ SLIDE STRUCTURE ═══
 Generate EXACTLY {{SLIDE_COUNT}} slides about "{{TOPIC}}" in {{LANGUAGE}}.
@@ -74,12 +78,12 @@ Slide 1  → type "title"
 
 Slides 2 – {{LAST_CONTENT}}  → type "content"
   • title: clear 3–6 word heading for this specific sub-topic
-  • bullets: EXACTLY 5 bullet points — each a complete sentence of 12–20 words with a specific fact
+  • bullets: EXACTLY 5 bullet points — each a complete sentence of 12–30 words containing core definitions, mathematical derivations, formula steps, or numerical practice problems.
   • Each slide must cover a DIFFERENT sub-topic.
 
 Slide {{SLIDE_COUNT}}  → type "summary"
   • title: "Key Takeaways" or similar
-  • bullets: 5 bullet points, each a complete sentence of 12–20 words summarising one key fact
+  • bullets: 5 bullet points, each a complete sentence of 12–30 words summarising one key fact or fundamental formula.
 
 ═══ IMAGE SEARCH TERM RULES ═══
 imageSearchTerm MUST match the exact sub-topic of THAT slide — never the general topic.
@@ -96,7 +100,7 @@ Return ONLY valid JSON — no markdown fences, no commentary:
   "title": "Presentation Title",
   "slides": [
     { "slideNumber": 1, "type": "title", "title": "Engaging Main Title", "subtitle": "One sentence previewing what students will learn.", "bullets": [], "speakerNotes": "Ask students what they already know.", "imageSearchTerm": "topic overview educational photograph" },
-    { "slideNumber": 2, "type": "content", "title": "Sub-Topic Heading", "subtitle": "", "bullets": ["Complete sentence of 12–20 words with a specific fact.", "Another complete sentence of 12–20 words.", "A sentence explaining a cause, effect, or significance.", "A sentence with a number, date, name, or comparison.", "An interesting detail that deepens understanding."], "speakerNotes": "Ask students: which fact surprised you most?", "imageSearchTerm": "specific 4-7 word term with visual hint" }
+    { "slideNumber": 2, "type": "content", "title": "Sub-Topic Heading", "subtitle": "", "bullets": ["Complete sentence of 12–30 words with a specific fact.", "Step-by-step formula derivation: $$y = mx + c$$.", "A sentence explaining a cause, effect, or significance.", "Worked numerical example: find $$x$$ given $$y=5$$.", "An interesting detail that deepens understanding."], "speakerNotes": "Ask students: which fact surprised you most?", "imageSearchTerm": "specific 4-7 word term with visual hint" }
   ]
 }"""
 
@@ -118,12 +122,12 @@ def _build_regenerate_prompt(slide_index: int, total_slides: int, topic: str, sl
             "what students will learn). bullets must be []."
         ),
         "summary": (
-            "Summary slide: 5 bullet points, each a complete sentence of 12–20 words "
-            "summarising one key fact from the presentation."
+            "Summary slide: 5 bullet points, each a complete sentence of 12–30 words "
+            "summarising one key fact or fundamental formula from the presentation."
         ),
         "content": (
-            "Content slide: EXACTLY 5 bullet points, each a complete sentence of 12–20 words "
-            "with a specific fact, number, name, or detail. No fragments. No essays."
+            "Content slide: EXACTLY 5 bullet points, each a complete sentence of 12–30 words "
+            "containing core definitions, mathematical derivations, formula steps, or numerical practice problems."
         ),
     }
     slide_rule = rules.get(slide_type, rules["content"])
@@ -131,14 +135,15 @@ def _build_regenerate_prompt(slide_index: int, total_slides: int, topic: str, sl
 You are a senior curriculum writer. Regenerate slide {slide_index + 1} of {total_slides} \
 for a presentation about "{topic}". Type: "{slide_type}".
 
-BULLET RULE — each bullet must be ONE complete sentence of 12–20 words with a specific fact. \
+═══ ACADEMIC RIGOUR & COURSE CONTENT ═══
+• Generates high-quality actual course content for the specific class, subject, and chapter.
+• For numerical, physics, chemistry, or math chapters, you MUST include clear step-by-step mathematical derivations, relevant formulas, and worked numerical examples.
+• Formulas must use standard LaTeX wrapped in double dollar signs: $$formula$$ (e.g. $$E = mc^2$$ or $$\\vec{F} = m\\vec{a}$$). Ensure double backslashes are used for LaTeX commands (e.g. \\\\frac for fraction) so they survive JSON parsing.
+
+BULLET RULE — each bullet must be ONE complete sentence of 12–30 words with a specific fact, formula, derivation step, or worked numerical example. \
 Not a fragment. Not a long paragraph.
-  ✗ TOO SHORT: "Located in Pakistan"
-  ✗ TOO LONG: "The Harappan civilisation was centred in the Indus River Valley and stretched \
-across approximately 1.25 million square kilometres covering modern-day Pakistan, northwest India, \
-and parts of Afghanistan."
-  ✓ CORRECT: "The Harappan civilisation (3300–1300 BCE) spanned 1.25 million sq km across \
-modern Pakistan and India."
+  ✗ TOO SHORT: "Located in Pakistan" / "Formula is F=ma"
+  ✓ CORRECT: "Newton's Second Law states that force is directly proportional to acceleration, expressed as the formula $$\\vec{F} = m\\vec{a}$$."
 
 {slide_rule}
 
