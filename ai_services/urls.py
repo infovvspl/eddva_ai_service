@@ -65,6 +65,10 @@ urlpatterns = [
     # AI #16 — Topic Content Generator
     path("content/generate", bridge.generate_topic_content),
 
+    # Subjective-answer grading — rubric generation (marking scheme, per question)
+    path("grading/subjective-rubric-batch", bridge.generate_subjective_rubrics),
+    path("grading/subjective-answer", bridge.grade_subjective_answer),
+
     # AI Engine Health (teacher/admin panel)
     path("ai/health", bridge.ai_engine_health),
 

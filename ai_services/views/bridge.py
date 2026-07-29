@@ -4662,6 +4662,98 @@ _CONTENT_TYPE_PROMPTS = {
         "Questions must be syllabus-aligned, conceptually varied, and gradually increasing in difficulty. "
         "Do NOT mention any class, grade, board, or exam name anywhere in the output."
     ),
+    "assessment_paper": (
+        "Generate the QUESTION CONTENT for a formal school assessment/exam paper — this is an exam, "
+        "not lesson notes, a summary, or a concept explainer. Every item must be something a student "
+        "answers, not something they read.\n\n"
+        "STEP 1 — before writing any question, silently list EVERY standard sub-mechanism, sub-process, or "
+        "sub-concept that a real school textbook groups under this exact topic name. Do not artificially cap "
+        "this list at a small number — a narrow topic may genuinely have only 3-4, but a broad topic covering "
+        "multiple related processes (e.g. a topic spanning both plant and animal/human versions of a process) "
+        "can easily have 8-10+, and ALL of them belong on your list, not just the first few that come to mind. "
+        "Example: for a Science/Chemistry topic on the chemical properties/reactions of acids and bases, the "
+        "standard sub-mechanisms are: (a) reaction with reactive metals -> salt + hydrogen gas, "
+        "(b) reaction with metal carbonates/bicarbonates -> salt + water + carbon dioxide, "
+        "(c) reaction with metal oxides -> salt + water, (d) reaction of bases with non-metal oxides, "
+        "(e) the neutralization reaction acid + base -> salt + water, (f) the role of H+ / OH- ions in "
+        "solution and behaviour of indicators. For a different subject/topic, identify the equivalent "
+        "textbook sub-mechanisms yourself the same way — going as broad as the topic genuinely requires.\n\n"
+        "STEP 2 — your question set MUST include AT LEAST ONE question covering EACH sub-mechanism you "
+        "identified that is relevant to the stated topic, spread across the available sections. Do not let "
+        "2-3 themes (e.g. only neutralization and pH) dominate the paper while other core sub-mechanisms "
+        "from your list are skipped entirely — that produces a shallow, unbalanced paper and is the single "
+        "most common failure mode to avoid.\n\n"
+        "Additional question-selection rules:\n"
+        "- FACTUAL ACCURACY (applies to every subject, not just science/maths): before including ANY "
+        "specific factual claim — a reaction/equation, a numeric answer, a plot event, a character's action, "
+        "a historical date or event, a quoted line, a scientific fact — verify it against what you actually "
+        "know to be true about that exact source/topic. Do NOT invent a specific-sounding detail (a wrong "
+        "plot event, a wrong date, a wrong equation, a wrong outcome) just to make a question sound concrete. "
+        "If you are not fully confident a specific detail is accurate, fall back to a simpler claim or "
+        "question you ARE confident is correct — a vaguer-but-correct question is always better than a "
+        "specific-but-wrong one.\n"
+        "- PRECISION ON MULTI-STAGE PROCESSES: many real processes happen in multiple stages, involve more "
+        "than one organ/agent, or have a 'begins here, completed there' structure (e.g. digestion of a "
+        "nutrient starting in one organ and finishing in another; one organ being the primary regulator of "
+        "something while a second organ plays a supporting role). Do NOT collapse this into a single vague "
+        "'primary site' / 'main organ' / 'is responsible for' claim that glosses over the other stage(s) or "
+        "contributor(s) — that is misleading even when it points at the most-correct single answer. Instead, "
+        "either name the specific stage precisely ('X begins in the mouth and is completed in the small "
+        "intestine' -> ask about the specific stage, e.g. 'where does X begin'), or ask students to compare/"
+        "sequence the stages, rather than asking for one flattened 'the' answer to a multi-part process.\n"
+        "- Prioritise questions that test APPLICATION and UNDERSTANDING over bare RECALL: observable "
+        "outcomes of a process/reaction, cause-and-effect ('what happens when...', 'why does...'), "
+        "calculations, interpreting a given scenario, comparing/distinguishing correct vs. incorrect "
+        "statements about a process, and short 'explain why' reasoning.\n"
+        "- Include AT LEAST ONE balanced chemical equation, formula, or fully worked numerical step "
+        "directly inside a question or its answer key, wherever the subject supports it (Chemistry, "
+        "Physics, Maths, etc.) — do not leave every reaction described only in words. Before including any "
+        "chemical equation, verify it yourself: correct reactants/products for that exact reaction, and "
+        "atom-balanced coefficients on both sides. If you are not fully certain a specific equation is "
+        "correct and balanced, use a simpler equation you ARE certain is correct instead of a more complex "
+        "but possibly wrong one — an incorrect equation is worse than no equation.\n"
+        "- When a numerical/Maths question specifies a particular solution METHOD (e.g. 'solve by "
+        "factorisation', 'solve by completing the square'), you MUST actually work through that exact "
+        "method yourself on the numbers you chose before finalising the question, and only use numbers for "
+        "which that specific method cleanly succeeds (e.g. for 'solve by factorisation', only use a "
+        "quadratic whose discriminant is a perfect square — do not set a students an equation that method "
+        "cannot actually solve).\n"
+        "- Math/equation delimiter formatting: wrap ONLY the equation or numeric expression itself in `$...$` "
+        "(inline) or `$$...$$` (standalone). NEVER include the option label (e.g. `a)`, `b)`), question "
+        "number, or any surrounding English words inside the `$...$` delimiters — those stay as plain text "
+        "outside the math delimiters.\n"
+        "- Where the underlying process has a directly observable real-world effect (gas evolution / "
+        "effervescence, colour change, precipitate formation, temperature change, etc.), include at least "
+        "one question that tests the observable outcome itself, not just the abstract fact behind it. Phrase "
+        "these as facts/observations to identify (e.g. 'X is sour in taste', 'what would you observe when...') "
+        "— never as an instruction implying the student should personally taste, smell, or touch a hazardous "
+        "substance.\n"
+        "- For every MCQ, exactly ONE option may be correct. Before finalising each MCQ, check whether more "
+        "than one option is technically/scientifically defensible as correct under a literal reading — if so, "
+        "rewrite the question or options so only one is unambiguously correct. Separately, the four options "
+        "within one MCQ must all be textually distinct from each other — never repeat the same option text "
+        "twice in the same question.\n"
+        "- Pure definition, terminology, or trivia questions (e.g. 'what is X called', 'who coined/discovered "
+        "X', fill-in-the-blank answers that are themselves a vocabulary term like 'acidity'/'basicity'/"
+        "'ionization'/'proton donor') must be a SMALL MINORITY of the paper (roughly 1 in 5 questions at "
+        "most) — never the dominant question style, even for Section A (MCQ).\n"
+        "- Every question must be answerable strictly from the syllabus content of the stated topic — not "
+        "the wider chapter, not a different chapter, not a different subject area entirely, and not adjacent/"
+        "more-advanced theory a student at this class level would not have been taught (e.g. do not introduce "
+        "Bronsted-Lowry acid-base theory or formal proton-donor/acceptor terminology into a foundational "
+        "school-level topic unless the topic name itself calls for it). Before finalising each question, check: "
+        "'does this question's core content belong to the STATED topic, or does it actually belong to a "
+        "different topic — even one from a completely different chapter or subject area that happens to be "
+        "loosely thematically related?' If the latter, cut it. Example: if the topic is the chemical "
+        "properties/reactions of acids and bases, do not include questions about the general properties of "
+        "salts as a class of compounds (a different topic in the same chapter) — a salt appearing only as the "
+        "product of a stated acid/base reaction is expected and fine. Example: if the topic is Nutrition "
+        "(within a Life Processes chapter), do not include questions about food chains, producers/consumers, "
+        "or ecosystems — those belong to a separate Ecology chapter entirely, even though they are loosely "
+        "thematically adjacent to 'nutrition'.\n"
+        "- Vary question stems across items — do not reuse the same sentence pattern "
+        "(e.g. 'Which of the following is...') for every MCQ in a section."
+    ),
     "pyq": (
         "Generate a school Previous Year Question (PYQ) style practice set on this topic in Markdown. "
         "Simulate authentic class/board exam questions for the selected class only.\n\n"
@@ -5086,7 +5178,388 @@ def _has_incomplete_mcq_options(markdown: str) -> bool:
     return option_count == 0
 
 
+def _decompose_topic_coverage(
+    topic_name: str, subject_name: str, chapter_name: str, class_name: str, institute_id: str,
+) -> list[str] | None:
+    """Ask the LLM, as a separate short call, to enumerate the genuine distinct
+    sub-areas a real school textbook covers under this exact topic name.
 
+    Why a separate call instead of asking the main generation call to "silently
+    list" its own coverage plan: that in-line approach was tested and found
+    unreliable — for broad topics spanning multiple sub-areas (e.g. a "Nutrition"
+    topic covering both plant/autotrophic and animal/human digestion), the main
+    generation call consistently narrowed to just one sub-area across repeated
+    generations, skipping the other(s) entirely, every single time. Deciding the
+    coverage list BEFORE writing any questions — and then feeding it back in as an
+    explicit, mandatory structural requirement — is what actually gets followed
+    (structural requirements like exact section/question counts are reliably
+    honoured; open-ended "think broadly" judgement calls are not).
+
+    Returns None on any failure (LLM error, bad/missing JSON) so callers can fall
+    back to the in-line instruction — this pre-step must never break generation.
+    """
+    try:
+        result = get_llm().complete(
+            system_prompt=(
+                "You are a school curriculum expert. Given a subject/chapter/topic, list the distinct "
+                "sub-areas a real school textbook covers under that exact topic — not the whole chapter, "
+                "just this topic. A narrow topic may genuinely have only 2-3 sub-areas; a broad topic "
+                "spanning multiple related processes (e.g. one that covers both a plant/biological version "
+                "and a human/animal version of a concept) can have 6-10+. List ALL of them — do not "
+                "artificially limit yourself to a small number, and do not omit an entire major branch of "
+                "the topic (e.g. do not describe only the human/animal side of a topic that also covers "
+                "plants, or vice versa)."
+            ),
+            user_prompt=(
+                f"Class: {class_name or 'not specified'}\n"
+                f"Subject: {subject_name}\n"
+                f"Chapter: {chapter_name}\n"
+                f"Topic: {topic_name}\n\n"
+                "List the distinct sub-areas of THIS topic (not the wider chapter) as they would genuinely "
+                "appear in a school textbook treatment of it. Each item should be a short phrase (3-8 words), "
+                "specific enough that a question could be written to test it directly.\n"
+                'Respond as JSON: {"sub_areas": ["...", "...", ...]}'
+            ),
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+            max_tokens=600,
+            json_mode=True,
+            institute_id=institute_id,
+        )
+        sub_areas = result["content"].get("sub_areas")
+        if not isinstance(sub_areas, list):
+            return None
+        cleaned = [str(s).strip() for s in sub_areas if str(s).strip()]
+        return cleaned[:12] if cleaned else None
+    except Exception as exc:
+        logger.warning("Topic coverage decomposition failed (%s) — falling back to in-line instruction", exc)
+        return None
+
+
+_SUBJECTIVE_RUBRIC_SYSTEM_PROMPT = (
+    "You are an experienced school examiner writing the internal marking scheme for a set of short/long-answer "
+    "exam questions — the rubric a teacher would use to mark student answers, not the questions themselves. "
+    "A BOARD CONTEXT block (if present above) tells you which board's syllabus, terminology, and paper style "
+    "to follow — apply it to every criterion, key concept, and model answer you write.\n\n"
+    "For EACH question, produce:\n"
+    "1. `criteria`: 2-4 independent marking points, each with its own mark value. The `marks` values across "
+    "all criteria for one question MUST sum to EXACTLY that question's stated marks (e.g. a 3-mark question "
+    "might be split 1+1+1 or 1+2; a 5-mark question might be 1+2+2). Never leave marks unallocated, never "
+    "exceed the total.\n"
+    "2. `keyConcepts`: 2-5 short phrases naming the core ideas/terms a correct answer should demonstrate — "
+    "these are GUIDANCE for a human or AI marker to recognise the concept in ANY correct phrasing, not exact "
+    "strings a student's words must literally match (e.g. 'hydrogen gas released', not just the word "
+    "'hydrogen').\n"
+    "3. `modelAnswer`: a concise reference answer (2-5 sentences for short answer, a short paragraph for long "
+    "answer) that would earn full marks.\n\n"
+    "Write criteria the way a real board marking scheme reads: concrete and checkable (e.g. 'States that the "
+    "reaction produces carbon dioxide gas', not 'Good explanation'). Keep criteria at the class/board level "
+    "implied by the question — do not require content beyond the syllabus depth a student at that level would "
+    "have been taught."
+)
+
+
+@api_view(["POST"])
+def generate_subjective_rubrics(request):
+    """
+    POST body: {"questions": [{"questionId","text","marks","type"}, ...], "subjectName", "className", "board"}
+    Returns:   {"rubrics": [{"questionId","criteria":[{"text","marks"}],"keyConcepts":[...],"modelAnswer"}, ...]}
+
+    Best-effort / non-critical: this only enriches questions with a marking-scheme
+    rubric at assessment-creation time. A caller (school-assessment.service.ts)
+    must never fail assessment creation because this failed, so failures return
+    200 with an empty rubrics list rather than a 4xx/5xx — the grading step later
+    already has a fallback for questions with no stored rubric.
+    """
+    _start_time = time.time()
+    institute_id = _resolve_institute_id(request)
+    vertical = getattr(request, "vertical", "school")
+    board = getattr(request, "board", None)
+
+    questions = (request.data or {}).get("questions", [])
+    if not questions:
+        return Response({"rubrics": []})
+
+    subject_name = (request.data or {}).get("subjectName", "") or ""
+    class_name = (request.data or {}).get("className", "") or ""
+
+    simplified = [
+        {
+            "questionId": q.get("questionId"),
+            "text": q.get("text", ""),
+            "marks": q.get("marks", 1),
+        }
+        for q in questions
+        if q.get("questionId") and q.get("text")
+    ]
+    if not simplified:
+        return Response({"rubrics": []})
+
+    user_prompt = (
+        f"Subject: {subject_name}\nClass: {class_name}\n\n"
+        "Questions (produce one rubric object per question, matching questionId):\n"
+        f"{json.dumps(simplified, indent=2, ensure_ascii=False)}\n\n"
+        'Respond as JSON: {"rubrics": [{"questionId": "...", "criteria": [{"text": "...", "marks": 1}], '
+        '"keyConcepts": ["..."], "modelAnswer": "..."}]}'
+    )
+
+    from ai_services.core.boards import board_instruction
+
+    try:
+        result = get_llm().complete(
+            system_prompt=board_instruction(board) + _SUBJECTIVE_RUBRIC_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+            max_tokens=2048,
+            json_mode=True,
+            institute_id=institute_id,
+        )
+        rubrics = result["content"].get("rubrics")
+        if not isinstance(rubrics, list):
+            rubrics = []
+
+        # Defensive re-clamp: LLM JSON-mode occasionally drifts by a mark or two.
+        marks_by_id = {q["questionId"]: q["marks"] for q in simplified}
+        cleaned = []
+        for r in rubrics:
+            qid = r.get("questionId")
+            if not qid or qid not in marks_by_id:
+                continue
+            target_marks = float(marks_by_id[qid] or 1)
+            criteria = [
+                {"text": str(c.get("text", "")).strip(), "marks": max(0, float(c.get("marks", 0) or 0))}
+                for c in (r.get("criteria") or [])
+                if str(c.get("text", "")).strip()
+            ]
+            if not criteria:
+                continue
+            criteria_sum = sum(c["marks"] for c in criteria) or 1
+            if abs(criteria_sum - target_marks) > 0.01:
+                scale = target_marks / criteria_sum
+                for c in criteria:
+                    c["marks"] = round(c["marks"] * scale, 2)
+            key_concepts = [str(k).strip() for k in (r.get("keyConcepts") or []) if str(k).strip()][:5]
+            cleaned.append({
+                "questionId": qid,
+                "criteria": criteria,
+                "keyConcepts": key_concepts,
+                "modelAnswer": str(r.get("modelAnswer", "")).strip(),
+            })
+
+        try:
+            _usage = result.get("usage", {})
+            log_usage(
+                institute_id=institute_id,
+                institute_type=vertical if vertical in ("school", "coaching") else "coaching",
+                feature_id="subjective_rubric_generation",
+                feature_category="teacher",
+                model_used=result.get("model", "llama-3.3-70b-versatile"),
+                tokens_input=_usage.get("prompt_tokens", 0),
+                tokens_output=_usage.get("completion_tokens", 0),
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=True,
+            )
+        except Exception:
+            pass
+
+        return Response({"rubrics": cleaned})
+    except Exception as exc:
+        logger.warning("Subjective rubric generation failed (institute=%s): %s", institute_id, exc)
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type=vertical if vertical in ("school", "coaching") else "coaching",
+                feature_id="subjective_rubric_generation",
+                feature_category="teacher",
+                model_used="llama-3.3-70b-versatile",
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(exc)[:500],
+            )
+        except Exception:
+            pass
+        return Response({"rubrics": []})
+
+
+_SUBJECTIVE_GRADING_SYSTEM_PROMPT = (
+    "You are an experienced school examiner marking one student's answer to one short/long-answer exam "
+    "question. A BOARD CONTEXT block (if present above) tells you which board's syllabus, terminology, and "
+    "paper style to apply — mark strictly within that board's conventions, not any other board's. Follow "
+    "these rules exactly — a human teacher reviews every mark you give before it reaches the student, so "
+    "it is always safe to flag uncertainty rather than guess.\n\n"
+    "1. Award marks ONLY against the given criteria. If no criteria are supplied, first infer 2-4 sensible "
+    "criteria yourself from the question and (if given) the model answer, summing to the question's max "
+    "marks, then grade against those — never invent marks that aren't tied to a stated or inferred "
+    "criterion.\n"
+    "2. Grade each criterion independently (step-wise/partial credit) — a student can earn some criteria "
+    "and not others; do not make the whole answer all-or-nothing.\n"
+    "3. Accept scientifically/mathematically EQUIVALENT phrasing as correct, even if the wording differs "
+    "from the model answer. Example: if a criterion is 'names the gas produced' and the model answer says "
+    "'hydrogen gas', a student who writes 'H2 gas' or 'H₂' must get that criterion in full — do not require "
+    "matching words, only matching meaning.\n"
+    "4. For numerical/calculation questions: if the student's method and setup are correct but the final "
+    "numeric answer is wrong ONLY because of an arithmetic slip in the last step, award every method-related "
+    "criterion in full and withhold only the criterion that specifically asks for the correct final answer. "
+    "Example: a 5-mark question split as [formula: 1, substitution: 1, working: 2, final answer: 1] where the "
+    "student sets up and substitutes correctly, makes one arithmetic error in simplifying, and states a wrong "
+    "final number — award 4/5, not 0/5 and not 5/5.\n"
+    "5. Never penalise spelling, grammar, or awkward phrasing when the underlying concept/answer is correct.\n"
+    "6. The sum of awarded marks must never exceed the question's max marks and never go below 0. Do not round "
+    "up generously — award exactly what the criteria justify.\n"
+    "7. Set `flagForReview: true` (with a short `reviewNote`) whenever the answer is ambiguous, suspiciously "
+    "short/generic, appears copied verbatim from the question, or you are otherwise not confident in your "
+    "grading — this costs nothing and a teacher will check it.\n"
+    "8. Never grade based on handwriting quality, answer length alone, or presentation — grade the content.\n\n"
+    "Worked example: Question (3 marks): 'What happens when dilute hydrochloric acid is added to sodium "
+    "carbonate?' Criteria: [1: states carbon dioxide gas is produced, 1: mentions sodium chloride is formed, "
+    "1: mentions water is formed]. Student answer: 'It makes CO2 gas and NaCl salt.' -> Criterion 1 (CO2 gas): "
+    "award 1 — 'CO2 gas' matches 'carbon dioxide gas' exactly in meaning. Criterion 2 (sodium chloride): award "
+    "1 — 'NaCl salt' matches 'sodium chloride' in meaning. Criterion 3 (water): award 0 — water is not "
+    "mentioned at all. Total: 2/3, not flagged (clear and gradable, just incomplete)."
+)
+
+
+@api_view(["POST"])
+def grade_subjective_answer(request):
+    """
+    POST body: {
+      "questionText", "maxMarks", "studentAnswer",
+      "criteria"?: [{"text","marks"}], "keyConcepts"?: [...], "modelAnswer"?: "...",
+      "subjectName"?, "className"?
+    }
+    Board (CBSE/ICSE/IB/State) comes from the X-Board header, same as every other
+    school-vertical endpoint — resolved by TenantAuthMiddleware into request.board,
+    not a body field.
+    Returns: {
+      "criteria": [{"criterion","maxMarks","awardedMarks","justification"}],
+      "totalAwarded", "maxMarks", "strengths": [...], "missingPoints": [...], "suggestions": [...],
+      "flagForReview", "reviewNote"
+    }
+    """
+    _start_time = time.time()
+    institute_id = _resolve_institute_id(request)
+    vertical = getattr(request, "vertical", "school")
+    board = getattr(request, "board", None)
+
+    data = request.data or {}
+    question_text = str(data.get("questionText", "")).strip()
+    student_answer = str(data.get("studentAnswer", "")).strip()
+    try:
+        max_marks = float(data.get("maxMarks"))
+    except (TypeError, ValueError):
+        max_marks = None
+    if not question_text or not student_answer or max_marks is None:
+        return Response({"error": "questionText, studentAnswer, and maxMarks are required"}, status=400)
+
+    criteria = data.get("criteria") or []
+    key_concepts = data.get("keyConcepts") or []
+    model_answer = data.get("modelAnswer", "") or ""
+    subject_name = data.get("subjectName", "") or ""
+    class_name = data.get("className", "") or ""
+
+    user_prompt_parts = [
+        f"Subject: {subject_name}" if subject_name else "",
+        f"Class: {class_name}" if class_name else "",
+        f"Question ({max_marks} marks): {question_text}",
+    ]
+    if criteria:
+        criteria_lines = "\n".join(f"- ({c.get('marks', 0)} marks) {c.get('text', '')}" for c in criteria)
+        user_prompt_parts.append(f"Marking criteria:\n{criteria_lines}")
+    else:
+        user_prompt_parts.append(
+            "No marking criteria were supplied — infer 2-4 sensible criteria yourself, summing to "
+            f"{max_marks} marks, before grading (per rule 1)."
+        )
+    if key_concepts:
+        user_prompt_parts.append(f"Key concepts to look for (any equivalent phrasing counts): {', '.join(key_concepts)}")
+    if model_answer:
+        user_prompt_parts.append(f"Model answer (for reference, not for literal matching): {model_answer}")
+    user_prompt_parts.append(f"Student's answer: {student_answer}")
+    user_prompt_parts.append(
+        'Respond as JSON: {"criteria": [{"criterion": "...", "maxMarks": 1, "awardedMarks": 1, '
+        '"justification": "..."}], "strengths": ["..."], "missingPoints": ["..."], "suggestions": ["..."], '
+        '"flagForReview": false, "reviewNote": ""}'
+    )
+    user_prompt = "\n\n".join(p for p in user_prompt_parts if p)
+
+    from ai_services.core.boards import board_instruction
+
+    try:
+        result = get_llm().complete(
+            system_prompt=board_instruction(board) + _SUBJECTIVE_GRADING_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            model="llama-3.3-70b-versatile",
+            temperature=0.2,
+            max_tokens=1536,
+            json_mode=True,
+            institute_id=institute_id,
+        )
+    except Exception as exc:
+        logger.error("Subjective answer grading failed (institute=%s): %s", institute_id, exc)
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type=vertical if vertical in ("school", "coaching") else "coaching",
+                feature_id="subjective_answer_grading",
+                feature_category="teacher",
+                model_used="llama-3.3-70b-versatile",
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(exc)[:500],
+            )
+        except Exception:
+            pass
+        return Response({"error": str(exc)}, status=502)
+
+    content = result.get("content", {}) if isinstance(result.get("content"), dict) else {}
+    raw_criteria = content.get("criteria") if isinstance(content.get("criteria"), list) else []
+
+    # Defensive clamp: each criterion's award never exceeds its own max, and the
+    # total never exceeds the question's max marks (rule 6, restated as code —
+    # LLM JSON-mode occasionally overshoots by a fraction).
+    graded_criteria = []
+    for c in raw_criteria:
+        try:
+            c_max = max(0.0, float(c.get("maxMarks", 0) or 0))
+            c_awarded = min(c_max, max(0.0, float(c.get("awardedMarks", 0) or 0)))
+        except (TypeError, ValueError):
+            c_max, c_awarded = 0.0, 0.0
+        graded_criteria.append({
+            "criterion": str(c.get("criterion", "")).strip(),
+            "maxMarks": c_max,
+            "awardedMarks": c_awarded,
+            "justification": str(c.get("justification", "")).strip(),
+        })
+    total_awarded = min(max_marks, max(0.0, sum(c["awardedMarks"] for c in graded_criteria)))
+
+    try:
+        _usage = result.get("usage", {})
+        log_usage(
+            institute_id=institute_id,
+            institute_type=vertical if vertical in ("school", "coaching") else "coaching",
+            feature_id="subjective_answer_grading",
+            feature_category="teacher",
+            model_used=result.get("model", "llama-3.3-70b-versatile"),
+            tokens_input=_usage.get("prompt_tokens", 0),
+            tokens_output=_usage.get("completion_tokens", 0),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+        )
+    except Exception:
+        pass
+
+    return Response({
+        "criteria": graded_criteria,
+        "totalAwarded": round(total_awarded, 2),
+        "maxMarks": max_marks,
+        "strengths": [str(s).strip() for s in (content.get("strengths") or []) if str(s).strip()],
+        "missingPoints": [str(s).strip() for s in (content.get("missingPoints") or []) if str(s).strip()],
+        "suggestions": [str(s).strip() for s in (content.get("suggestions") or []) if str(s).strip()],
+        "flagForReview": bool(content.get("flagForReview", False)) or not graded_criteria,
+        "reviewNote": str(content.get("reviewNote", "")).strip(),
+        "_meta": {"model": result.get("model", "llama-3.3-70b-versatile"), "latency_ms": round(result.get("latency_ms", 0))},
+    })
 
 
 @api_view(["POST"])
@@ -5145,7 +5618,16 @@ def generate_topic_content(request):
     if not topic_name:
         return Response({"error": "Missing topicName"}, status=400)
 
-
+    # Assessment papers get a dedicated coverage-decomposition pre-step (see
+    # _decompose_topic_coverage docstring for why this is a separate call rather
+    # than an in-line "silently list your coverage" instruction). Other content
+    # types skip this — it's an extra LLM round-trip, only worth the latency/cost
+    # for exam papers where under-coverage was the observed, confirmed problem.
+    coverage_sub_areas: list[str] | None = None
+    if content_type == "assessment_paper":
+        coverage_sub_areas = _decompose_topic_coverage(
+            topic_name, subject_name, chapter_name, exam_target, _resolve_institute_id(request),
+        )
 
     active_prompts = _get_content_prompts(vertical)
     exam_upper = exam_target.upper() if exam_target else "JEE"
@@ -5252,6 +5734,15 @@ def generate_topic_content(request):
         f"Target length: {word_limit}",
     ]
     user_prompt = "\n".join(user_prompt_parts) + "\n"
+    if coverage_sub_areas:
+        user_prompt += (
+            "\nMANDATORY COVERAGE — these sub-areas of this exact topic were identified in advance as core "
+            "to a real school textbook treatment of it. Your question set MUST include AT LEAST ONE question "
+            "addressing EACH sub-area below, spread across the available sections. Do not skip any of "
+            "them, and do not let 2-3 of them dominate while the rest are ignored:\n"
+            + "\n".join(f"{i}. {s}" for i, s in enumerate(coverage_sub_areas, 1))
+            + "\n"
+        )
     if extra_context:
         user_prompt += f"Additional instructions: {extra_context}\n"
     user_prompt += (

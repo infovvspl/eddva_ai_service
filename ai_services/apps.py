@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import threading
 from django.apps import AppConfig
@@ -87,4 +88,31 @@ class AiServicesConfig(AppConfig):
 
         # ── Rate Limiter Init ─────────────────────────────────────────────────
         UsageLimiter()
+
+        # ── Local dev self-heal ──────────────────────────────────────────────
+        # SQLite dev DBs (DB_ENGINE unset, see settings.py) start empty. Without
+        # migrations + a service-account Institute row matching NESTJS_SERVICE_
+        # API_KEY, every call from the NestJS ai-bridge 500s ("no such table")
+        # or 401s. Auto-repair on `runserver` so a fresh clone / wiped db.sqlite3
+        # just works — both operations are idempotent, safe to run every start.
+        # Scoped to `runserver` only so `migrate`/`makemigrations`/`test`/`shell`
+        # aren't affected, and skipped entirely once DB_ENGINE points at a real
+        # (production) database.
+        if not os.getenv("DB_ENGINE") and "runserver" in sys.argv:
+            try:
+                from django.core.management import call_command
+                call_command("migrate", verbosity=0, interactive=False)
+                service_key = os.getenv("NESTJS_SERVICE_API_KEY", "").strip()
+                if service_key:
+                    call_command("ensure_service_account", api_key=service_key, verbosity=0)
+                else:
+                    logger.warning(
+                        "NESTJS_SERVICE_API_KEY not set — skipping service-account "
+                        "self-heal. Calls from the NestJS backend will 401 until "
+                        "`python manage.py ensure_service_account --api-key <AI_API_KEY>` "
+                        "is run manually."
+                    )
+            except Exception as exc:
+                logger.error("Local dev self-heal (migrate/ensure_service_account) failed: %s", exc)
+
         logger.info("AI Services ready — all components initialized")
