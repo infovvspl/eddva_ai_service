@@ -14,7 +14,7 @@ import json
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 import requests as _requests
 from rest_framework.decorators import api_view
@@ -505,14 +505,31 @@ def _log(institute_id, vertical, model, result=None, success=True, error=None):
 # ─────────────────────────────────────────────────────────────────────────────
 _MODEL = "llama-3.3-70b-versatile"
 
-# Upper bound on deck size. 25 slides x 5 bullets x ~30 words needs real headroom,
-# hence the matching token budget below.
 _MAX_SLIDES = 25
-_MAX_TOKENS = 16000
+
+# Output budget, constrained by Groq's per-key tokens-per-minute ceiling.
+#
+# Groq rejects a request outright (413) when prompt + max_tokens exceeds the
+# key's TPM limit — 12000 on the on-demand tier — regardless of how much quota
+# is actually free. This prompt runs ~2300 tokens, so anything above ~9500 here
+# fails on every on-demand key. A measured 16-slide deck emits ~3700 completion
+# tokens, so 25 slides needs roughly 6000; 8500 leaves real headroom against
+# truncation while staying safely inside the limit.
+# Do not raise this without checking the TPM ceiling on the keys in .env.
+_MAX_TOKENS = 8500
 
 # Serper allows ~1 req/s sustained; a small pool keeps 25 slides well under the
 # NestJS 240s timeout without bursting hard enough to get rate-limited.
 _IMAGE_WORKERS = 5
+
+# Wall-clock budget for the optional coverage-planning call.
+#
+# LLMClient.complete() already retries 3 rounds across all ~20 keys before it
+# raises, which takes roughly two minutes when Groq is unreachable. The planning
+# step is best-effort — generation falls back to the in-line instruction without
+# it — so it must not spend that budget: the caller (NestJS) gives up at 240s,
+# and anything the planner burns is taken from the actual slide generation.
+_COVERAGE_DEADLINE_S = 25
 
 
 @api_view(["POST"])
@@ -546,7 +563,22 @@ def generate_presentation(request):
     }
 
     # Decide coverage before writing any slides — see _decompose_ppt_coverage.
-    sub_areas = _decompose_ppt_coverage(ctx, slide_count, institute_id)
+    # Run it under a wall-clock deadline: if the LLM is unhealthy this step would
+    # otherwise consume the whole request budget retrying, and it is optional.
+    sub_areas = None
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            sub_areas = pool.submit(
+                _decompose_ppt_coverage, ctx, slide_count, institute_id
+            ).result(timeout=_COVERAGE_DEADLINE_S)
+    except FuturesTimeout:
+        logger.warning(
+            "PPT coverage planning exceeded %ss — generating without a slide plan",
+            _COVERAGE_DEADLINE_S,
+        )
+    except Exception as exc:  # never let the optional pre-step break generation
+        logger.warning("PPT coverage planning failed (%s) — generating without a slide plan", exc)
+
     if sub_areas:
         # Keep the deck exactly as long as the plan (+ title + summary). A scope with
         # genuinely less material yields a shorter, honest deck rather than one padded
@@ -567,29 +599,30 @@ def generate_presentation(request):
         "Not fragments. Not essays."
     )
 
+    # Single attempt on purpose. LLMClient.complete() already rotates through all
+    # ~20 keys three times (~2 min) before raising, so an outer retry loop only
+    # multiplied that: three attempts took ~5.5 min against a caller that times
+    # out at 240s, turning a fast failure into a long hang with a generic error.
+    # The loop also could not help with malformed JSON — that is handled below,
+    # outside the call — so its temperature fallback never actually applied.
     llm = get_llm()
-    llm_result = None
-    for attempt in range(1, 4):
-        try:
-            llm_result = llm.complete(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model=_MODEL,
-                temperature=0.7 if attempt == 1 else 0.4,
-                max_tokens=_MAX_TOKENS,
-                json_mode=True,
-                institute_id=institute_id,
-            )
-            break
-        except Exception as exc:
-            logger.warning("PPT generate attempt %d/%d failed: %s", attempt, 3, exc)
-            if attempt == 3:
-                _log(institute_id, vertical, _MODEL, success=False, error=exc)
-                return Response(
-                    {"error": "Failed to generate slide content. Please try again."},
-                    status=status.HTTP_502_BAD_GATEWAY,
-                )
-            time.sleep(1)
+    try:
+        llm_result = llm.complete(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=_MODEL,
+            temperature=0.6,
+            max_tokens=_MAX_TOKENS,
+            json_mode=True,
+            institute_id=institute_id,
+        )
+    except Exception as exc:
+        logger.warning("PPT generate failed: %s", exc)
+        _log(institute_id, vertical, _MODEL, success=False, error=exc)
+        return Response(
+            {"error": "Failed to generate slide content. Please try again."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
 
     _log(institute_id, vertical, _MODEL, result=llm_result)
 
