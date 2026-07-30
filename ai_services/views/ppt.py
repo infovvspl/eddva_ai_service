@@ -582,8 +582,8 @@ def generate_presentation(request):
     slide_count = max(3, min(_MAX_SLIDES, int(request.data.get("slideCount") or 5)))
     language = (request.data.get("language") or "English").strip()
     institute_id = getattr(request, "institute_id", None)
-    vertical = getattr(request, "vertical", "school")
-    board = getattr(request, "board", None)
+    vertical = getattr(request, "vertical", None) or request.headers.get("X-Vertical") or request.headers.get("x-vertical") or "school"
+    board = getattr(request, "board", None) or request.headers.get("X-Board") or request.headers.get("x-board") or None
 
     ctx = {
         "topic": topic,
@@ -700,8 +700,8 @@ def regenerate_slide(request):
     )
 
     institute_id = getattr(request, "institute_id", None)
-    vertical = getattr(request, "vertical", "school")
-    board = getattr(request, "board", None)
+    vertical = getattr(request, "vertical", None) or request.headers.get("X-Vertical") or request.headers.get("x-vertical") or "school"
+    board = getattr(request, "board", None) or request.headers.get("X-Board") or request.headers.get("x-board") or None
 
     ctx = {
         "topic": topic,
