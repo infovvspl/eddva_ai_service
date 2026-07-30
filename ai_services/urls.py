@@ -59,6 +59,9 @@ urlpatterns = [
     # AI #13 — In-Video Quiz Generator
     path("quiz/generate", bridge.generate_quiz_questions),
 
+    # AI Memorization Generator
+    path("memorization/generate", bridge.generate_memorization_items),
+
     # AI #15 — Text Translation
     path("translate", bridge.translate_text),
 

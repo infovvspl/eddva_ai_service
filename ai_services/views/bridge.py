@@ -5576,7 +5576,12 @@ def generate_topic_content(request):
     exam_target   = (data.get("examTarget") or data.get("exam_target") or "").strip()
     course_name   = (data.get("courseName") or data.get("course_name") or "").strip()
     extra_context = data.get("extraContext", "").strip()
-    board         = str(data.get("board") or "CBSE").strip()
+    board = str(
+        data.get("board")
+        or request.headers.get("X-Board")
+        or request.headers.get("x-board")
+        or "CBSE"
+    ).strip()
     # Language: 'english' (default/None) → Groq/llama; 'hindi' → Groq with Devanagari instruction;
     # 'odia' → Gemini (Groq/llama are weak at Odia script, same as for STT notes).
     language = str(data.get("language") or "").strip().lower()
@@ -5686,7 +5691,6 @@ def generate_topic_content(request):
 
     # Build exam-specific constraint block — injected first in system prompt
     exam_rule = _resolve_exam_rule(exam_target, board)
-    exam_rule = _resolve_exam_rule(exam_target, getattr(request, "board", ""))
 
 
 
@@ -6704,3 +6708,18 @@ NOTES:
         logger.warning("Groq extract headings failed: %s", exc)
         err_detail = f"Groq failed: {exc}" if gemini_exc is None else f"Gemini failed: {gemini_exc}; Groq fallback also failed: {exc}"
         return Response({"error": err_detail}, status=502)
+
+
+@api_view(["POST"])
+def generate_memorization_items(request):
+    data = request.data
+    weak_concepts = data.get("weakConcepts", [])
+    is_default = data.get("isDefaultTemplate", False)
+
+    feature_name = "ai_memorization_default_template" if is_default else "ai_memorization_retention"
+    template = get_template(feature_name)
+    user_prompt = template.user_template.format(
+        weak_concepts_json=json.dumps(weak_concepts)
+    )
+
+    return ai_call(request, feature_name, user_prompt, temperature=0.7)
