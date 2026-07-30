@@ -63,6 +63,19 @@ and write a slide that is in scope instead.
     chains, producers/consumers, or ecosystems — those belong to a separate Ecology chapter.
   ✗ Do NOT introduce more advanced theory a student at the stated class level has not been
     taught yet, even when it is technically correct.
+
+Two independent checks must BOTH pass for every slide:
+  1. IN SCOPE — the content belongs to the stated chapter/topic.
+  2. AT LEVEL — the content is taught at the stated class, in that class's own terms.
+A slide that passes only one of these is a failed slide. Rewrite it.
+  ✗ Class 10 "Corrosion": pitting corrosion, crevice corrosion, stress corrosion cracking,
+    corrosion of polymers/ceramics, corrosion standards, materials-selection theory.
+    These are in scope but far ABOVE Class 10 — they are wrong here.
+  ✓ Class 10 "Corrosion": rusting of iron and its equation, conditions required for rusting,
+    tarnishing of silver, green coating on copper, painting/oiling/greasing, galvanisation,
+    anodising, alloying.
+Use the terminology the stated board's textbook uses for this class — not a synonym from a
+higher class or a different board.
 ═══ NO FILLER SLIDES (the single most common failure mode to avoid) ═══
 Every content slide must teach actual subject matter a student is examined on. Do NOT produce
 scaffold slides that could belong to any topic in any subject. These titles are forbidden:
@@ -161,7 +174,14 @@ def _build_curriculum_context(ctx: dict) -> str:
     """
     lines = []
     if ctx.get("className"):
-        lines.append(f"• Class / grade level: {ctx['className']}")
+        cls = ctx["className"]
+        lines.append(f"• Class / grade level: {cls}  ← PITCH EVERY SLIDE AT THIS LEVEL")
+        lines.append(
+            f"• Write for a {cls} student sitting this board's exam. Use only the vocabulary, "
+            f"depth and worked examples that {cls}'s own textbook uses. If a fact is true but "
+            f"is taught in a higher class, LEAVE IT OUT — a technically correct slide above "
+            f"{cls} level is a wrong slide here."
+        )
     if ctx.get("subjectName"):
         lines.append(f"• Subject: {ctx['subjectName']}")
     if ctx.get("chapterName"):
@@ -176,11 +196,22 @@ def _build_curriculum_context(ctx: dict) -> str:
             "• SCOPE: this deck covers the WHOLE chapter named above, distributed across its "
             "topics — not a single topic, and not material from any other chapter."
         )
+    if lines and not ctx.get("className"):
+        # No grade level resolved. Without an anchor the model drifts upward into
+        # college-level treatment, so pin it to school level explicitly — and put
+        # it first, where the known-class line would have been.
+        lines.insert(
+            0,
+            "• Class / grade level: NOT SPECIFIED — infer the school grade this topic is "
+            "normally taught in and stay at that level throughout. This is a SCHOOL classroom "
+            "deck: never write at undergraduate or professional level.",
+        )
+
     if not lines:
         return (
             f"• Topic: {ctx.get('topic') or 'as stated below'}\n"
-            "• No class/subject/chapter was supplied — infer a sensible school level from the "
-            "topic itself and stay consistent with it throughout."
+            "• No class/subject/chapter was supplied — infer the school grade this topic is "
+            "normally taught in and stay at that level. Never write above school level."
         )
     return "\n".join(lines)
 
