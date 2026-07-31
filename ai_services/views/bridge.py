@@ -3349,11 +3349,17 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
         logger.warning("No GROQ API keys in rotation; vision OCR skipped")
         return ""
 
-    # Vision models to try in order
+
+    # Vision models to try in order.
+    # Llama 3.2 Vision goes FIRST for handwriting/OCR tasks:
+    #   - Qwen 3.6 27B is a reasoning model that enters long <think> loops on
+    #     simple OCR prompts, consuming all available tokens before outputting
+    #     the actual <transcription> block. We keep it as a *second* option
+    #     and pass reasoning_effort='none' to suppress the think loop.
     vision_models = [
-        "qwen/qwen3.6-27b",
-        "llama-3.2-11b-vision-preview",
         "llama-3.2-90b-vision-preview",
+        "llama-3.2-11b-vision-preview",
+        "qwen/qwen3.6-27b",   # last resort — reasoning suppressed below
     ]
 
     for api_key in keys:
@@ -3363,7 +3369,10 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
                     _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=45.0)
                 client = _groq_vision_clients[api_key]
                 logger.info("[VISION] Trying model=%s (base64=%s)", model_name, str(effective_image).startswith("data:"))
-                response = client.chat.completions.create(
+
+                # Build kwargs — suppress chain-of-thought for reasoning models
+                # (Qwen 3.6 27B enters infinite <think> loops on OCR prompts).
+                call_kwargs = dict(
                     model=model_name,
                     messages=[
                         {
@@ -3377,11 +3386,26 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
                             ],
                         }
                     ],
-                    max_tokens=1024,
+                    max_tokens=4096,
                     temperature=0.0,
                 )
-                out = (response.choices[0].message.content or "").strip()
-                logger.info("[VISION] Model=%s raw output: %r", model_name, out)
+                if "qwen" in model_name.lower():
+                    # Disable the extended reasoning budget so Qwen answers
+                    # directly without looping in its <think> block.
+                    try:
+                        call_kwargs["reasoning_effort"] = "none"
+                    except Exception:
+                        pass
+
+                response = client.chat.completions.create(**call_kwargs)
+                raw = (response.choices[0].message.content or "").strip()
+
+                # Strip any leaked <think>...</think> reasoning block that a
+                # reasoning model may emit even with reasoning_effort=none.
+                import re as _re
+                out = _re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=_re.IGNORECASE).strip()
+
+                logger.info("[VISION] Model=%s raw output: %r", model_name, out[:300])
                 extracted_out = _extract_transcription(out)
                 if extracted_out:
                     logger.info("[VISION] Model=%s succeeded: %d chars", model_name, len(extracted_out))
