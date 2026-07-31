@@ -3145,7 +3145,10 @@ def _url_to_base64_data_uri(image_url: str) -> str:
         _PILImage = None
 
     try:
-        resp = _requests.get(image_url, timeout=20)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = _requests.get(image_url, headers=headers, timeout=20)
         resp.raise_for_status()
         
         image_data = resp.content
@@ -3229,7 +3232,10 @@ def _image_to_bytes_and_mime(image_source: str) -> tuple[bytes, str]:
             
     if image_source.startswith(("http://", "https://")):
         try:
-            resp = _requests.get(image_source, timeout=20)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            resp = _requests.get(image_source, headers=headers, timeout=20)
             resp.raise_for_status()
             mime = resp.headers.get("Content-Type", "image/jpeg")
             return resp.content, mime
