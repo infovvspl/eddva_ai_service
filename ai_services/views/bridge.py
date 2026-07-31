@@ -3172,9 +3172,11 @@ def _url_to_base64_data_uri(image_url: str) -> str:
         image_data = resp.content
         content_type = "image/jpeg" # Default to JPEG for compression benefits
 
-        # Compress if PIL is available
+        # Compress and auto-rotate if PIL is available
         if _PILImage:
+            from PIL import ImageOps as _PILImageOps
             with _PILImage.open(_BytesIO(image_data)) as img:
+                img = _PILImageOps.exif_transpose(img)
                 # Convert to RGB if necessary (e.g. for PNG with alpha or GIF)
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGB")
