@@ -969,7 +969,7 @@ def generate_practice_test(request):
             f"'Thermal Physics', 'Electrochemistry' — must be a real chapter from {subject or 'the subject'} syllabus, "
             f"NOT the subject name '{subject or ''}' itself, and NOT a vague label like 'General'). "
         )
-        + "Include an 'options' field only for MCQs."
+        + "Include an 'options' field only for MCQs, which MUST be a list of 4 distinct strings containing the option texts (e.g. [\"Option A text\", \"Option B text\", ...]). Do NOT return option labels like ['A', 'B', 'C', 'D']."
     )
 
     institute_id = getattr(request, "institute_id", "default")
