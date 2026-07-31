@@ -3167,7 +3167,135 @@ def _url_to_base64_data_uri(image_url: str) -> str:
         return image_url
 
 
+def _strip_thinking_tags(text: str) -> str:
+    import re
+    cleaned = re.sub(r'(?i)<think>.*?</think>', '', text, flags=re.DOTALL)
+    if "<think>" in cleaned.lower():
+        cleaned = cleaned.split("<think>", 1)[0]
+    
+    cleaned = cleaned.strip()
+    # If the cleaning removed almost all text, but the original raw text was substantial,
+    # it means the model put the transcription inside the thinking tags (or failed to close them).
+    # In this case, keep the content and just strip the tags.
+    if len(cleaned) < 3 and len(text.strip()) > 3:
+        cleaned = re.sub(r'(?i)</?think>', '', text).strip()
+    return cleaned
 
+
+def _extract_transcription(text: str) -> str:
+    import re
+    # Clean thinking tags first
+    cleaned = _strip_thinking_tags(text)
+    
+    # Try to find <transcription>...</transcription>
+    match = re.search(r'<transcription>(.*?)</transcription>', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+        
+    # Unclosed tag fallback
+    if "<transcription>" in cleaned.lower():
+        parts = re.split(r'<transcription>', cleaned, flags=re.IGNORECASE)
+        if len(parts) > 1:
+            val = parts[1].strip()
+            if "</transcription>" in val.lower():
+                val = val.split("</transcription>", 1)[0].strip()
+            return val
+            
+    return cleaned
+
+
+def _image_to_bytes_and_mime(image_source: str) -> tuple[bytes, str]:
+    import base64 as _b64
+    import requests as _requests
+    
+    if image_source.startswith("data:"):
+        try:
+            header, encoded = image_source.split(",", 1)
+            mime = header.split(";")[0].split(":")[1]
+            data = _b64.b64decode(encoded)
+            return data, mime
+        except Exception:
+            pass
+            
+    if image_source.startswith(("http://", "https://")):
+        try:
+            resp = _requests.get(image_source, timeout=20)
+            resp.raise_for_status()
+            mime = resp.headers.get("Content-Type", "image/jpeg")
+            return resp.content, mime
+        except Exception:
+            pass
+            
+    try:
+        import os
+        if os.path.exists(image_source):
+            with open(image_source, "rb") as f:
+                data = f.read()
+                mime = "image/jpeg"
+                if image_source.endswith(".png"):
+                    mime = "image/png"
+                elif image_source.endswith(".webp"):
+                    mime = "image/webp"
+                return data, mime
+    except Exception:
+        pass
+        
+    return b"", "image/jpeg"
+
+
+def _call_gemini_vision(image_source: str, prompt: str) -> str:
+    import os
+    try:
+        from google import genai
+        from google.genai import types
+        from ai_services.core.gemini_keys import (
+            gemini_key_count,
+            get_rotated_gemini_keys,
+            is_gemini_permanent_key_error,
+            mark_gemini_key_disabled,
+        )
+    except Exception as exc:
+        logger.warning("[VISION] Gemini SDK/keys import failed: %s", exc)
+        return ""
+
+    keys = get_rotated_gemini_keys()
+    if not keys:
+        logger.warning("[VISION] No Gemini API keys found for vision fallback")
+        return ""
+
+    image_bytes, mime_type = _image_to_bytes_and_mime(image_source)
+    if not image_bytes:
+        logger.warning("[VISION] Failed to resolve image to bytes for Gemini")
+        return ""
+
+    model = os.getenv("NOTES_IMAGE_OVERLAY_GEMINI_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"))
+    for key_index, api_key in keys:
+        try:
+            logger.info("[VISION] Trying Gemini model=%s key=%d/%d", model, key_index, gemini_key_count())
+            client = genai.Client(api_key=api_key)
+            contents = [
+                prompt,
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+            ]
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    max_output_tokens=1024,
+                ),
+            )
+            out = (response.text or "").strip()
+            if out:
+                logger.info("[VISION] Gemini vision model succeeded: %d chars", len(out))
+                return out
+        except Exception as exc:
+            msg = str(exc)
+            logger.warning("[VISION] Gemini vision failed on key %d/%d: %s", key_index, gemini_key_count(), msg[:180])
+            if is_gemini_permanent_key_error(msg):
+                mark_gemini_key_disabled(api_key)
+                
+    return ""
 
 
 def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
@@ -3178,6 +3306,12 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
     except ImportError:
         logger.warning("groq package not installed; vision OCR unavailable")
         return ""
+
+    user_prompt = user_prompt + (
+        "\n\nIMPORTANT: You MUST wrap your final transcribed answer/description inside "
+        "<transcription> and </transcription> tags, with nothing else inside them. "
+        "Example: <transcription>your final transcribed answer here</transcription>"
+    )
 
 
 
@@ -3205,7 +3339,7 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
 
     # Vision models to try in order
     vision_models = [
-        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "qwen/qwen3.6-27b",
         "llama-3.2-11b-vision-preview",
         "llama-3.2-90b-vision-preview",
     ]
@@ -3237,17 +3371,19 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
                     temperature=0.0,
                 )
                 out = (response.choices[0].message.content or "").strip()
-                if out:
-                    logger.info("[VISION] Model=%s succeeded: %d chars", model_name, len(out))
-                    return out
+                logger.info("[VISION] Model=%s raw output: %r", model_name, out)
+                extracted_out = _extract_transcription(out)
+                if extracted_out:
+                    logger.info("[VISION] Model=%s succeeded: %d chars", model_name, len(extracted_out))
+                    return extracted_out
                 else:
-                    logger.warning("[VISION] Model=%s returned empty content", model_name)
+                    logger.warning("[VISION] Model=%s returned empty content after cleaning", model_name)
             except Exception as exc:
                 exc_str = str(exc)
                 # If it's a model-not-found / unsupported error, try next model immediately
                 if any(kw in exc_str.lower() for kw in ["not found", "not supported", "invalid model", "does not exist", "404"]):
                     logger.warning("[VISION] Model=%s not available: %s — trying next model", model_name, exc_str[:120])
-                    break  # break inner loop (models), move to next key
+                    continue  # try next model with same key
                 # Rate limit — try next key
                 elif "rate" in exc_str.lower() or "429" in exc_str:
                     logger.warning("[VISION] Model=%s rate-limited, rotating key", model_name)
@@ -3256,7 +3392,12 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
                     logger.warning("[VISION] Model=%s failed: %s", model_name, exc_str[:200])
                     continue  # try next model with same key
 
-
+    # Try Gemini vision fallback
+    logger.info("[VISION] All Groq vision models failed; trying Gemini Vision fallback...")
+    gemini_out = _call_gemini_vision(effective_image, user_prompt)
+    extracted_gemini = _extract_transcription(gemini_out)
+    if extracted_gemini:
+        return extracted_gemini
 
     return ""
 
