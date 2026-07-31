@@ -374,12 +374,12 @@ for a presentation about "{topic}". Type: "{slide_type}".
 ═══ ACADEMIC RIGOUR & COURSE CONTENT ═══
 • Write the real course content for the stated class, subject, and chapter — not a generic overview.
 • For numerical, physics, chemistry, or math chapters, you MUST include clear step-by-step mathematical derivations, relevant formulas, and worked numerical examples.
-• Formulas must use standard LaTeX wrapped in double dollar signs: $$formula$$ (e.g. $$E = mc^2$$ or $$\\vec{F} = m\\vec{a}$$). Ensure double backslashes are used for LaTeX commands (e.g. \\\\frac for fraction) so they survive JSON parsing.
+• Formulas must use standard LaTeX wrapped in double dollar signs: $$formula$$ (e.g. $$E = mc^2$$ or $$\\vec{{F}} = m\\vec{{a}}$$). Ensure double backslashes are used for LaTeX commands (e.g. \\\\frac for fraction) so they survive JSON parsing.
 
 BULLET RULE — each bullet must be ONE complete sentence of 15–30 words with a specific fact, formula, derivation step, or worked numerical example. \
 Not a fragment. Not a long paragraph.
   ✗ TOO SHORT: "Located in Pakistan" / "Formula is F=ma"
-  ✓ CORRECT: "Newton's Second Law states that force is directly proportional to acceleration, expressed as the formula $$\\vec{F} = m\\vec{a}$$."
+  ✓ CORRECT: "Newton's Second Law states that force is directly proportional to acceleration, expressed as the formula $$\\vec{{F}} = m\\vec{{a}}$$."
 
 {slide_rule}
 
@@ -563,6 +563,68 @@ _IMAGE_WORKERS = 5
 _COVERAGE_DEADLINE_S = 25
 
 
+def _generate_grounded(
+    *, passages, ctx, topic, slide_count, language, institute_id, vertical,
+):
+    """Write the deck from the school's own chapter. Returns a Response, or None
+    to let the caller fall back to general-knowledge generation.
+
+    Returning None rather than raising matters: a school that has not uploaded
+    this chapter, or a temporarily unavailable Gemini, should still get slides —
+    just labelled as general knowledge rather than sourced from the book.
+    """
+    from ai_services.core import gemini_client as _gc
+    from ai_services.core import grounding as _gr
+
+    if not _gc.is_available():
+        return None
+
+    selection = _gr.select_source(
+        passages, ctx.get("topicName") or topic, ctx.get("chapterName") or "",
+    )
+    if not selection["passages"]:
+        return None
+
+    try:
+        result = _gc.complete_json(
+            system_prompt=_gr.GROUNDED_SYSTEM_PROMPT,
+            user_prompt=_gr.build_grounded_user_prompt(
+                slide_count=slide_count, language=language, topic=topic,
+                ctx=ctx, source_block=_gr.format_source_block(selection["passages"]),
+            ),
+            max_output_tokens=8000,
+        )
+    except Exception as exc:
+        logger.warning("Grounded generation failed (%s)", exc)
+        _log(institute_id, vertical, "gemini", success=False, error=exc)
+        return None
+
+    _log(institute_id, vertical, result.get("model", "gemini"), result=result)
+
+    data = result["content"]
+    slides = data.get("slides") or []
+    if not slides:
+        return None
+
+    with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
+        images = list(pool.map(
+            lambda s: _fetch_image_for_slide(s.get("imageSearchTerm", ""), s.get("title", "")),
+            slides,
+        ))
+    data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
+
+    # The caller shows this to the teacher, so a grounded deck is never mistaken
+    # for one written from general knowledge.
+    data["source"] = {
+        "grounded": True,
+        "passagesUsed": len(selection["passages"]),
+        "passagesAvailable": len(passages),
+        "pages": selection["pages"],
+        "truncated": selection["truncated"],
+    }
+    return Response({"success": True, "data": data})
+
+
 @api_view(["POST"])
 def generate_presentation(request):
     """
@@ -592,6 +654,21 @@ def generate_presentation(request):
         "chapterName": (request.data.get("chapterName") or "").strip(),
         "topicName": (request.data.get("topicName") or "").strip(),
     }
+
+    # ── Grounded path ────────────────────────────────────────────────────────
+    # When the caller supplies passages from the school's own chapter, the deck is
+    # written from those alone. This runs on Gemini rather than Groq: a chapter is
+    # several thousand tokens and Groq rejects any request whose prompt plus
+    # max_tokens exceeds the key's 12k TPM ceiling.
+    passages = request.data.get("sourcePassages") or []
+    if passages:
+        grounded = _generate_grounded(
+            passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
+            language=language, institute_id=institute_id, vertical=vertical,
+        )
+        if grounded is not None:
+            return grounded
+        logger.warning("Grounded generation unavailable — falling back to general knowledge")
 
     # Decide coverage before writing any slides — see _decompose_ppt_coverage.
     # Run it under a wall-clock deadline: if the LLM is unhealthy this step would
