@@ -3363,18 +3363,15 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
     #     the actual <transcription> block. We keep it as a *second* option
     #     and pass reasoning_effort='none' to suppress the think loop.
     vision_models = [
-        "qwen/qwen3.6-27b",
         "llama-3.2-11b-vision-instruct",
         "llama-3.2-90b-vision-instruct",
-        "meta-llama/llama-3.2-11b-vision-instruct",
-        "meta-llama/llama-3.2-90b-vision-instruct",
     ]
 
-    for api_key in keys:
+    for api_key in keys[:2]:
         for model_name in vision_models:
             try:
                 if api_key not in _groq_vision_clients:
-                    _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=45.0)
+                    _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=12.0)
                 client = _groq_vision_clients[api_key]
                 logger.info("[VISION] Trying model=%s (base64=%s)", model_name, str(effective_image).startswith("data:"))
 
