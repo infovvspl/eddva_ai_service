@@ -271,7 +271,7 @@ def label_generated_note_image(
 
     models = [
         os.getenv("NOTES_IMAGE_OVERLAY_GROQ_MODEL", "").strip(),
-        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "qwen/qwen3.6-27b",
         "meta-llama/llama-4-maverick-17b-128e-instruct",
         "llama-3.2-11b-vision-preview",
     ]

@@ -2781,19 +2781,29 @@ def resolve_doubt(request):
     else:
         mode = "detailed"
 
+    language = (data.get("language") or "").strip().lower()
+    def _has_odia_chars_early(text):
+        return any(0x0B00 <= ord(c) <= 0x0B7F for c in (text or ""))
+    def _has_devanagari_chars_early(text):
+        return any(0x0900 <= ord(c) <= 0x097F for c in (text or ""))
 
+    if not language:
+        if _has_odia_chars_early(question_text):
+            language = "odia"
+            print("[DOUBT RESOLVER] Auto-detected Odia script in question early — overriding language to 'odia'")
+        elif _has_devanagari_chars_early(question_text):
+            language = "hindi"
+            print("[DOUBT RESOLVER] Auto-detected Devanagari script in question early — overriding language to 'hindi'")
 
     # Image support: base64 data URL (from NestJS) or raw HTTPS URL
     image_description = ""
     image_source = (data.get("questionImageBase64") or data.get("questionImageUrl") or "").strip()
     has_image = bool(image_source)
 
-
-
     if image_source:
-        logger.info("[DOUBT] Image detected, attempting Groq vision... url_len=%d", len(image_source))
-        # Primary: Groq Llama 4 Scout vision
-        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT)
+        logger.info("[DOUBT] Image detected, attempting vision transcription... url_len=%d", len(image_source))
+        # Primary: Groq Qwen 3.6 27B vision (or Gemini directly for Odia)
+        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT, language)
         if image_description:
             logger.info("[DOUBT] Groq vision succeeded: %d chars", len(image_description))
         else:
@@ -3298,9 +3308,30 @@ def _call_gemini_vision(image_source: str, prompt: str) -> str:
     return ""
 
 
-def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
-    """Groq vision — tries Llama 4 Scout first, then Llama 3.2 Vision as fallback.
+def _vision_text_from_image(image_url: str, user_prompt: str, language: str = "") -> str:
+    """Groq vision — tries Qwen 3.6 27B first, then Llama 3.2 Vision as fallback.
     Returns '' on complete failure (caller adds EasyOCR or placeholder fallback)."""
+    if not (image_url or "").strip():
+        return ""
+
+    # Download HTTP(S) images to base64 so Groq doesn't need to reach S3/presigned URLs.
+    # Data URIs and already-base64 strings are passed as-is.
+    if image_url.startswith(("http://", "https://")):
+        effective_image = _url_to_base64_data_uri(image_url)
+        logger.info("[VISION] Converted URL to base64 data URI (%d bytes)", len(effective_image))
+    else:
+        effective_image = image_url
+
+    # Check if Odia language was explicitly passed or auto-detected
+    is_odia_image = str(language).strip().lower() in ("odia", "od", "or", "or-in", "od-in")
+    if is_odia_image:
+        logger.info("[VISION] Odia language requested — forcing Gemini Vision directly")
+        gemini_out = _call_gemini_vision(effective_image, user_prompt)
+        extracted_gemini = _extract_transcription(gemini_out)
+        if extracted_gemini:
+            return extracted_gemini
+        logger.warning("[VISION] Gemini Vision failed for Odia image. Trying Groq fallback.")
+
     try:
         from groq import Groq
     except ImportError:
@@ -3313,29 +3344,10 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
         "Example: <transcription>your final transcribed answer here</transcription>"
     )
 
-
-
-    if not (image_url or "").strip():
-        return ""
-
-
-
     keys = get_rotated_groq_keys()
     if not keys:
         logger.warning("No GROQ API keys in rotation; vision OCR skipped")
         return ""
-
-
-
-    # Download HTTP(S) images to base64 so Groq doesn't need to reach S3/presigned URLs.
-    # Data URIs and already-base64 strings are passed as-is.
-    if image_url.startswith(("http://", "https://")):
-        effective_image = _url_to_base64_data_uri(image_url)
-        logger.info("[VISION] Converted URL to base64 data URI (%d bytes)", len(effective_image))
-    else:
-        effective_image = image_url
-
-
 
     # Vision models to try in order
     vision_models = [
@@ -3343,8 +3355,6 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
         "llama-3.2-11b-vision-preview",
         "llama-3.2-90b-vision-preview",
     ]
-
-
 
     for api_key in keys:
         for model_name in vision_models:
@@ -3402,20 +3412,14 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
     return ""
 
 
-
-
-
-def _describe_image_with_vision(image_url: str) -> str:
+def _describe_image_with_vision(image_url: str, language: str = "") -> str:
     """Doubt / general: extract and describe full content (equations, diagrams, etc.)."""
-    return _vision_text_from_image(image_url, _DOUBT_VISION_PROMPT)
+    return _vision_text_from_image(image_url, _DOUBT_VISION_PROMPT, language)
 
 
-
-
-
-def _transcribe_exam_answer_with_vision(image_url: str) -> str:
+def _transcribe_exam_answer_with_vision(image_url: str, language: str = "") -> str:
     """Mock test / grading: answer text only, no photo narration."""
-    return _vision_text_from_image(image_url, _GRADING_VISION_PROMPT)
+    return _vision_text_from_image(image_url, _GRADING_VISION_PROMPT, language)
 
 
 
@@ -3475,7 +3479,7 @@ def _extract_text_from_image_url(
 @api_view(["POST"])
 def ocr_doubt_image(request):
     """Transcribe handwritten / diagram content for grading and doubt flows.
-    Prefers Groq **Llama 4 Scout** vision (handwriting, equations, diagrams), then EasyOCR.
+    Prefers Groq **Qwen 3.6 27B** vision (handwriting, equations, diagrams), then EasyOCR.
 
 
 
@@ -3492,17 +3496,18 @@ def ocr_doubt_image(request):
     is_grading = purpose in ("grading", "mock", "assessment", "mock_test", "answer")
     institute_id_ocr = _resolve_institute_id(request)
     user_id_ocr = request.data.get('userId') or request.data.get('user_id') or ''
+    language = (request.data.get("language") or "").strip().lower()
     if is_grading:
-        text = _transcribe_exam_answer_with_vision(image_url)
+        text = _transcribe_exam_answer_with_vision(image_url, language)
     else:
-        text = _describe_image_with_vision(image_url)
+        text = _describe_image_with_vision(image_url, language)
     if not text:
         # English-only EasyOCR for grading — reduces garbage Devanagari on Latin handwriting
         text = _extract_text_from_image_url(
             image_url, languages=["en"] if is_grading else None
         )
     try:
-        _ocr_model = 'llama-4-scout-17b-16e-instruct' if text else 'easyocr-local'
+        _ocr_model = 'qwen/qwen3.6-27b' if text else 'easyocr-local'
         log_usage(
             institute_id=institute_id_ocr,
             institute_type='school',
