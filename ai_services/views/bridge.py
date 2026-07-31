@@ -3278,7 +3278,7 @@ def _call_gemini_vision(image_source: str, prompt: str) -> str:
         logger.warning("[VISION] Failed to resolve image to bytes for Gemini")
         return ""
 
-    model = os.getenv("NOTES_IMAGE_OVERLAY_GEMINI_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"))
+    model = os.getenv("NOTES_IMAGE_OVERLAY_GEMINI_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.0-flash"))
     for key_index, api_key in keys:
         try:
             logger.info("[VISION] Trying Gemini model=%s key=%d/%d", model, key_index, gemini_key_count())
@@ -3357,9 +3357,11 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
     #     the actual <transcription> block. We keep it as a *second* option
     #     and pass reasoning_effort='none' to suppress the think loop.
     vision_models = [
-        "llama-3.2-90b-vision-preview",
-        "llama-3.2-11b-vision-preview",
-        "qwen/qwen3.6-27b",   # last resort — reasoning suppressed below
+        "qwen/qwen3.6-27b",
+        "llama-3.2-11b-vision-instruct",
+        "llama-3.2-90b-vision-instruct",
+        "meta-llama/llama-3.2-11b-vision-instruct",
+        "meta-llama/llama-3.2-90b-vision-instruct",
     ]
 
     for api_key in keys:
