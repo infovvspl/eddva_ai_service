@@ -2848,11 +2848,29 @@ def resolve_doubt(request):
 
 
     # ── Step 1: Classify subject and question type ────────────────────────────
-    # Keyword detection runs first (free, instant). LLM runs only as fallback
-    # for image-only questions or when zero keywords matched.
-    subject, qtype = _detect_subject_and_type_for_doubt(
-        combined_question, has_image=bool(image_description), institute_id=institute_id,
-    )
+    student_ctx = data.get("studentContext") or {}
+    provided_subject = str(data.get("subjectName") or student_ctx.get("subject") or "").strip().lower()
+    
+    if provided_subject and any(k in provided_subject for k in ["english", "literature", "gramm", "communicative", "reading", "writing"]):
+        subject, qtype = "english", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["history", "civics", "geography", "social", "sst"]):
+        subject, qtype = "social_science", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["hindi"]):
+        subject, qtype = "hindi", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["odia"]):
+        subject, qtype = "odia", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["math", "algebra", "geometry", "calculus"]):
+        subject, qtype = "math", "derivation"
+    elif provided_subject and any(k in provided_subject for k in ["physics"]):
+        subject, qtype = "physics", "numerical"
+    elif provided_subject and any(k in provided_subject for k in ["chemistry"]):
+        subject, qtype = "chemistry", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["biology", "science", "botany", "zoology"]):
+        subject, qtype = "biology", "conceptual"
+    else:
+        subject, qtype = _detect_subject_and_type_for_doubt(
+            combined_question, has_image=bool(image_description), institute_id=institute_id,
+        )
 
 
 
