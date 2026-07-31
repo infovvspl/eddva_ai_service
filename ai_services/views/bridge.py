@@ -2781,19 +2781,29 @@ def resolve_doubt(request):
     else:
         mode = "detailed"
 
+    language = (data.get("language") or "").strip().lower()
+    def _has_odia_chars_early(text):
+        return any(0x0B00 <= ord(c) <= 0x0B7F for c in (text or ""))
+    def _has_devanagari_chars_early(text):
+        return any(0x0900 <= ord(c) <= 0x097F for c in (text or ""))
 
+    if not language:
+        if _has_odia_chars_early(question_text):
+            language = "odia"
+            print("[DOUBT RESOLVER] Auto-detected Odia script in question early — overriding language to 'odia'")
+        elif _has_devanagari_chars_early(question_text):
+            language = "hindi"
+            print("[DOUBT RESOLVER] Auto-detected Devanagari script in question early — overriding language to 'hindi'")
 
     # Image support: base64 data URL (from NestJS) or raw HTTPS URL
     image_description = ""
     image_source = (data.get("questionImageBase64") or data.get("questionImageUrl") or "").strip()
     has_image = bool(image_source)
 
-
-
     if image_source:
-        logger.info("[DOUBT] Image detected, attempting Groq vision... url_len=%d", len(image_source))
-        # Primary: Groq Llama 4 Scout vision
-        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT)
+        logger.info("[DOUBT] Image detected, attempting vision transcription... url_len=%d", len(image_source))
+        # Primary: Groq Qwen 3.6 27B vision (or Gemini directly for Odia)
+        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT, language)
         if image_description:
             logger.info("[DOUBT] Groq vision succeeded: %d chars", len(image_description))
         else:
@@ -3167,31 +3177,142 @@ def _url_to_base64_data_uri(image_url: str) -> str:
         return image_url
 
 
+def _strip_thinking_tags(text: str) -> str:
+    import re
+    cleaned = re.sub(r'(?i)<think>.*?</think>', '', text, flags=re.DOTALL)
+    if "<think>" in cleaned.lower():
+        cleaned = cleaned.split("<think>", 1)[0]
+    
+    cleaned = cleaned.strip()
+    # If the cleaning removed almost all text, but the original raw text was substantial,
+    # it means the model put the transcription inside the thinking tags (or failed to close them).
+    # In this case, keep the content and just strip the tags.
+    if len(cleaned) < 3 and len(text.strip()) > 3:
+        cleaned = re.sub(r'(?i)</?think>', '', text).strip()
+    return cleaned
 
 
+def _extract_transcription(text: str) -> str:
+    import re
+    # Clean thinking tags first
+    cleaned = _strip_thinking_tags(text)
+    
+    # Try to find <transcription>...</transcription>
+    match = re.search(r'<transcription>(.*?)</transcription>', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+        
+    # Unclosed tag fallback
+    if "<transcription>" in cleaned.lower():
+        parts = re.split(r'<transcription>', cleaned, flags=re.IGNORECASE)
+        if len(parts) > 1:
+            val = parts[1].strip()
+            if "</transcription>" in val.lower():
+                val = val.split("</transcription>", 1)[0].strip()
+            return val
+            
+    return cleaned
 
-def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
-    """Groq vision — tries Llama 4 Scout first, then Llama 3.2 Vision as fallback.
-    Returns '' on complete failure (caller adds EasyOCR or placeholder fallback)."""
+
+def _image_to_bytes_and_mime(image_source: str) -> tuple[bytes, str]:
+    import base64 as _b64
+    import requests as _requests
+    
+    if image_source.startswith("data:"):
+        try:
+            header, encoded = image_source.split(",", 1)
+            mime = header.split(";")[0].split(":")[1]
+            data = _b64.b64decode(encoded)
+            return data, mime
+        except Exception:
+            pass
+            
+    if image_source.startswith(("http://", "https://")):
+        try:
+            resp = _requests.get(image_source, timeout=20)
+            resp.raise_for_status()
+            mime = resp.headers.get("Content-Type", "image/jpeg")
+            return resp.content, mime
+        except Exception:
+            pass
+            
     try:
-        from groq import Groq
-    except ImportError:
-        logger.warning("groq package not installed; vision OCR unavailable")
+        import os
+        if os.path.exists(image_source):
+            with open(image_source, "rb") as f:
+                data = f.read()
+                mime = "image/jpeg"
+                if image_source.endswith(".png"):
+                    mime = "image/png"
+                elif image_source.endswith(".webp"):
+                    mime = "image/webp"
+                return data, mime
+    except Exception:
+        pass
+        
+    return b"", "image/jpeg"
+
+
+def _call_gemini_vision(image_source: str, prompt: str) -> str:
+    import os
+    try:
+        from google import genai
+        from google.genai import types
+        from ai_services.core.gemini_keys import (
+            gemini_key_count,
+            get_rotated_gemini_keys,
+            is_gemini_permanent_key_error,
+            mark_gemini_key_disabled,
+        )
+    except Exception as exc:
+        logger.warning("[VISION] Gemini SDK/keys import failed: %s", exc)
         return ""
 
+    keys = get_rotated_gemini_keys()
+    if not keys:
+        logger.warning("[VISION] No Gemini API keys found for vision fallback")
+        return ""
+
+    image_bytes, mime_type = _image_to_bytes_and_mime(image_source)
+    if not image_bytes:
+        logger.warning("[VISION] Failed to resolve image to bytes for Gemini")
+        return ""
+
+    model = os.getenv("NOTES_IMAGE_OVERLAY_GEMINI_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"))
+    for key_index, api_key in keys:
+        try:
+            logger.info("[VISION] Trying Gemini model=%s key=%d/%d", model, key_index, gemini_key_count())
+            client = genai.Client(api_key=api_key)
+            contents = [
+                prompt,
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+            ]
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    max_output_tokens=1024,
+                ),
+            )
+            out = (response.text or "").strip()
+            if out:
+                logger.info("[VISION] Gemini vision model succeeded: %d chars", len(out))
+                return out
+        except Exception as exc:
+            msg = str(exc)
+            logger.warning("[VISION] Gemini vision failed on key %d/%d: %s", key_index, gemini_key_count(), msg[:180])
+            if is_gemini_permanent_key_error(msg):
+                mark_gemini_key_disabled(api_key)
+                
+    return ""
 
 
+def _vision_text_from_image(image_url: str, user_prompt: str, language: str = "") -> str:
+    """Groq vision — tries Qwen 3.6 27B first, then Llama 3.2 Vision as fallback.
+    Returns '' on complete failure (caller adds EasyOCR or placeholder fallback)."""
     if not (image_url or "").strip():
         return ""
-
-
-
-    keys = get_rotated_groq_keys()
-    if not keys:
-        logger.warning("No GROQ API keys in rotation; vision OCR skipped")
-        return ""
-
-
 
     # Download HTTP(S) images to base64 so Groq doesn't need to reach S3/presigned URLs.
     # Data URIs and already-base64 strings are passed as-is.
@@ -3201,16 +3322,45 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
     else:
         effective_image = image_url
 
+    # Check if Odia language was explicitly passed or auto-detected
+    is_odia_image = str(language).strip().lower() in ("odia", "od", "or", "or-in", "od-in")
+    if is_odia_image:
+        logger.info("[VISION] Odia language requested — forcing Gemini Vision directly")
+        gemini_out = _call_gemini_vision(effective_image, user_prompt)
+        extracted_gemini = _extract_transcription(gemini_out)
+        if extracted_gemini:
+            return extracted_gemini
+        logger.warning("[VISION] Gemini Vision failed for Odia image. Trying Groq fallback.")
+
+    try:
+        from groq import Groq
+    except ImportError:
+        logger.warning("groq package not installed; vision OCR unavailable")
+        return ""
+
+    user_prompt = user_prompt + (
+        "\n\nIMPORTANT: You MUST wrap your final transcribed answer/description inside "
+        "<transcription> and </transcription> tags, with nothing else inside them. "
+        "Example: <transcription>your final transcribed answer here</transcription>"
+    )
+
+    keys = get_rotated_groq_keys()
+    if not keys:
+        logger.warning("No GROQ API keys in rotation; vision OCR skipped")
+        return ""
 
 
-    # Vision models to try in order
+    # Vision models to try in order.
+    # Llama 3.2 Vision goes FIRST for handwriting/OCR tasks:
+    #   - Qwen 3.6 27B is a reasoning model that enters long <think> loops on
+    #     simple OCR prompts, consuming all available tokens before outputting
+    #     the actual <transcription> block. We keep it as a *second* option
+    #     and pass reasoning_effort='none' to suppress the think loop.
     vision_models = [
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "llama-3.2-11b-vision-preview",
         "llama-3.2-90b-vision-preview",
+        "llama-3.2-11b-vision-preview",
+        "qwen/qwen3.6-27b",   # last resort — reasoning suppressed below
     ]
-
-
 
     for api_key in keys:
         for model_name in vision_models:
@@ -3219,7 +3369,10 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
                     _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=45.0)
                 client = _groq_vision_clients[api_key]
                 logger.info("[VISION] Trying model=%s (base64=%s)", model_name, str(effective_image).startswith("data:"))
-                response = client.chat.completions.create(
+
+                # Build kwargs — suppress chain-of-thought for reasoning models
+                # (Qwen 3.6 27B enters infinite <think> loops on OCR prompts).
+                call_kwargs = dict(
                     model=model_name,
                     messages=[
                         {
@@ -3233,21 +3386,38 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
                             ],
                         }
                     ],
-                    max_tokens=1024,
+                    max_tokens=4096,
                     temperature=0.0,
                 )
-                out = (response.choices[0].message.content or "").strip()
-                if out:
-                    logger.info("[VISION] Model=%s succeeded: %d chars", model_name, len(out))
-                    return out
+                if "qwen" in model_name.lower():
+                    # Disable the extended reasoning budget so Qwen answers
+                    # directly without looping in its <think> block.
+                    try:
+                        call_kwargs["reasoning_effort"] = "none"
+                    except Exception:
+                        pass
+
+                response = client.chat.completions.create(**call_kwargs)
+                raw = (response.choices[0].message.content or "").strip()
+
+                # Strip any leaked <think>...</think> reasoning block that a
+                # reasoning model may emit even with reasoning_effort=none.
+                import re as _re
+                out = _re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=_re.IGNORECASE).strip()
+
+                logger.info("[VISION] Model=%s raw output: %r", model_name, out[:300])
+                extracted_out = _extract_transcription(out)
+                if extracted_out:
+                    logger.info("[VISION] Model=%s succeeded: %d chars", model_name, len(extracted_out))
+                    return extracted_out
                 else:
-                    logger.warning("[VISION] Model=%s returned empty content", model_name)
+                    logger.warning("[VISION] Model=%s returned empty content after cleaning", model_name)
             except Exception as exc:
                 exc_str = str(exc)
                 # If it's a model-not-found / unsupported error, try next model immediately
                 if any(kw in exc_str.lower() for kw in ["not found", "not supported", "invalid model", "does not exist", "404"]):
                     logger.warning("[VISION] Model=%s not available: %s — trying next model", model_name, exc_str[:120])
-                    break  # break inner loop (models), move to next key
+                    continue  # try next model with same key
                 # Rate limit — try next key
                 elif "rate" in exc_str.lower() or "429" in exc_str:
                     logger.warning("[VISION] Model=%s rate-limited, rotating key", model_name)
@@ -3256,25 +3426,24 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
                     logger.warning("[VISION] Model=%s failed: %s", model_name, exc_str[:200])
                     continue  # try next model with same key
 
-
+    # Try Gemini vision fallback
+    logger.info("[VISION] All Groq vision models failed; trying Gemini Vision fallback...")
+    gemini_out = _call_gemini_vision(effective_image, user_prompt)
+    extracted_gemini = _extract_transcription(gemini_out)
+    if extracted_gemini:
+        return extracted_gemini
 
     return ""
 
 
-
-
-
-def _describe_image_with_vision(image_url: str) -> str:
+def _describe_image_with_vision(image_url: str, language: str = "") -> str:
     """Doubt / general: extract and describe full content (equations, diagrams, etc.)."""
-    return _vision_text_from_image(image_url, _DOUBT_VISION_PROMPT)
+    return _vision_text_from_image(image_url, _DOUBT_VISION_PROMPT, language)
 
 
-
-
-
-def _transcribe_exam_answer_with_vision(image_url: str) -> str:
+def _transcribe_exam_answer_with_vision(image_url: str, language: str = "") -> str:
     """Mock test / grading: answer text only, no photo narration."""
-    return _vision_text_from_image(image_url, _GRADING_VISION_PROMPT)
+    return _vision_text_from_image(image_url, _GRADING_VISION_PROMPT, language)
 
 
 
@@ -3334,7 +3503,7 @@ def _extract_text_from_image_url(
 @api_view(["POST"])
 def ocr_doubt_image(request):
     """Transcribe handwritten / diagram content for grading and doubt flows.
-    Prefers Groq **Llama 4 Scout** vision (handwriting, equations, diagrams), then EasyOCR.
+    Prefers Groq **Qwen 3.6 27B** vision (handwriting, equations, diagrams), then EasyOCR.
 
 
 
@@ -3351,17 +3520,18 @@ def ocr_doubt_image(request):
     is_grading = purpose in ("grading", "mock", "assessment", "mock_test", "answer")
     institute_id_ocr = _resolve_institute_id(request)
     user_id_ocr = request.data.get('userId') or request.data.get('user_id') or ''
+    language = (request.data.get("language") or "").strip().lower()
     if is_grading:
-        text = _transcribe_exam_answer_with_vision(image_url)
+        text = _transcribe_exam_answer_with_vision(image_url, language)
     else:
-        text = _describe_image_with_vision(image_url)
+        text = _describe_image_with_vision(image_url, language)
     if not text:
         # English-only EasyOCR for grading — reduces garbage Devanagari on Latin handwriting
         text = _extract_text_from_image_url(
             image_url, languages=["en"] if is_grading else None
         )
     try:
-        _ocr_model = 'llama-4-scout-17b-16e-instruct' if text else 'easyocr-local'
+        _ocr_model = 'qwen/qwen3.6-27b' if text else 'easyocr-local'
         log_usage(
             institute_id=institute_id_ocr,
             institute_type='school',

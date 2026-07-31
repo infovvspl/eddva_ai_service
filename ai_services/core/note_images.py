@@ -271,9 +271,9 @@ def label_generated_note_image(
 
     models = [
         os.getenv("NOTES_IMAGE_OVERLAY_GROQ_MODEL", "").strip(),
-        "meta-llama/llama-4-scout-17b-16e-instruct",
         "meta-llama/llama-4-maverick-17b-128e-instruct",
         "llama-3.2-11b-vision-preview",
+        "qwen/qwen3.6-27b",  # last resort — reasoning suppressed below
     ]
     models = [model for idx, model in enumerate(models) if model and model not in models[:idx]]
     last_error = ""
@@ -281,7 +281,7 @@ def label_generated_note_image(
         for model in models:
             try:
                 client = Groq(api_key=api_key, timeout=45.0)
-                response = client.chat.completions.create(
+                call_kw = dict(
                     model=model,
                     messages=[
                         {
@@ -296,6 +296,9 @@ def label_generated_note_image(
                     temperature=0.0,
                     max_tokens=600,
                 )
+                if "qwen" in model.lower():
+                    call_kw["reasoning_effort"] = "none"
+                response = client.chat.completions.create(**call_kw)
                 content = _extract_json_object(response.choices[0].message.content or "{}")
                 labels = _sanitize_overlay_labels(content.get("labels"), context)
                 logger.info("Groq vision overlay labels | model=%s | labels=%d", model, len(labels))

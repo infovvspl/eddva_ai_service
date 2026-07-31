@@ -17,7 +17,7 @@ MODEL_COSTS = {
     'openai/gpt-oss-120b':             {'input': 0.15,  'output': 0.60},
     'llama-3.2-11b-vision-preview':    {'input': 0.18,  'output': 0.18},
     'llama-3.2-90b-vision-preview':    {'input': 0.90,  'output': 0.90},
-    'llama-4-scout-17b-16e-instruct':  {'input': 0.11,  'output': 0.34},
+    'qwen/qwen3.6-27b':                {'input': 0.11,  'output': 0.34},
     'gemini-2.5-flash':                {'input': 0.075, 'output': 0.30},
     'mayura:v1':                       {'input': 0.10,  'output': 0.10},
     'whisper-large-v3-turbo':          {'input': 0.04,  'output': 0.0},
