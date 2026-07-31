@@ -147,8 +147,8 @@ def normalize_board(value: Optional[str]) -> str:
     if any(k in key for k in ["ib", "baccalaureate", "pyp", "myp"]):
         return "ib"
 
-    # Any other custom board is treated as a State Board
-    return "state"
+    # Truly unknown values fall back to the deployment default (cbse unless overridden).
+    return DEFAULT_BOARD
 
 
 def get_board(board: Optional[str]) -> BoardProfile:
