@@ -35,6 +35,56 @@ def is_available() -> bool:
         return False
 
 
+def complete_text(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str = DEFAULT_MODEL,
+    temperature: float = 0.3,
+    max_output_tokens: int = 8192,
+) -> dict:
+    """Plain-text (Markdown) completion. Same contract as complete_json minus the
+    JSON parsing, for the content types that return Markdown rather than a
+    structured object."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise GeminiUnavailable("GEMINI_API_KEY is not set")
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception as exc:
+        raise GeminiUnavailable(f"google-genai not installed: {exc}") from exc
+
+    started = time.time()
+    client = genai.Client(api_key=api_key)
+    result = client.models.generate_content(
+        model=model,
+        contents=f"{system_prompt}\n\n{user_prompt}",
+        config=types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            # Gemini 2.5 charges its internal reasoning against max_output_tokens.
+            # Grounded writing is faithful reproduction, not problem solving, and
+            # the reasoning was eating enough budget to truncate a question paper
+            # mid-question (finish_reason MAX_TOKENS with ~1.4k thinking tokens).
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    latency_ms = int((time.time() - started) * 1000)
+    text = (getattr(result, "text", None) or "").strip()
+    if not text:
+        raise RuntimeError("Gemini returned an empty response")
+
+    usage = getattr(result, "usage_metadata", None)
+    return {
+        "content": text,
+        "model": model,
+        "latency_ms": latency_ms,
+        "tokens_input": getattr(usage, "prompt_token_count", 0) or 0,
+        "tokens_output": getattr(usage, "candidates_token_count", 0) or 0,
+    }
+
+
 def complete_json(
     *,
     system_prompt: str,
@@ -69,6 +119,8 @@ def complete_json(
             response_mime_type="application/json",
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            # See complete_text: reasoning tokens come out of the same budget.
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
     latency_ms = int((time.time() - started) * 1000)

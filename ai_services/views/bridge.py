@@ -5908,6 +5908,53 @@ def generate_topic_content(request):
         f"Target length: {word_limit}",
     ]
     user_prompt = "\n".join(user_prompt_parts) + "\n"
+
+    # ── Textbook grounding ───────────────────────────────────────────────────
+    # When the caller supplies passages from the school's own chapter, every
+    # content type generated here — notes, DPP, PYQ, flashcards, mind maps and
+    # the question sets behind assessments — is written from the book instead of
+    # the model's general knowledge, and cites the pages it used.
+    source_passages = data.get("sourcePassages") or []
+    grounded = False
+    grounded_pages = []
+    grounded_block = ""
+    if source_passages:
+        try:
+            from ai_services.core import grounding as _gr
+
+            selection = _gr.select_source(
+                source_passages, topic_name, chapter_name, token_budget=9000,
+            )
+            if selection["passages"]:
+                grounded = True
+                grounded_pages = selection["pages"]
+                system_prompt = (
+                    "═══ THE TEXTBOOK EXTRACT BELOW IS YOUR ONLY PERMITTED SOURCE ═══\n"
+                    "1. Every fact, definition, formula, number, name and worked example must come\n"
+                    "   from the SOURCE TEXT. If it is not there, it does not go in the output.\n"
+                    "2. Do NOT add material from your own knowledge, even when you are certain it is\n"
+                    "   correct. A true statement absent from this book is still wrong here, because\n"
+                    "   the teacher must be able to point to it in their copy.\n"
+                    "3. Keep the book's own terminology, notation and worked examples. Do not\n"
+                    "   substitute a more general or more advanced treatment.\n"
+                    "4. If the source does not cover enough for the requested length or question\n"
+                    "   count, produce LESS. Never pad from outside the book.\n"
+                    "5. Cite the page inline as [p.N] wherever you state something specific.\n\n"
+                    + system_prompt
+                )
+                grounded_block = (
+                    "\n═══ SOURCE TEXT — the school's own chapter, your only permitted facts ═══\n"
+                    + _gr.format_source_block(selection["passages"])
+                    + "\n═══ END OF SOURCE TEXT ═══\n"
+                    "Write the requested content from the passages above and nothing else. "
+                    "Cite the page inline as [p.N] after each specific claim.\n"
+                )
+        except Exception as exc:
+            # Grounding is an enhancement; falling back to general knowledge is
+            # far better than failing the teacher's request outright.
+            logger.warning("Topic-content grounding failed (%s) — using general knowledge", exc)
+            grounded = False
+
     if coverage_sub_areas:
         user_prompt += (
             "\nMANDATORY COVERAGE — these sub-areas of this exact topic were identified in advance as core "
@@ -6091,6 +6138,37 @@ def generate_topic_content(request):
             # Fall through to Groq below
 
 
+    if grounded_block:
+        user_prompt += grounded_block
+
+    # Grounded output runs on Gemini. Groq's llama-3.3-70b did not hold to
+    # "use only this source" across a prompt this long — it returned fluent but
+    # uncited general-knowledge content with none of the book's own markers —
+    # and a chapter plus instructions also crowds Groq's 12k TPM ceiling.
+    if grounded:
+        try:
+            from ai_services.core import gemini_client as _gc
+            if _gc.is_available():
+                _g = _gc.complete_text(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.3,
+                    max_output_tokens=8000,
+                )
+                _c = _normalize_generated_math_markdown(_g["content"])
+                if content_type == "pyq":
+                    _c = _normalize_pyq_exam_tags(_c)
+                return Response({
+                    "content": _c,
+                    "contentType": content_type,
+                    "topicName": topic_name,
+                    "source": {"grounded": True, "pages": grounded_pages},
+                    "_meta": {"model": _g["model"], "latency_ms": _g["latency_ms"]},
+                })
+        except Exception as exc:
+            logger.warning("Grounded generation via Gemini failed (%s) — using Groq", exc)
+            grounded = False
+
     try:
         llm_result = get_llm().complete(
             system_prompt=system_prompt,
@@ -6202,6 +6280,9 @@ def generate_topic_content(request):
         "content": content,
         "contentType": content_type,
         "topicName": topic_name,
+        # Lets the caller label content written from the school's book distinctly
+        # from content written from general knowledge.
+        "source": {"grounded": grounded, "pages": grounded_pages},
         "_meta": {
             "model": llm_result.get("model", ""),
             "latency_ms": round(llm_result.get("latency_ms", 0)),
