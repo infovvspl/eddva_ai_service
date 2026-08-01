@@ -2848,11 +2848,29 @@ def resolve_doubt(request):
 
 
     # ── Step 1: Classify subject and question type ────────────────────────────
-    # Keyword detection runs first (free, instant). LLM runs only as fallback
-    # for image-only questions or when zero keywords matched.
-    subject, qtype = _detect_subject_and_type_for_doubt(
-        combined_question, has_image=bool(image_description), institute_id=institute_id,
-    )
+    student_ctx = data.get("studentContext") or {}
+    provided_subject = str(data.get("subjectName") or student_ctx.get("subject") or "").strip().lower()
+    
+    if provided_subject and any(k in provided_subject for k in ["english", "literature", "gramm", "communicative", "reading", "writing"]):
+        subject, qtype = "english", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["history", "civics", "geography", "social", "sst"]):
+        subject, qtype = "social_science", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["hindi"]):
+        subject, qtype = "hindi", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["odia"]):
+        subject, qtype = "odia", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["math", "algebra", "geometry", "calculus"]):
+        subject, qtype = "math", "derivation"
+    elif provided_subject and any(k in provided_subject for k in ["physics"]):
+        subject, qtype = "physics", "numerical"
+    elif provided_subject and any(k in provided_subject for k in ["chemistry"]):
+        subject, qtype = "chemistry", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["biology", "science", "botany", "zoology"]):
+        subject, qtype = "biology", "conceptual"
+    else:
+        subject, qtype = _detect_subject_and_type_for_doubt(
+            combined_question, has_image=bool(image_description), institute_id=institute_id,
+        )
 
 
 
@@ -3154,9 +3172,11 @@ def _url_to_base64_data_uri(image_url: str) -> str:
         image_data = resp.content
         content_type = "image/jpeg" # Default to JPEG for compression benefits
 
-        # Compress if PIL is available
+        # Compress and auto-rotate if PIL is available
         if _PILImage:
+            from PIL import ImageOps as _PILImageOps
             with _PILImage.open(_BytesIO(image_data)) as img:
+                img = _PILImageOps.exif_transpose(img)
                 # Convert to RGB if necessary (e.g. for PNG with alpha or GIF)
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGB")
@@ -3363,18 +3383,15 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
     #     the actual <transcription> block. We keep it as a *second* option
     #     and pass reasoning_effort='none' to suppress the think loop.
     vision_models = [
-        "qwen/qwen3.6-27b",
         "llama-3.2-11b-vision-instruct",
         "llama-3.2-90b-vision-instruct",
-        "meta-llama/llama-3.2-11b-vision-instruct",
-        "meta-llama/llama-3.2-90b-vision-instruct",
     ]
 
-    for api_key in keys:
+    for api_key in keys[:2]:
         for model_name in vision_models:
             try:
                 if api_key not in _groq_vision_clients:
-                    _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=45.0)
+                    _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=12.0)
                 client = _groq_vision_clients[api_key]
                 logger.info("[VISION] Trying model=%s (base64=%s)", model_name, str(effective_image).startswith("data:"))
 
