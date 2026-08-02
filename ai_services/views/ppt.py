@@ -34,6 +34,15 @@ _VISUAL_HINTS = frozenset({
     "excavation", "figure", "drawing",
 })
 
+# Stock libraries rank highly for "educational diagram" while showing generic
+# classroom scenes. Demoted rather than dropped, so a slide still gets a picture
+# when nothing better can be downloaded.
+_STOCK_SOURCES = (
+    "shutterstock", "alamy", "dreamstime", "istockphoto", "gettyimages",
+    "123rf", "depositphotos", "bigstock", "magnific", "vecteezy",
+    "freepik", "abposters", "stockphoto", "adobestock",
+)
+
 _IMAGE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -401,13 +410,56 @@ Return ONLY valid JSON:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Image helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def _enrich_search_term(term: str, slide_title: str) -> str:
-    """Ensure the Serper query is specific and includes a visual type hint."""
-    if not term or len(term.strip().split()) < 3:
-        base = (slide_title or term or "").strip()
-        return f"{base} educational diagram photograph"
+def _dedupe_words(text: str) -> str:
+    """Drop repeated words, keeping first occurrence and original order."""
+    seen, out = set(), []
+    for word in text.split():
+        key = word.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(word)
+    return " ".join(out)
+
+
+def _image_context(ctx: "dict | None") -> str:
+    """Curriculum words to disambiguate an image search: "chapter subject class".
+
+    Without these a slide titled "Development" returns child-development stock
+    art and "Solutions" returns problem-solving clip art, because the word alone
+    carries none of the subject it was written for.
+    """
+    if not ctx:
+        return ""
+    parts = [ctx.get("chapterName"), ctx.get("subjectName"), ctx.get("className")]
+    return " ".join(str(p).strip() for p in parts if p and str(p).strip())
+
+
+def _enrich_search_term(term: str, slide_title: str, ctx: "dict | None" = None) -> str:
+    """Build a Serper query that is specific to this slide *and* its chapter.
+
+    The old fallback appended "educational diagram photograph" to a bare slide
+    title. Those words match the copy on stock-photo sites far better than they
+    match a textbook figure, so a generic title returned Alamy and Shutterstock
+    pictures of classrooms. Curriculum words are used instead: they narrow the
+    search to the subject, which is what makes the result relevant.
+    """
+    context = _image_context(ctx)
+    term = (term or "").strip()
+
+    # Too vague to search on its own — anchor it to the chapter instead.
+    if len(term.split()) < 3:
+        base = (slide_title or term).strip()
+        if context:
+            # Deduplicated: a slide titled "Development" in the chapter
+            # "Development" would otherwise search for the word twice.
+            return f"{_dedupe_words(base + ' ' + context)} diagram"
+        return f"{base} educational diagram".strip()
+
+    # A specific term still benefits from the subject when the words are common.
+    if context and not any(w.lower() in term.lower() for w in context.split()):
+        term = f"{term} {context}"
     if not any(h in term.lower() for h in _VISUAL_HINTS):
-        return f"{term} photograph"
+        term = f"{term} diagram"
     return term
 
 
@@ -428,12 +480,30 @@ def _download_image_as_base64(url: str) -> "str | None":
         return None
 
 
-def _fetch_image_for_slide(search_term: str, slide_title: str) -> dict:
-    """Search Serper and return the first downloadable image as a base64 data URI."""
+def _is_stock_photo(item: dict) -> bool:
+    """Whether a result comes from a stock-photo library.
+
+    These rank well for words like "educational" and "diagram" while showing
+    watermarked models in classrooms rather than the subject itself, so they are
+    tried only after every genuine result has failed.
+    """
+    haystack = f"{item.get('source', '')} {item.get('imageUrl', '')}".lower()
+    return any(s in haystack for s in _STOCK_SOURCES)
+
+
+def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None" = None) -> dict:
+    """Search Serper and return the first downloadable image as a base64 data URI.
+
+    Genuine sources are preferred over stock libraries; within each group the
+    original relevance order is kept, so the best on-topic result still wins.
+    """
+    enriched = ""
     try:
-        enriched = _enrich_search_term(search_term, slide_title)
-        results = search_google_images(enriched, limit=5)
-        for item in results:
+        enriched = _enrich_search_term(search_term, slide_title, ctx)
+        results = search_google_images(enriched, limit=8)
+        ordered = [r for r in results if not _is_stock_photo(r)] + \
+                  [r for r in results if _is_stock_photo(r)]
+        for item in ordered:
             url = item.get("imageUrl")
             if not url:
                 continue
@@ -441,10 +511,10 @@ def _fetch_image_for_slide(search_term: str, slide_title: str) -> dict:
             if b64:
                 return {"imageUrl": url, "imageBase64": b64}
         # Return the URL even if we couldn't download it — client can still try
-        if results:
-            return {"imageUrl": results[0].get("imageUrl"), "imageBase64": None}
+        if ordered:
+            return {"imageUrl": ordered[0].get("imageUrl"), "imageBase64": None}
     except Exception as exc:
-        logger.warning("Image fetch error for %r: %s", search_term, exc)
+        logger.warning("Image fetch error for %r (query %r): %s", search_term, enriched, exc)
     return {"imageUrl": None, "imageBase64": None}
 
 
@@ -608,7 +678,9 @@ def _generate_grounded(
 
     with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
         images = list(pool.map(
-            lambda s: _fetch_image_for_slide(s.get("imageSearchTerm", ""), s.get("title", "")),
+            lambda s: _fetch_image_for_slide(
+                s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
+            ),
             slides,
         ))
     data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
@@ -743,7 +815,9 @@ def generate_presentation(request):
     # slide, which at 25 slides ran up against the caller's request timeout.
     with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
         images = list(pool.map(
-            lambda s: _fetch_image_for_slide(s.get("imageSearchTerm", ""), s.get("title", "")),
+            lambda s: _fetch_image_for_slide(
+                s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
+            ),
             slides,
         ))
 
@@ -823,6 +897,7 @@ def regenerate_slide(request):
     image = _fetch_image_for_slide(
         new_slide.get("imageSearchTerm", ""),
         new_slide.get("title", ""),
+        ctx,
     )
     new_slide.update(image)
     return Response({"success": True, "data": new_slide})
