@@ -15,7 +15,6 @@ import io
 import logging
 import re
 
-import pdfplumber
 import requests as _requests
 
 logger = logging.getLogger("ai_services.textbook")
@@ -63,6 +62,17 @@ def extract_pdf_pages(source: "str | bytes") -> "list[dict]":
             raise ValueError(f"PDF is {len(data) // 1024 // 1024}MB; limit is 60MB")
     else:
         data = source
+
+    # Imported here, not at module scope: this module is reachable from urls.py,
+    # so a top-level import makes the whole URL conf — and therefore the entire
+    # service — fail wherever pdfplumber is absent, such as the CI image. It is
+    # only needed to read a PDF, which is exactly this function.
+    try:
+        import pdfplumber
+    except ImportError as exc:
+        raise RuntimeError(
+            "pdfplumber is required to read a chapter PDF but is not installed"
+        ) from exc
 
     pages = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
