@@ -56,6 +56,24 @@ def _looks_key_rejected(exc: Exception) -> bool:
     return any(t in s for t in ("api key not valid", "api_key_invalid", "permission_denied"))
 
 
+def _looks_model_unavailable(exc: Exception) -> bool:
+    """The key is valid but its project cannot use this model.
+
+    gemini-2.5-flash is grandfathered: a project created after it was withdrawn
+    gets 404 "no longer available to new users", while an older project keeps
+    working. A key like that is unusable for this model but indistinguishable
+    from a good one until it is called, so it has to be retired at that point —
+    otherwise a single new key would fail every request it happened to be
+    handed, while working keys sat unused in the pool.
+    """
+    s = str(exc).lower()
+    return (
+        "no longer available" in s
+        or "is not found for api version" in s
+        or ("404" in s and "model" in s)
+    )
+
+
 def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what: str = "request"):
     """Run one generate_content call, moving to another key rather than failing.
 
@@ -86,6 +104,13 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
             if _looks_key_rejected(exc):
                 mark_gemini_key_disabled(key)
                 logger.warning("Gemini key #%d rejected, disabling it: %s", key_no, exc)
+                continue
+            if _looks_model_unavailable(exc):
+                mark_gemini_key_disabled(key)
+                logger.warning(
+                    "Gemini key #%d cannot use %s (project has no access) — disabling it "
+                    "and trying the next key", key_no, model,
+                )
                 continue
             if _looks_rate_limited(exc):
                 logger.warning(
