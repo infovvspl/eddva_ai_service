@@ -16,9 +16,20 @@ import logging
 import os
 import time
 
+from ai_services.core.gemini_keys import (
+    get_gemini_api_keys,
+    get_rotated_gemini_keys,
+    mark_gemini_key_disabled,
+)
+
 logger = logging.getLogger("ai_services.gemini")
 
 DEFAULT_MODEL = "gemini-2.5-flash"
+
+# Pause before trying the next key after a rate limit. Short, because rotating to
+# a different key is the real remedy; the wait only helps when the limit is per
+# project rather than per key.
+_RETRY_BACKOFF_S = (0.5, 2.0, 5.0)
 
 
 class GeminiUnavailable(RuntimeError):
@@ -26,13 +37,67 @@ class GeminiUnavailable(RuntimeError):
 
 
 def is_available() -> bool:
-    if not os.getenv("GEMINI_API_KEY"):
+    if not get_gemini_api_keys():
         return False
     try:
         from google import genai  # noqa: F401
         return True
     except Exception:
         return False
+
+
+def _looks_rate_limited(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return any(t in s for t in ("429", "resource_exhausted", "rate limit", "quota"))
+
+
+def _looks_key_rejected(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return any(t in s for t in ("api key not valid", "api_key_invalid", "permission_denied"))
+
+
+def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what: str = "request"):
+    """Run one generate_content call, moving to another key rather than failing.
+
+    Bulk work — indexing a school's whole library — is exactly what exhausts a
+    single key's quota, and the keys to spread that over are already configured.
+    A key the API rejects outright is disabled for the process rather than
+    retried on every subsequent call.
+
+    Returns the raw SDK result so the caller can inspect finish_reason; a
+    truncated response is a successful call with an incomplete answer, which
+    only the caller knows how to interpret.
+    """
+    keys = get_rotated_gemini_keys()
+    if not keys:
+        raise GeminiUnavailable("No Gemini API key is configured")
+    try:
+        from google import genai
+    except Exception as exc:
+        raise GeminiUnavailable(f"google-genai not installed: {exc}") from exc
+
+    last_exc: Exception | None = None
+    for attempt, (key_no, key) in enumerate(keys):
+        try:
+            client = genai.Client(api_key=key)
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        except Exception as exc:
+            last_exc = exc
+            if _looks_key_rejected(exc):
+                mark_gemini_key_disabled(key)
+                logger.warning("Gemini key #%d rejected, disabling it: %s", key_no, exc)
+                continue
+            if _looks_rate_limited(exc):
+                logger.warning(
+                    "Gemini key #%d rate-limited on %s; trying the next key", key_no, what
+                )
+                time.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
+                continue
+            # Anything else is a real failure — a bad prompt or an unreadable
+            # file will fail identically on every key, so do not burn them all.
+            raise
+
+    raise RuntimeError(f"All {len(keys)} Gemini key(s) failed for {what}: {last_exc}")
 
 
 def complete_text(
@@ -46,18 +111,13 @@ def complete_text(
     """Plain-text (Markdown) completion. Same contract as complete_json minus the
     JSON parsing, for the content types that return Markdown rather than a
     structured object."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise GeminiUnavailable("GEMINI_API_KEY is not set")
     try:
-        from google import genai
         from google.genai import types
     except Exception as exc:
         raise GeminiUnavailable(f"google-genai not installed: {exc}") from exc
 
     started = time.time()
-    client = genai.Client(api_key=api_key)
-    result = client.models.generate_content(
+    result = generate_with_rotation(
         model=model,
         contents=f"{system_prompt}\n\n{user_prompt}",
         config=types.GenerateContentConfig(
@@ -69,6 +129,7 @@ def complete_text(
             # mid-question (finish_reason MAX_TOKENS with ~1.4k thinking tokens).
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
+        what="text completion",
     )
     latency_ms = int((time.time() - started) * 1000)
     text = (getattr(result, "text", None) or "").strip()
@@ -98,18 +159,13 @@ def complete_json(
     Raises GeminiUnavailable when unusable so the caller can fall back to Groq
     rather than failing the request outright.
     """
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise GeminiUnavailable("GEMINI_API_KEY is not set")
     try:
-        from google import genai
         from google.genai import types
     except Exception as exc:
         raise GeminiUnavailable(f"google-genai not installed: {exc}") from exc
 
     started = time.time()
-    client = genai.Client(api_key=api_key)
-    result = client.models.generate_content(
+    result = generate_with_rotation(
         model=model,
         # Gemini has no separate system role here; the instructions are prepended
         # and the source material follows, which keeps the ordering the model
@@ -122,6 +178,7 @@ def complete_json(
             # See complete_text: reasoning tokens come out of the same budget.
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
+        what="JSON completion",
     )
     latency_ms = int((time.time() - started) * 1000)
 

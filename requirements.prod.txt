@@ -17,6 +17,9 @@ google-genai
 
 # ── PDF / Image Processing ────────────────────────────────────────────────────
 pdfplumber==0.11.4
+# Splits a long scanned chapter into page batches for transcription; imported
+# lazily, and ingestion falls back to a single pass without it.
+pypdf==5.1.0
 pdf2image==1.17.0
 Pillow==10.4.0
 easyocr

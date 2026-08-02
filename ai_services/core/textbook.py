@@ -28,6 +28,22 @@ _MIN_CHARS = 120              # below this a "page" is a header or scan artefact
 
 _MAX_PDF_BYTES = 60 * 1024 * 1024
 
+# Pages per vision request. Measured on real indexed chapters, transcription runs
+# 570-700 output tokens per page, so a single request against a 30k output ceiling
+# runs out at roughly 45 pages. Batching keeps page count from being a ceiling at
+# all: a long scan costs more requests rather than silently losing its tail.
+_OCR_PAGES_PER_BATCH = 20
+_OCR_MAX_OUTPUT_TOKENS = 30000
+
+
+class TruncatedTranscript(RuntimeError):
+    """The model hit its output ceiling mid-transcript.
+
+    Distinct from an unreadable scan: the page images were fine and the text is
+    partial, so telling the user to re-scan would send them after the wrong
+    problem. Splitting the PDF is the fix.
+    """
+
 
 def approx_tokens(text: str) -> int:
     return max(1, len(text or "") // _CHARS_PER_TOKEN)
@@ -52,16 +68,40 @@ def clean_page_text(text: str) -> str:
     return t.strip()
 
 
+def fetch_pdf(url: str) -> bytes:
+    """Download a PDF, refusing anything over the size ceiling.
+
+    The ceiling is enforced while streaming rather than after the fact: reading
+    the whole body first and then measuring it means an oversized file has
+    already been held in memory, which is what the limit exists to prevent.
+    """
+    with _requests.get(url, timeout=60, stream=True) as resp:
+        resp.raise_for_status()
+
+        # Trust a declared length only to fail fast; it is absent or wrong often
+        # enough that the running count below is the real guard.
+        declared = resp.headers.get("Content-Length")
+        if declared and declared.isdigit() and int(declared) > _MAX_PDF_BYTES:
+            raise ValueError(
+                f"PDF is {int(declared) // 1024 // 1024}MB; limit is "
+                f"{_MAX_PDF_BYTES // 1024 // 1024}MB"
+            )
+
+        buf = io.BytesIO()
+        size = 0
+        for block in resp.iter_content(chunk_size=256 * 1024):
+            size += len(block)
+            if size > _MAX_PDF_BYTES:
+                raise ValueError(
+                    f"PDF exceeds the {_MAX_PDF_BYTES // 1024 // 1024}MB limit"
+                )
+            buf.write(block)
+        return buf.getvalue()
+
+
 def extract_pdf_pages(source: "str | bytes") -> "list[dict]":
     """Return [{page_no, text, chars}] for a PDF given as a URL or raw bytes."""
-    if isinstance(source, str):
-        resp = _requests.get(source, timeout=60, stream=True)
-        resp.raise_for_status()
-        data = resp.content
-        if len(data) > _MAX_PDF_BYTES:
-            raise ValueError(f"PDF is {len(data) // 1024 // 1024}MB; limit is 60MB")
-    else:
-        data = source
+    data = fetch_pdf(source) if isinstance(source, str) else source
 
     # Imported here, not at module scope: this module is reachable from urls.py,
     # so a top-level import makes the whole URL conf — and therefore the entire
@@ -141,27 +181,43 @@ def chunk_pages(pages: "list[dict]") -> "list[dict]":
     return chunks
 
 
-def ocr_pdf_pages(data: bytes) -> "list[dict]":
-    """Transcribe a scanned PDF page by page using Gemini's native PDF vision.
+def split_pdf_batches(data: bytes, per_batch: int) -> "list[tuple[int, bytes]]":
+    """Split a PDF into (first_page_no, pdf_bytes) slices for transcription.
 
-    School textbooks very often arrive as photographs or scans shared over
-    WhatsApp, where pdfplumber finds no text layer at all. Gemini reads the
-    document directly, so no page rasterisation or separate OCR engine is
-    needed. Temperature is 0 and the instruction forbids summarising, because
-    the transcript has to stay the book's own words to be worth citing.
+    Falls back to a single slice when pypdf is unavailable, so a minimal install
+    still transcribes — it just regains the old length ceiling, which the caller
+    now detects and reports instead of silently truncating.
     """
-    from ai_services.core import gemini_client as _gc
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError:
+        logger.warning("pypdf unavailable; transcribing the PDF in a single pass")
+        return [(1, data)]
 
-    if not _gc.is_available():
-        raise RuntimeError("Gemini is required to read a scanned PDF but is unavailable")
+    reader = PdfReader(io.BytesIO(data))
+    total = len(reader.pages)
+    if total <= per_batch:
+        return [(1, data)]
 
+    batches = []
+    for start in range(0, total, per_batch):
+        writer = PdfWriter()
+        for page in reader.pages[start:start + per_batch]:
+            writer.add_page(page)
+        buf = io.BytesIO()
+        writer.write(buf)
+        batches.append((start + 1, buf.getvalue()))
+    return batches
+
+
+def _ocr_batch(data: bytes, first_page_no: int) -> "list[dict]":
+    """Transcribe one slice, returning pages numbered from first_page_no."""
     import json as _json
-    import os as _os
-    from google import genai
+
+    from ai_services.core import gemini_client as _gc
     from google.genai import types
 
-    client = genai.Client(api_key=_os.getenv("GEMINI_API_KEY"))
-    result = client.models.generate_content(
+    result = _gc.generate_with_rotation(
         model=_gc.DEFAULT_MODEL,
         contents=[
             types.Part.from_bytes(data=data, mime_type="application/pdf"),
@@ -173,18 +229,74 @@ def ocr_pdf_pages(data: bytes) -> "list[dict]":
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.0,
-            max_output_tokens=30000,
+            max_output_tokens=_OCR_MAX_OUTPUT_TOKENS,
         ),
+        what=f"OCR pages {first_page_no}+",
     )
-    payload = _json.loads((getattr(result, "text", "") or "").strip() or "{}")
+
+    # Checked before parsing: a response cut off at the ceiling is invalid JSON,
+    # and reporting that as malformed output would blame the wrong thing.
+    candidates = getattr(result, "candidates", None) or []
+    finish = str(getattr(candidates[0], "finish_reason", "") if candidates else "")
+    if "MAX_TOKENS" in finish.upper():
+        raise TruncatedTranscript(
+            f"transcript hit the {_OCR_MAX_OUTPUT_TOKENS}-token output limit "
+            f"at page {first_page_no}"
+        )
+
+    raw = (getattr(result, "text", "") or "").strip() or "{}"
+    try:
+        payload = _json.loads(raw)
+    except _json.JSONDecodeError as exc:
+        # Unbalanced JSON is the other signature of a cut-off response, for the
+        # cases where finish_reason does not say so.
+        if raw.count("{") > raw.count("}"):
+            raise TruncatedTranscript(
+                f"transcript ended mid-object at page {first_page_no}"
+            ) from exc
+        raise RuntimeError(f"vision transcript was not valid JSON: {exc}") from exc
+
     pages = []
-    for p in payload.get("pages", []):
+    for offset, p in enumerate(payload.get("pages", [])):
         text = clean_page_text(p.get("text") or "")
         pages.append({
-            "page_no": int(p.get("page_no") or len(pages) + 1),
+            "page_no": first_page_no + offset,
             "text": text,
             "chars": len(text),
         })
+    return pages
+
+
+def ocr_pdf_pages(data: bytes) -> "list[dict]":
+    """Transcribe a scanned PDF page by page using Gemini's native PDF vision.
+
+    School textbooks very often arrive as photographs or scans shared over
+    WhatsApp, where pdfplumber finds no text layer at all. Gemini reads the
+    document directly, so no page rasterisation or separate OCR engine is
+    needed. Temperature is 0 and the instruction forbids summarising, because
+    the transcript has to stay the book's own words to be worth citing.
+
+    Long chapters go in page batches. A single request runs out of output budget
+    at roughly 45 pages, and the resulting truncation used to surface as "no
+    readable text" — sending a teacher to re-scan a book that was never the
+    problem. Page numbers stay absolute across batches so citations still match
+    the printed chapter.
+    """
+    from ai_services.core import gemini_client as _gc
+
+    if not _gc.is_available():
+        raise RuntimeError("Gemini is required to read a scanned PDF but is unavailable")
+
+    batches = split_pdf_batches(data, _OCR_PAGES_PER_BATCH)
+    pages: "list[dict]" = []
+    for first_page_no, chunk in batches:
+        batch_pages = _ocr_batch(chunk, first_page_no)
+        pages.extend(batch_pages)
+        logger.info(
+            "Transcribed pages %d-%d (%d chars)",
+            first_page_no, first_page_no + len(batch_pages) - 1,
+            sum(p["chars"] for p in batch_pages),
+        )
     return pages
 
 
@@ -195,16 +307,16 @@ def ingest_pdf(source: "str | bytes", allow_ocr: bool = True) -> dict:
     that produced nothing — a silently empty ingest would otherwise look
     identical to a book with no relevant content.
     """
-    if isinstance(source, str):
-        resp = _requests.get(source, timeout=60)
-        resp.raise_for_status()
-        data = resp.content
-    else:
-        data = source
+    # Downloaded through the same guarded path as everything else. This used to
+    # fetch the body directly and hand raw bytes to extract_pdf_pages, which
+    # meant the size ceiling — only checked on the URL branch there — never
+    # applied to the path the backend actually calls.
+    data = fetch_pdf(source) if isinstance(source, str) else source
 
     pages = extract_pdf_pages(data)
     chunks = chunk_pages(pages)
     method = "text_layer"
+    truncated = False
 
     # No text layer worth having — fall back to reading the pages as images.
     if allow_ocr and sum(p["chars"] for p in pages) < 200:
@@ -213,17 +325,26 @@ def ingest_pdf(source: "str | bytes", allow_ocr: bool = True) -> dict:
             if sum(p["chars"] for p in ocr_pages) >= 200:
                 pages, method = ocr_pages, "ocr"
                 chunks = chunk_pages(pages)
+        except TruncatedTranscript as exc:
+            # Kept separate from the catch below so this does not end up reported
+            # as an unreadable scan: the book is fine, it is too long for one pass.
+            truncated = True
+            logger.warning("OCR transcript truncated: %s", exc)
         except Exception as exc:
             logger.warning("OCR fallback failed: %s", exc)
 
     total_chars = sum(p["chars"] for p in pages)
     empty_pages = sum(1 for p in pages if p["chars"] < _MIN_CHARS)
     quality = "ok"
-    if not pages:
+    if truncated and not chunks:
+        # Checked before the emptier diagnoses below, which would otherwise
+        # blame the scan for what is really a length problem.
+        quality = "too_long"
+    elif not pages:
         quality = "unreadable"
     elif not chunks or total_chars < 200:
         quality = "no_text"                    # almost certainly a scanned book
-    elif empty_pages > len(pages) * 0.5:
+    elif truncated or empty_pages > len(pages) * 0.5:
         quality = "partial"
 
     return {
@@ -234,5 +355,6 @@ def ingest_pdf(source: "str | bytes", allow_ocr: bool = True) -> dict:
         "empty_pages": empty_pages,
         "quality": quality,
         "method": method,
+        "truncated": truncated,
         "needs_ocr": quality in ("no_text", "unreadable"),
     }
