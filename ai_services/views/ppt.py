@@ -43,6 +43,26 @@ _STOCK_SOURCES = (
     "freepik", "abposters", "stockphoto", "adobestock",
 )
 
+# Social and video results match the topic by their caption, not their picture.
+# Facebook and Instagram answer image requests from lookaside.* with the poster's
+# PROFILE PHOTO, and a YouTube thumbnail is usually the presenter's face — which
+# is how a slide about metals ended up showing a portrait of a man in a suit.
+_SOCIAL_SOURCES = (
+    "instagram", "facebook", "fbsbx", "lookaside", "twitter", "x.com",
+    "pinterest", "linkedin", "tiktok", "reddit", "threads",
+    "ytimg", "youtube", "dailymotion",
+)
+
+# Sites that publish the kind of labelled figure a teacher actually wants.
+# Promoted ahead of everything else when they appear in the results.
+_EDUCATIONAL_SOURCES = (
+    "byjus", "teachoo", "vedantu", "toppr", "ncert", "learncbse", "cbse",
+    "geeksforgeeks", "khanacademy", "wikipedia", "wikimedia", "britannica",
+    "sciencenotes", "chemistrylearner", "bbc.co.uk", "rsc.org", "olympiad",
+    "shaalaa", "meritnation", "embibe", "physicswallah", "doubtnut",
+    "tutorialspoint", "sciencedirect", "nasa.gov", "libretexts",
+)
+
 _IMAGE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -480,13 +500,27 @@ def _download_image_as_base64(url: str) -> "str | None":
         return None
 
 
-def _is_stock_photo(item: dict) -> bool:
-    """Whether a result comes from a stock-photo library.
+def _source_rank(item: dict) -> int:
+    """Order a result by how likely its picture matches its caption.
 
-    These rank well for words like "educational" and "diagram" while showing
-    watermarked models in classrooms rather than the subject itself, so they are
-    tried only after every genuine result has failed.
+    0 — a teaching site: the image is the figure the caption describes.
+    1 — anything else.
+    2 — stock library: on-topic words, generic classroom photo.
+    3 — social or video: the caption is on-topic but the image is a profile
+        photo or a presenter's face, so these go last.
     """
+    haystack = f"{item.get('source', '')} {item.get('imageUrl', '')}".lower()
+    if any(s in haystack for s in _SOCIAL_SOURCES):
+        return 3
+    if any(s in haystack for s in _STOCK_SOURCES):
+        return 2
+    if any(s in haystack for s in _EDUCATIONAL_SOURCES):
+        return 0
+    return 1
+
+
+def _is_stock_photo(item: dict) -> bool:
+    """Kept for callers that only need the stock/not-stock distinction."""
     haystack = f"{item.get('source', '')} {item.get('imageUrl', '')}".lower()
     return any(s in haystack for s in _STOCK_SOURCES)
 
@@ -494,15 +528,16 @@ def _is_stock_photo(item: dict) -> bool:
 def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None" = None) -> dict:
     """Search Serper and return the first downloadable image as a base64 data URI.
 
-    Genuine sources are preferred over stock libraries; within each group the
-    original relevance order is kept, so the best on-topic result still wins.
+    Results are ranked by source before anything is downloaded, so a teaching
+    figure is taken ahead of a stock photo or a social post. Relevance order is
+    preserved inside each tier, so the best on-topic result still wins.
     """
     enriched = ""
     try:
         enriched = _enrich_search_term(search_term, slide_title, ctx)
-        results = search_google_images(enriched, limit=8)
-        ordered = [r for r in results if not _is_stock_photo(r)] + \
-                  [r for r in results if _is_stock_photo(r)]
+        results = search_google_images(enriched, limit=10)
+        # sorted() is stable, so Serper's own ranking survives within a tier.
+        ordered = sorted(results, key=_source_rank)
         for item in ordered:
             url = item.get("imageUrl")
             if not url:
