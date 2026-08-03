@@ -74,7 +74,15 @@ jobs:
             #   ALLOWED_HOSTS=""  -> Django 400s EVERY request (DisallowedHost)
             #   AI_API_KEY=""     -> no tenant can be seeded, so every request 401s
             # Both actually happened. Default them instead of writing blanks.
-            ALLOWED_HOSTS_VALUE="${ALLOWED_HOSTS:-dev-ai.eddva.in,localhost,127.0.0.1}"
+            # 172.31.20.183 is this instance's own private address. The dev NestJS
+            # backend calls the AI service directly on http://172.31.20.183:8001,
+            # so that host must be allowed or every POST from the backend fails
+            # with a 400 DisallowedHost — while GETs and health checks keep
+            # returning 200, because Django only validates the host on unsafe
+            # methods. Leaving it out of this default silently broke content and
+            # doubt generation three separate times: each deploy rewrote .env from
+            # here, quietly undoing the value that had been set on the box.
+            ALLOWED_HOSTS_VALUE="${ALLOWED_HOSTS:-dev-ai.eddva.in,localhost,127.0.0.1,172.31.20.183}"
             CORS_VALUE="${CORS_ALLOWED_ORIGINS:-https://dev.eddva.in,https://dev-api.eddva.in}"
             AI_API_KEY_VALUE="${AI_API_KEY:-apexiq-dev-secret-key-2026}"
 
