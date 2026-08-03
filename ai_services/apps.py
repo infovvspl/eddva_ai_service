@@ -115,4 +115,31 @@ class AiServicesConfig(AppConfig):
             except Exception as exc:
                 logger.error("Local dev self-heal (migrate/ensure_service_account) failed: %s", exc)
 
+        # ── Gemini key pool ───────────────────────────────────────────────────
+        # Grounded generation, textbook OCR, image doubts and answer-sheet
+        # grading all run on Gemini, so the size of this pool decides how much
+        # of the platform keeps working under load. It has silently dropped from
+        # six keys to one on a deploy more than once — .env is rewritten from
+        # scratch and only the keys CI knows about are put back — and the first
+        # sign was a teacher's generation failing. Logging the count at boot
+        # makes that visible in the deploy output instead.
+        try:
+            from ai_services.core.gemini_keys import get_gemini_api_keys
+
+            _gemini_keys = get_gemini_api_keys()
+            if not _gemini_keys:
+                logger.error(
+                    "Gemini: NO keys configured — grounded generation, textbook OCR, "
+                    "image doubts and answer-sheet grading will all fail"
+                )
+            elif len(_gemini_keys) == 1:
+                logger.warning(
+                    "Gemini: only 1 key configured. Everything grounded shares one "
+                    "project's quota; set GEMINI_API_KEYS (comma-separated) to widen it."
+                )
+            else:
+                logger.info("Gemini: %d keys available for rotation", len(_gemini_keys))
+        except Exception as exc:  # never block startup over a diagnostic
+            logger.warning("Gemini key check skipped: %s", exc)
+
         logger.info("AI Services ready — all components initialized")
