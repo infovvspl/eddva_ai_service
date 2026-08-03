@@ -5956,6 +5956,12 @@ def generate_topic_content(request):
     # the question sets behind assessments — is written from the book instead of
     # the model's general knowledge, and cites the pages it used.
     source_passages = data.get("sourcePassages") or []
+    # Kept so the Groq fallback can be given the original, un-grounded prompt.
+    # Grounding adds roughly 9,000 tokens of textbook to the request, which
+    # Gemini has room for and Groq does not — its on-demand tier rejects any
+    # single request over 12,000 TPM outright, on every key, since that is a
+    # size limit rather than a quota.
+    ungrounded_system_prompt = system_prompt
     grounded = False
     grounded_pages = []
     grounded_block = ""
@@ -6179,6 +6185,7 @@ def generate_topic_content(request):
             # Fall through to Groq below
 
 
+    ungrounded_user_prompt = user_prompt
     if grounded_block:
         user_prompt += grounded_block
 
@@ -6207,8 +6214,18 @@ def generate_topic_content(request):
                     "_meta": {"model": _g["model"], "latency_ms": _g["latency_ms"]},
                 })
         except Exception as exc:
-            logger.warning("Grounded generation via Gemini failed (%s) — using Groq", exc)
+            # Drop the textbook from the prompt before falling back. Groq's
+            # on-demand tier rejects any request over 12,000 tokens outright —
+            # a size limit, not a quota — so leaving the ~9,000-token source
+            # block in place made every one of the 20 keys return 413 and the
+            # teacher got a 500 instead of an ungrounded document.
+            logger.warning(
+                "Grounded generation via Gemini failed (%s) — retrying on Groq "
+                "without the source block", exc,
+            )
             grounded = False
+            system_prompt = ungrounded_system_prompt
+            user_prompt = ungrounded_user_prompt
 
     try:
         llm_result = get_llm().complete(
