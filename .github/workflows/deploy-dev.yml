@@ -21,6 +21,15 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Comma-separated extra Gemini keys, mirroring GROQ_API_KEYS above.
+          # Without this the deploy writes only the single key and the service
+          # drops from six keys to one — every vision and grounded call then
+          # shares one project's quota.
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          # Left unset on purpose: an unset secret arrives as an empty string,
+          # which is exactly the value that skips the withdrawn Groq vision
+          # models. Set it only if the account serves vision models again.
+          GROQ_VISION_MODELS: ${{ secrets.GROQ_VISION_MODELS }}
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DJANGO_SECRET_KEY: ${{ secrets.DEV_DJANGO_SECRET_KEY }}
@@ -50,7 +59,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 25m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL,GROQ_API_KEYS,DEV_NESTJS_URL
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,GEMINI_API_KEYS,GROQ_VISION_MODELS,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL,GROQ_API_KEYS,DEV_NESTJS_URL
           script: |
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -103,6 +112,16 @@ jobs:
             # reads GROQ_API_KEY, GROQ_API_KEYS, or GROQ_API_KEY_1..N).
             printf 'GROQ_API_KEYS=%s\n' "$GROQ_API_KEYS" >> .env
             printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY" >> .env
+            # Extra Gemini keys for rotation (the client reads GEMINI_API_KEY,
+            # GEMINI_API_KEYS, or GEMINI_API_KEY_1..N). Vision, textbook OCR and
+            # grounded generation all run on Gemini, so writing only the single
+            # key silently drops the service from six keys to one.
+            printf 'GEMINI_API_KEYS=%s\n' "$GEMINI_API_KEYS" >> .env
+            # Groq withdrew its llama-3.2 vision models, so the vision path tries
+            # two models that always 404 before falling through to Gemini. An
+            # empty value skips Groq entirely; set the secret to a comma-separated
+            # list if the account serves vision models again.
+            printf 'GROQ_VISION_MODELS=%s\n' "$GROQ_VISION_MODELS" >> .env
             printf 'SERPAPI_KEY=%s\n' "$SERPAPI_KEY" >> .env
             printf 'SARVAM_API_KEY=%s\n' "$SARVAM_API_KEY" >> .env
             printf 'DJANGO_SECRET_KEY=%s\n' "$DJANGO_SECRET_KEY" >> .env
