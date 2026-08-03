@@ -14,6 +14,7 @@ whole service where it is absent.
 import json
 import logging
 import os
+import re
 import time
 
 from ai_services.core.gemini_keys import (
@@ -34,6 +35,25 @@ _RETRY_BACKOFF_S = (0.5, 2.0, 5.0)
 
 class GeminiUnavailable(RuntimeError):
     """Raised when the SDK or API key is missing, so callers can fall back."""
+
+
+# A page citation emitted just outside the closing quote:
+#     "Nonmetals make up most of the Earth's crust." [3],
+# The model is following the instruction to cite its source but attaches the
+# marker after the string rather than inside it, which is invalid JSON. Seen
+# repeatedly on grounded generation, and the consequence was silent: the parse
+# failed, the caller fell back to ungrounded output, and a teacher got a deck of
+# general knowledge with no citations and no indication anything had gone wrong.
+_STRAY_CITATION = re.compile(r'"\s*(\[p?\.?\s*\d+(?:\s*,\s*\d+)*\])\s*(?=[,\]\}])')
+
+
+def _repair_json(text: str) -> str:
+    """Fix the malformations Gemini produces on grounded output.
+
+    Only touches sequences that are already invalid JSON, so well-formed output
+    passes through untouched.
+    """
+    return _STRAY_CITATION.sub(lambda m: ' ' + m.group(1) + '"', text)
 
 
 def is_available() -> bool:
@@ -212,9 +232,16 @@ def complete_json(
         raise RuntimeError("Gemini returned an empty response")
     try:
         content = json.loads(text)
-    except json.JSONDecodeError as exc:
-        logger.error("Gemini returned invalid JSON: %s", exc)
-        raise RuntimeError("Gemini returned malformed JSON") from exc
+    except json.JSONDecodeError as first_exc:
+        # Retry once through the repair rather than discarding the response. The
+        # alternative is falling back to ungrounded generation, which costs the
+        # teacher the one thing they asked for — the book as the source.
+        try:
+            content = json.loads(_repair_json(text))
+            logger.info("Gemini JSON repaired (was: %s)", first_exc)
+        except json.JSONDecodeError:
+            logger.error("Gemini returned invalid JSON: %s", first_exc)
+            raise RuntimeError("Gemini returned malformed JSON") from first_exc
 
     usage = getattr(result, "usage_metadata", None)
     return {
