@@ -106,6 +106,22 @@ jobs:
             export CORS_ALLOWED_ORIGINS="$CORS_VALUE"
             export AI_API_KEY="$AI_API_KEY_VALUE"
 
+            # Capture numbered provider keys before .env is truncated below.
+            #
+            # This file is rewritten from scratch on every deploy, so any key
+            # added directly on the box disappears without a word. That happened
+            # three times in one day with GEMINI_API_KEY_1..5: the service
+            # silently dropped from six Gemini keys to one, and the next grounded
+            # generation failed because the single remaining key was rate-limited.
+            #
+            # Keys are only carried over when the matching secret is unset, so a
+            # configured secret still wins and this never resurrects a rotated-out
+            # key that CI has deliberately replaced.
+            PRESERVED_GEMINI=""
+            if [ -z "$GEMINI_API_KEYS" ] && [ -f .env ]; then
+              PRESERVED_GEMINI="$(grep -E '^GEMINI_API_KEY_[0-9]+=.+' .env || true)"
+            fi
+
             # Write .env (printf avoids leading-whitespace issues from heredoc)
             printf 'GROQ_API_KEY=%s\n' "$GROQ_API_KEY" > .env
             # Optional: comma-separated list of Groq keys for rotation (the client
@@ -117,6 +133,11 @@ jobs:
             # grounded generation all run on Gemini, so writing only the single
             # key silently drops the service from six keys to one.
             printf 'GEMINI_API_KEYS=%s\n' "$GEMINI_API_KEYS" >> .env
+            # Numbered keys that were on the box and are not managed by a secret.
+            if [ -n "$PRESERVED_GEMINI" ]; then
+              printf '%s\n' "$PRESERVED_GEMINI" >> .env
+              echo "Preserved $(printf '%s\n' "$PRESERVED_GEMINI" | wc -l) existing GEMINI_API_KEY_n entries"
+            fi
             # Groq withdrew its llama-3.2 vision models, so the vision path tries
             # two models that always 404 before falling through to Gemini. An
             # empty value skips Groq entirely; set the secret to a comma-separated
