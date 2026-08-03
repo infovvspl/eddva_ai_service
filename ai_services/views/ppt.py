@@ -454,33 +454,64 @@ def _image_context(ctx: "dict | None") -> str:
     return " ".join(str(p).strip() for p in parts if p and str(p).strip())
 
 
-def _enrich_search_term(term: str, slide_title: str, ctx: "dict | None" = None) -> str:
-    """Build a Serper query that is specific to this slide *and* its chapter.
+def _search_queries(term: str, slide_title: str, ctx: "dict | None" = None) -> "list[str]":
+    """Queries to try for one slide, most specific first.
 
-    The old fallback appended "educational diagram photograph" to a bare slide
-    title. Those words match the copy on stock-photo sites far better than they
-    match a textbook figure, so a generic title returned Alamy and Shutterstock
-    pictures of classrooms. Curriculum words are used instead: they narrow the
-    search to the subject, which is what makes the result relevant.
+    A single query cannot serve both cases. "Bacteria: Basic Facts" needs the
+    slide's own words — adding "Microorganisms Science Class 8" pulls back
+    chapter-overview collages of algae and protozoa instead of bacteria. But a
+    slide titled "Development" needs the chapter, or it returns child-development
+    charts from an unrelated subject.
+
+    So they are tried in order: the slide's own term first, the chapter-scoped
+    version if that finds nothing usable, and the chapter itself as a last
+    resort. The last one is deliberately broad — a slide with a roughly relevant
+    picture beats a slide with an empty frame.
     """
     context = _image_context(ctx)
     term = (term or "").strip()
+    title = (slide_title or "").strip()
 
-    # Too vague to search on its own — anchor it to the chapter instead.
-    if len(term.split()) < 3:
-        base = (slide_title or term).strip()
-        if context:
-            # Deduplicated: a slide titled "Development" in the chapter
-            # "Development" would otherwise search for the word twice.
-            return f"{_dedupe_words(base + ' ' + context)} diagram"
-        return f"{base} educational diagram".strip()
+    def visual(q: str) -> str:
+        return q if any(h in q.lower() for h in _VISUAL_HINTS) else f"{q} diagram"
 
-    # A specific term still benefits from the subject when the words are common.
-    if context and not any(w.lower() in term.lower() for w in context.split()):
-        term = f"{term} {context}"
-    if not any(h in term.lower() for h in _VISUAL_HINTS):
-        term = f"{term} diagram"
-    return term
+    queries: "list[str]" = []
+
+    # 1. The slide's own term, when the model gave something usable.
+    if len(term.split()) >= 3:
+        queries.append(visual(term))
+
+    # 2. Scoped to the chapter — disambiguates common words like "Development"
+    #    or "Solutions" that mean something else outside this subject.
+    if context:
+        base = term if len(term.split()) >= 3 else title
+        if base:
+            queries.append(visual(_dedupe_words(f"{base} {context}")))
+        queries.append(visual(_dedupe_words(context)))
+    elif title:
+        queries.append(visual(f"{title} educational"))
+
+    # 3. Nothing else to go on.
+    if not queries and title:
+        queries.append(visual(f"{title} educational"))
+
+    # Preserve order, drop repeats.
+    seen, out = set(), []
+    for q in queries:
+        k = q.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(q)
+    return out
+
+
+def _enrich_search_term(term: str, slide_title: str, ctx: "dict | None" = None) -> str:
+    """The single best query for a slide — the first of _search_queries.
+
+    Kept because /ppt/search-image exposes a one-shot search to the editor.
+    """
+    qs = _search_queries(term, slide_title, ctx)
+    return qs[0] if qs else (slide_title or term or "").strip()
 
 
 def _download_image_as_base64(url: str) -> "str | None":
@@ -532,24 +563,40 @@ def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None
     figure is taken ahead of a stock photo or a social post. Relevance order is
     preserved inside each tier, so the best on-topic result still wins.
     """
-    enriched = ""
-    try:
-        enriched = _enrich_search_term(search_term, slide_title, ctx)
-        results = search_google_images(enriched, limit=10)
-        # sorted() is stable, so Serper's own ranking survives within a tier.
-        ordered = sorted(results, key=_source_rank)
-        for item in ordered:
-            url = item.get("imageUrl")
-            if not url:
+    queries = _search_queries(search_term, slide_title, ctx)
+    first_url = None
+
+    for attempt, query in enumerate(queries, 1):
+        try:
+            results = search_google_images(query, limit=10)
+            if not results:
                 continue
-            b64 = _download_image_as_base64(url)
-            if b64:
-                return {"imageUrl": url, "imageBase64": b64}
-        # Return the URL even if we couldn't download it — client can still try
-        if ordered:
-            return {"imageUrl": ordered[0].get("imageUrl"), "imageBase64": None}
-    except Exception as exc:
-        logger.warning("Image fetch error for %r (query %r): %s", search_term, enriched, exc)
+            # sorted() is stable, so Serper's own ranking survives within a tier.
+            ordered = sorted(results, key=_source_rank)
+            if first_url is None:
+                first_url = ordered[0].get("imageUrl")
+
+            for item in ordered:
+                url = item.get("imageUrl")
+                if not url:
+                    continue
+                b64 = _download_image_as_base64(url)
+                if b64:
+                    if attempt > 1:
+                        logger.info(
+                            "Slide image found on attempt %d (query %r)", attempt, query,
+                        )
+                    return {"imageUrl": url, "imageBase64": b64}
+        except Exception as exc:
+            logger.warning("Image search failed for %r: %s", query, exc)
+
+    # Nothing downloaded. Hand back the best URL anyway — the client proxies it,
+    # and a hotlink that this server cannot fetch often still loads in a browser.
+    if first_url:
+        logger.info("No downloadable image for %r; returning URL only", search_term)
+        return {"imageUrl": first_url, "imageBase64": None}
+
+    logger.warning("No image at all for slide %r (tried %d queries)", slide_title, len(queries))
     return {"imageUrl": None, "imageBase64": None}
 
 
