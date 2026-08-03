@@ -3304,7 +3304,15 @@ def _call_gemini_vision(image_source: str, prompt: str) -> str:
         logger.warning("[VISION] Failed to resolve image to bytes for Gemini")
         return ""
 
-    model = os.getenv("NOTES_IMAGE_OVERLAY_GEMINI_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.0-flash"))
+    # gemini-2.5-flash, not 2.0. Every configured key returns 429
+    # RESOURCE_EXHAUSTED for gemini-2.0-flash, so this fallback produced nothing
+    # — and because the Groq vision models above it were withdrawn (404 "model
+    # does not exist") and EasyOCR is not installed, a student's photographed
+    # doubt had no working path at all and simply came back blank.
+    model = os.getenv(
+        "NOTES_IMAGE_OVERLAY_GEMINI_MODEL",
+        os.getenv("GEMINI_VISION_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")),
+    )
     for key_index, api_key in keys:
         try:
             logger.info("[VISION] Trying Gemini model=%s key=%d/%d", model, key_index, gemini_key_count())
@@ -3382,9 +3390,17 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
     #     simple OCR prompts, consuming all available tokens before outputting
     #     the actual <transcription> block. We keep it as a *second* option
     #     and pass reasoning_effort='none' to suppress the think loop.
+    # Both of these now return 404 "model does not exist" on our Groq account —
+    # they were withdrawn — so this loop currently always falls through to the
+    # Gemini fallback below. Left in place because the 404 is immediate and the
+    # models may return, but made configurable: set GROQ_VISION_MODELS to a
+    # comma-separated list to point at whatever the account actually serves, or
+    # to an empty string to skip Groq and go straight to Gemini.
     vision_models = [
-        "llama-3.2-11b-vision-instruct",
-        "llama-3.2-90b-vision-instruct",
+        m.strip() for m in os.getenv(
+            "GROQ_VISION_MODELS",
+            "llama-3.2-11b-vision-instruct,llama-3.2-90b-vision-instruct",
+        ).split(",") if m.strip()
     ]
 
     for api_key in keys[:2]:
