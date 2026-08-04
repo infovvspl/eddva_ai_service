@@ -5202,6 +5202,23 @@ _CONTENT_LATEX_COMMAND_RE = re.compile(
     r"theta|alpha|beta|gamma|delta|pi|phi|psi|omega|lambda|sigma|mu|"
     r"times|cdot|div|pm|leq|geq|neq|to)(?:\b|(?=[_^{]))"
 )
+# A line that is nothing but a dollar and a short identifier — "$f", "$x1".
+#
+# This is not prose with a stray dollar in it; it is the head of a formula the
+# model split across a blank line:
+#
+#     $f
+#
+#     (0) = 0^2 - 3(0) + 2$
+#
+# Deleting the dollar there strands the variable outside the maths and renders
+# a bare "f" above the equation. Balancing it instead gives "$f$" alongside
+# "$(0) = 0^2 - 3(0) + 2$", which is what the reader expects to see.
+#
+# Anchored at both ends on purpose: a prose line that merely starts with a
+# dollar ("Se$a - weed$") has more on it than one short token, so it still
+# takes the stray-dollar path.
+_CONTENT_MATH_FRAGMENT_RE = re.compile(r"^\s*\$[A-Za-z][A-Za-z0-9]{0,2}\s*$")
 _CONTENT_SUPERSCRIPT_MAP = str.maketrans({
     "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
     "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
@@ -5293,7 +5310,7 @@ def _normalize_generated_math_markdown(markdown: str) -> str:
             looks_like_maths = bool(_CONTENT_LATEX_COMMAND_RE.search(line)) or bool(
                 re.search(r"[A-Za-z0-9})\]]\s*(?:=|≤|≥|≠|≈|→|\+|\^|_|\\)\s*[A-Za-z0-9({\[]", line)
             )
-            if not looks_like_maths:
+            if not looks_like_maths and not _CONTENT_MATH_FRAGMENT_RE.match(line):
                 line = re.sub(r"(?<!\$)\$(?!\$)", "", line)
                 repaired.append(line)
                 continue
