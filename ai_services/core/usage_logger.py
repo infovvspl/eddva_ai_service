@@ -101,6 +101,26 @@ def log_usage(
     user_id: str = None,
 ):
     """Fire-and-forget — never blocks the AI response."""
+    # Count the spend against the tenant's daily budget.
+    #
+    # This is the ONE place tokens are booked. Every generating endpoint already
+    # calls log_usage, so putting the accounting here means the budget reflects
+    # all traffic rather than only the calls that happen to run through
+    # ai_call() — previously the majority of spend (grounded content, vision
+    # OCR, transcription) was invisible to the cap it was supposed to obey.
+    #
+    # Done on the caller's thread, before the reporting thread starts: the next
+    # request's budget check must see this call, and a daemon thread gives no
+    # such ordering. It is a Redis INCR, so the cost is microseconds, and any
+    # failure is swallowed — accounting must never break generation.
+    try:
+        from ai_services.core.rate_limiter import get_shared_limiter
+        total = (tokens_input or 0) + (tokens_output or 0)
+        if total > 0:
+            get_shared_limiter().record_usage(institute_id or "default", total)
+    except Exception as exc:
+        logger.warning("Could not record usage against the daily budget: %s", exc)
+
     t = threading.Thread(
         target=log_ai_usage_sync,
         kwargs=dict(

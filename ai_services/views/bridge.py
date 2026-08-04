@@ -68,7 +68,7 @@ from ai_services.core.gemini_client import gemini_generate
 from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
 from ai_services.core.usage_logger import log_usage
 from ai_services.core.serpapi_images import search_google_images
-from .base import ai_call, ai_call_text, get_llm
+from .base import ai_call, ai_call_text, get_llm, metered
 
 
 
@@ -105,6 +105,7 @@ def _resolve_institute_id(request) -> str:
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def search_educational_images(request):
     """Search for educational images. Uses Serper when configured, Wikipedia otherwise."""
     query = str(request.data.get("query") or "").strip()
@@ -2774,6 +2775,7 @@ def _coerce_tutor_or_doubt_text(raw) -> str:
 
 
 @api_view(["POST"])
+@metered("doubt_resolver")
 def resolve_doubt(request):
     import re as _re
     _start_time = time.time()
@@ -3559,6 +3561,7 @@ def _extract_text_from_image_url(
 
 
 @api_view(["POST"])
+@metered("image_ocr_handwriting")
 def ocr_doubt_image(request):
     """Transcribe handwritten / diagram content for grading and doubt flows.
     Prefers Groq **Qwen 3.6 27B** vision (handwriting, equations, diagrams), then EasyOCR.
@@ -3615,6 +3618,7 @@ def ocr_doubt_image(request):
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def start_tutor_session(request):
     _start_time = time.time()
     data = request.data
@@ -3718,6 +3722,7 @@ def start_tutor_session(request):
 
 
 @api_view(["POST"])
+@metered("doubt_resolver")
 def continue_tutor_session(request):
     _start_time = time.time()
     data = request.data
@@ -3837,6 +3842,7 @@ def recommend_content(request):
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def generate_stt_notes(request):
     _start_time = time.time()
     data = request.data
@@ -4014,6 +4020,7 @@ def generate_stt_notes(request):
 
 
 @api_view(["POST"])
+@metered("lecture_transcription")
 def stt_transcribe_only(request):
     """Whisper transcription only -- no LLM. Saves transcript in ~2-5 min (vs 15+ min for full pipeline)."""
     import time as _time
@@ -4493,6 +4500,7 @@ def _gemini_parallel_complete_many(tasks: list[dict], temperature: float = 0.3) 
 
 
 @api_view(["POST"])
+@metered("in_video_quiz_generator")
 def generate_quiz_questions(request):
     _start_time = time.time()
     data = request.data
@@ -4727,6 +4735,7 @@ def generate_quiz_questions(request):
 
 
 @api_view(["POST"])
+@metered("multilingual_translation")
 def translate_text(request):
     import time as _time
     _start_time = time.time()
@@ -5529,6 +5538,7 @@ _SUBJECTIVE_RUBRIC_SYSTEM_PROMPT = (
 
 
 @api_view(["POST"])
+@metered("subjective_rubric_generation")
 def generate_subjective_rubrics(request):
     """
     POST body: {"questions": [{"questionId","text","marks","type"}, ...], "subjectName", "className", "board"}
@@ -5690,6 +5700,7 @@ _SUBJECTIVE_GRADING_SYSTEM_PROMPT = (
 
 
 @api_view(["POST"])
+@metered("subjective_answer_grading")
 def grade_subjective_answer(request):
     """
     POST body: {
@@ -5832,6 +5843,7 @@ def grade_subjective_answer(request):
 
 
 @api_view(["POST"])
+@metered("content_generate")
 def generate_topic_content(request):
     _start_time = time.time()
     data = request.data
@@ -6432,6 +6444,7 @@ def generate_topic_content(request):
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def generate_notes_from_transcript(request):
     import time as _time
     _start_time = time.time()
@@ -6748,6 +6761,7 @@ def _fetch_yt_captions_python(video_id: str) -> str:
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def generate_notes_from_youtube(request):
     import time as _time
     _start_time = time.time()
@@ -6958,6 +6972,7 @@ def ai_engine_health(request):
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def regenerate_single_note_image(request):
     data = request.data
     topic_id = data.get("topicId", "General")
@@ -7028,6 +7043,7 @@ def _parse_sections_from_llm_content(raw: str) -> list:
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def extract_image_search_terms(request):
     data = request.data
     notes = data.get("notes", "").strip()
