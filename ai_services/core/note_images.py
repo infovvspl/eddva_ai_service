@@ -167,7 +167,11 @@ def _label_generated_note_image_with_gemini(
             is_gemini_permanent_key_error,
             is_gemini_retryable_error,
             mark_gemini_key_disabled,
+            is_gemini_model_unavailable_error,
+            mark_gemini_model_unavailable,
+            resolve_gemini_model,
         )
+        from ai_services.core.gemini_client import gemini_generate
     except Exception as exc:
         logger.warning("Gemini vision overlay labeling unavailable: %s", exc)
         return [], "overlay_label_gemini_unavailable"
@@ -181,15 +185,15 @@ def _label_generated_note_image_with_gemini(
     model = os.getenv("NOTES_IMAGE_OVERLAY_GEMINI_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"))
     last_error = ""
     for key_index, api_key in get_rotated_gemini_keys():
+        _use_model = resolve_gemini_model(api_key, model)
         try:
-            client = genai.Client(api_key=api_key)
             contents = [
                 prompt,
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/png"),
             ]
             try:
-                response = client.models.generate_content(
-                    model=model,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=contents,
                     config=types.GenerateContentConfig(
                         temperature=0.0,
@@ -199,8 +203,8 @@ def _label_generated_note_image_with_gemini(
                     ),
                 )
             except TypeError:
-                response = client.models.generate_content(
-                    model=model,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=contents,
                     config=types.GenerateContentConfig(
                         temperature=0.0,
@@ -219,6 +223,11 @@ def _label_generated_note_image_with_gemini(
             )
             return labels, None
         except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
             last_error = str(exc)
             if is_gemini_permanent_key_error(last_error):
                 mark_gemini_key_disabled(api_key)
@@ -329,18 +338,22 @@ def _gemini_image_plan(system_prompt: str, user_prompt: str, max_tokens: int = 8
             is_gemini_permanent_key_error,
             is_gemini_retryable_error,
             mark_gemini_key_disabled,
+            is_gemini_model_unavailable_error,
+            mark_gemini_model_unavailable,
+            resolve_gemini_model,
         )
+        from ai_services.core.gemini_client import gemini_generate
     except Exception as exc:
         raise RuntimeError(f"Gemini image planner unavailable: {exc}") from exc
 
     model = os.getenv("NOTES_IMAGE_PLANNER_GEMINI_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"))
     last_exc: Exception | None = None
     for key_index, api_key in get_rotated_gemini_keys():
+        _use_model = resolve_gemini_model(api_key, model)
         try:
-            client = genai.Client(api_key=api_key)
             try:
-                response = client.models.generate_content(
-                    model=model,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -351,8 +364,8 @@ def _gemini_image_plan(system_prompt: str, user_prompt: str, max_tokens: int = 8
                     ),
                 )
             except TypeError:
-                response = client.models.generate_content(
-                    model=model,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -364,6 +377,11 @@ def _gemini_image_plan(system_prompt: str, user_prompt: str, max_tokens: int = 8
             logger.info("Gemini note image planning OK | key=%d/%d | model=%s", key_index, gemini_key_count(), model)
             return _extract_json_object(getattr(response, "text", "") or "")
         except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
             last_exc = exc
             msg = str(exc)
             if is_gemini_permanent_key_error(msg):

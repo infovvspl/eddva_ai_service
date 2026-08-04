@@ -60,7 +60,11 @@ from ai_services.core.gemini_keys import (
     is_gemini_permanent_key_error,
     is_gemini_retryable_error,
     mark_gemini_key_disabled,
+    is_gemini_model_unavailable_error,
+    mark_gemini_model_unavailable,
+    resolve_gemini_model,
 )
+from ai_services.core.gemini_client import gemini_generate
 from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
 from ai_services.core.usage_logger import log_usage
 from ai_services.core.serpapi_images import search_google_images
@@ -1789,11 +1793,11 @@ def _gemini_odia_generate(system_prompt: str, user_prompt: str, *, max_tokens: i
     last_exc: Exception | None = None
     response = None
     for key_index, api_key in get_rotated_gemini_keys():
+        _use_model = resolve_gemini_model(api_key, GEMINI_ODIA_NOTES_MODEL)
         try:
-            client = genai.Client(api_key=api_key)
             try:
-                response = client.models.generate_content(
-                    model=GEMINI_ODIA_NOTES_MODEL,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -1803,8 +1807,8 @@ def _gemini_odia_generate(system_prompt: str, user_prompt: str, *, max_tokens: i
                     ),
                 )
             except TypeError:
-                response = client.models.generate_content(
-                    model=GEMINI_ODIA_NOTES_MODEL,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -1818,6 +1822,11 @@ def _gemini_odia_generate(system_prompt: str, user_prompt: str, *, max_tokens: i
             )
             break
         except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
             last_exc = exc
             msg = str(exc)
             if is_gemini_permanent_key_error(msg):
@@ -3289,6 +3298,9 @@ def _call_gemini_vision(image_source: str, prompt: str) -> str:
             get_rotated_gemini_keys,
             is_gemini_permanent_key_error,
             mark_gemini_key_disabled,
+            is_gemini_model_unavailable_error,
+            mark_gemini_model_unavailable,
+            resolve_gemini_model,
         )
     except Exception as exc:
         logger.warning("[VISION] Gemini SDK/keys import failed: %s", exc)
@@ -3314,15 +3326,15 @@ def _call_gemini_vision(image_source: str, prompt: str) -> str:
         os.getenv("GEMINI_VISION_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")),
     )
     for key_index, api_key in keys:
+        _use_model = resolve_gemini_model(api_key, model)
         try:
             logger.info("[VISION] Trying Gemini model=%s key=%d/%d", model, key_index, gemini_key_count())
-            client = genai.Client(api_key=api_key)
             contents = [
                 prompt,
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
             ]
-            response = client.models.generate_content(
-                model=model,
+            response = gemini_generate(api_key,
+                model=_use_model,
                 contents=contents,
                 config=types.GenerateContentConfig(
                     temperature=0.0,
@@ -3334,6 +3346,11 @@ def _call_gemini_vision(image_source: str, prompt: str) -> str:
                 logger.info("[VISION] Gemini vision model succeeded: %d chars", len(out))
                 return out
         except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
             msg = str(exc)
             logger.warning("[VISION] Gemini vision failed on key %d/%d: %s", key_index, gemini_key_count(), msg[:180])
             if is_gemini_permanent_key_error(msg):
@@ -4377,11 +4394,11 @@ def _gemini_complete(system_prompt: str, user_prompt: str, max_tokens: int, temp
     response = None
     start_time = time.perf_counter()
     for key_index, api_key in get_rotated_gemini_keys():
+        _use_model = resolve_gemini_model(api_key, model_name)
         try:
-            client = genai.Client(api_key=api_key)
             try:
-                response = client.models.generate_content(
-                    model=model_name,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -4391,8 +4408,8 @@ def _gemini_complete(system_prompt: str, user_prompt: str, max_tokens: int, temp
                     ),
                 )
             except TypeError:
-                response = client.models.generate_content(
-                    model=model_name,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -4406,6 +4423,11 @@ def _gemini_complete(system_prompt: str, user_prompt: str, max_tokens: int, temp
             )
             break
         except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
             last_exc = exc
             msg = str(exc)
             if is_gemini_permanent_key_error(msg):
@@ -6078,12 +6100,12 @@ def generate_topic_content(request):
             _odia_content = None
             _odia_exc_last = None
             for _key_idx, _api_key in get_rotated_gemini_keys():
+                _use_model = resolve_gemini_model(_api_key, GEMINI_ODIA_NOTES_MODEL)
                 try:
-                    _client = genai.Client(api_key=_api_key)
                     _max_tok_odia = 8192 if content_type in {"dpp", "pyq"} else 4096
                     try:
-                        _resp = _client.models.generate_content(
-                            model=GEMINI_ODIA_NOTES_MODEL,
+                        _resp = gemini_generate(_api_key,
+                            model=_use_model,
                             contents=[user_prompt],
                             config=_gtypes.GenerateContentConfig(
                                 system_instruction=system_prompt,
@@ -6093,8 +6115,8 @@ def generate_topic_content(request):
                             ),
                         )
                     except TypeError:
-                        _resp = _client.models.generate_content(
-                            model=GEMINI_ODIA_NOTES_MODEL,
+                        _resp = gemini_generate(_api_key,
+                            model=_use_model,
                             contents=[user_prompt],
                             config=_gtypes.GenerateContentConfig(
                                 system_instruction=system_prompt,
@@ -6111,6 +6133,11 @@ def generate_topic_content(request):
                     )
                     break
                 except Exception as _key_exc:
+                    # A 404 here means this key's project lost access to the model,
+                    # not that the key is bad. Record it so the next request on this
+                    # key goes straight to a model it can serve.
+                    if is_gemini_model_unavailable_error(str(_key_exc)):
+                        mark_gemini_model_unavailable(_api_key, _use_model)
                     _odia_exc_last = _key_exc
                     msg = str(_key_exc)
                     if is_gemini_permanent_key_error(msg):
@@ -6141,11 +6168,11 @@ def generate_topic_content(request):
                 )
                 _retry_odia = None
                 for _key_r, _api_key_r in get_rotated_gemini_keys():
+                    _use_model = resolve_gemini_model(_api_key_r, GEMINI_ODIA_NOTES_MODEL)
                     try:
-                        _client_r = genai.Client(api_key=_api_key_r)
                         try:
-                            _resp_r = _client_r.models.generate_content(
-                                model=GEMINI_ODIA_NOTES_MODEL,
+                            _resp_r = gemini_generate(_api_key_r,
+                                model=_use_model,
                                 contents=[_retry_prompt_odia],
                                 config=_gtypes.GenerateContentConfig(
                                     system_instruction=system_prompt,
@@ -6155,8 +6182,8 @@ def generate_topic_content(request):
                                 ),
                             )
                         except TypeError:
-                            _resp_r = _client_r.models.generate_content(
-                                model=GEMINI_ODIA_NOTES_MODEL,
+                            _resp_r = gemini_generate(_api_key_r,
+                                model=_use_model,
                                 contents=[_retry_prompt_odia],
                                 config=_gtypes.GenerateContentConfig(
                                     system_instruction=system_prompt,
@@ -6169,6 +6196,11 @@ def generate_topic_content(request):
                         _retry_odia = re.sub(r"\s*```$", "", _retry_odia).strip()
                         break
                     except Exception as _r_exc:
+                        # A 404 here means this key's project lost access to the model,
+                        # not that the key is bad. Record it so the next request on this
+                        # key goes straight to a model it can serve.
+                        if is_gemini_model_unavailable_error(str(_r_exc)):
+                            mark_gemini_model_unavailable(_api_key_r, _use_model)
                         logger.warning("Gemini Odia MCQ retry key error: %s", _r_exc)
                         continue
                 if _retry_odia:

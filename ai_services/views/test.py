@@ -183,8 +183,12 @@ def parse_ai_result(result, topic, difficulty, qtype, style=""):
 def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int) -> dict:
     from ai_services.core.gemini_keys import (
         get_rotated_gemini_keys, has_gemini_api_key, gemini_key_count,
-        is_gemini_permanent_key_error, is_gemini_retryable_error, mark_gemini_key_disabled
+        is_gemini_permanent_key_error, is_gemini_retryable_error, mark_gemini_key_disabled,
+        is_gemini_model_unavailable_error,
+        mark_gemini_model_unavailable,
+        resolve_gemini_model,
     )
+    from ai_services.core.gemini_client import gemini_generate
     if not has_gemini_api_key():
         raise RuntimeError("GEMINI_API_KEY is not set -- add it to .env to enable Gemini generation")
     
@@ -200,11 +204,11 @@ def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int)
     last_exc = None
     response = None
     for key_index, api_key in get_rotated_gemini_keys():
+        _use_model = resolve_gemini_model(api_key, model_name)
         try:
-            client = genai.Client(api_key=api_key)
             try:
-                response = client.models.generate_content(
-                    model=model_name,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -215,8 +219,8 @@ def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int)
                     ),
                 )
             except TypeError:
-                response = client.models.generate_content(
-                    model=model_name,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -231,6 +235,11 @@ def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int)
             )
             break
         except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
             last_exc = exc
             msg = str(exc)
             if is_gemini_permanent_key_error(msg):

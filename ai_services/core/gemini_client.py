@@ -18,9 +18,16 @@ import re
 import time
 
 from ai_services.core.gemini_keys import (
+    _FALLBACK_CHAIN,
     get_gemini_api_keys,
     get_rotated_gemini_keys,
+    is_gemini_invalid_argument_error,
+    is_gemini_model_unavailable_error,
     mark_gemini_key_disabled,
+    mark_gemini_model_unavailable,
+    mark_zero_thinking_rejected,
+    model_rejects_zero_thinking,
+    resolve_gemini_model,
 )
 
 logger = logging.getLogger("ai_services.gemini")
@@ -81,17 +88,95 @@ def _looks_model_unavailable(exc: Exception) -> bool:
 
     gemini-2.5-flash is grandfathered: a project created after it was withdrawn
     gets 404 "no longer available to new users", while an older project keeps
-    working. A key like that is unusable for this model but indistinguishable
-    from a good one until it is called, so it has to be retired at that point —
-    otherwise a single new key would fail every request it happened to be
-    handed, while working keys sat unused in the pool.
+    working. Such a key used to be retired here, which kept the pool honest but
+    threw away real quota — every key bought after the withdrawal date was dead
+    on arrival. It is now retried on a model its project *can* serve instead
+    (see gemini_keys.resolve_gemini_model), so a new key adds capacity rather
+    than noise.
     """
-    s = str(exc).lower()
-    return (
-        "no longer available" in s
-        or "is not found for api version" in s
-        or ("404" in s and "model" in s)
-    )
+    return is_gemini_model_unavailable_error(str(exc))
+
+
+def _without_zero_thinking(config):
+    """Drop a zero thinking budget from a config, or return None if there isn't one.
+
+    Returning None lets the caller tell "nothing to change" apart from "changed",
+    so a 400 that had nothing to do with thinking is reported rather than retried.
+    """
+    thinking = getattr(config, "thinking_config", None)
+    if thinking is None or getattr(thinking, "thinking_budget", None) != 0:
+        return None
+    try:
+        return config.model_copy(update={"thinking_config": None})
+    except Exception:
+        try:  # older pydantic
+            return config.copy(update={"thinking_config": None})
+        except Exception:
+            return None
+
+
+def gemini_generate(api_key: str, *, model: str, contents, config):
+    """One generate_content call on one key, on a model and config that key accepts.
+
+    Two things vary by key rather than by deployment, and both are invisible
+    until the API rejects the call:
+
+    * the model — gemini-2.5-flash is withdrawn for projects created after the
+      cutoff, so a key bought today 404s on it while an older key succeeds;
+    * the thinking budget — the Gemini 3-era models those keys fall back to
+      reject thinking_budget=0 with 400 INVALID_ARGUMENT.
+
+    Both are learned on first refusal and cached, so a key pays each lesson once
+    per process rather than once per request. Errors that are not about the
+    model or the request shape propagate untouched for the caller to classify.
+    """
+    try:
+        from google import genai
+    except Exception as exc:
+        raise GeminiUnavailable(f"google-genai not installed: {exc}") from exc
+
+    want = resolve_gemini_model(api_key, model)
+    cfg = config
+    if model_rejects_zero_thinking(want):
+        cfg = _without_zero_thinking(config) or config
+
+    # Each lesson costs at most one retry, and there are two kinds of lesson per
+    # model in the chain, so this is bounded and cannot spin.
+    for _ in range(2 * (len(_FALLBACK_CHAIN) + 1)):
+        try:
+            # Bind the client to a local: as a bare temporary it can be collected
+            # while the request is in flight, closing its transport underneath
+            # the call ("Cannot send a request, as the client has been closed").
+            client = genai.Client(api_key=api_key)
+            return client.models.generate_content(
+                model=want, contents=contents, config=cfg
+            )
+        except Exception as exc:
+            if is_gemini_model_unavailable_error(str(exc)):
+                nxt = mark_gemini_model_unavailable(api_key, want)
+                if not nxt:
+                    raise
+                logger.warning(
+                    "Gemini: %s is withdrawn for this key's project, retrying on %s",
+                    want, nxt,
+                )
+                want = nxt
+                cfg = config
+                if model_rejects_zero_thinking(want):
+                    cfg = _without_zero_thinking(config) or config
+                continue
+            if is_gemini_invalid_argument_error(str(exc)):
+                relaxed = _without_zero_thinking(cfg)
+                if relaxed is None:
+                    raise  # a 400 about something else — do not mask it
+                mark_zero_thinking_rejected(want)
+                logger.warning(
+                    "Gemini: %s rejects thinking_budget=0, retrying without it", want
+                )
+                cfg = relaxed
+                continue
+            raise
+    raise RuntimeError(f"Gemini: exhausted model/config retries for {model}")
 
 
 def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what: str = "request"):
@@ -117,20 +202,22 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
     last_exc: Exception | None = None
     for attempt, (key_no, key) in enumerate(keys):
         try:
-            client = genai.Client(api_key=key)
-            return client.models.generate_content(model=model, contents=contents, config=config)
+            # gemini_generate settles the model and config this key can use; only
+            # errors that are properties of the *key* reach here.
+            return gemini_generate(key, model=model, contents=contents, config=config)
         except Exception as exc:
             last_exc = exc
+            if _looks_model_unavailable(exc):
+                # The key is fine, its project just has no model we can use.
+                # Keep it in rotation and try the next key.
+                logger.warning(
+                    "Gemini key #%d has no usable model for %s; trying the next key",
+                    key_no, what,
+                )
+                continue
             if _looks_key_rejected(exc):
                 mark_gemini_key_disabled(key)
                 logger.warning("Gemini key #%d rejected, disabling it: %s", key_no, exc)
-                continue
-            if _looks_model_unavailable(exc):
-                mark_gemini_key_disabled(key)
-                logger.warning(
-                    "Gemini key #%d cannot use %s (project has no access) — disabling it "
-                    "and trying the next key", key_no, model,
-                )
                 continue
             if _looks_rate_limited(exc):
                 logger.warning(
@@ -184,7 +271,11 @@ def complete_text(
     usage = getattr(result, "usage_metadata", None)
     return {
         "content": text,
-        "model": model,
+        # The model actually used, which is not always the one asked for:
+        # a key whose project cannot serve `model` is answered by a fallback,
+        # and usage_logger prices per model, so reporting the request here
+        # would bill the wrong rate.
+        "model": getattr(result, "model_version", None) or model,
         "latency_ms": latency_ms,
         "tokens_input": getattr(usage, "prompt_token_count", 0) or 0,
         "tokens_output": getattr(usage, "candidates_token_count", 0) or 0,
@@ -246,7 +337,11 @@ def complete_json(
     usage = getattr(result, "usage_metadata", None)
     return {
         "content": content,
-        "model": model,
+        # The model actually used, which is not always the one asked for:
+        # a key whose project cannot serve `model` is answered by a fallback,
+        # and usage_logger prices per model, so reporting the request here
+        # would bill the wrong rate.
+        "model": getattr(result, "model_version", None) or model,
         "latency_ms": latency_ms,
         "tokens_input": getattr(usage, "prompt_token_count", 0) or 0,
         "tokens_output": getattr(usage, "candidates_token_count", 0) or 0,

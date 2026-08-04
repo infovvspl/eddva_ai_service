@@ -114,11 +114,18 @@ jobs:
             # silently dropped from six Gemini keys to one, and the next grounded
             # generation failed because the single remaining key was rate-limited.
             #
-            # Keys are only carried over when the matching secret is unset, so a
-            # configured secret still wins and this never resurrects a rotated-out
-            # key that CI has deliberately replaced.
+            # Carried over unconditionally. Making this conditional on the
+            # GEMINI_API_KEYS secret being unset was itself a trap: setting that
+            # secret to add a key would silently delete every numbered key on the
+            # box, shrinking the pool at the exact moment someone was trying to
+            # grow it. get_gemini_api_keys() de-duplicates, so a key that appears
+            # in both places costs nothing.
+            #
+            # The trade-off is that a key removed from the box only disappears
+            # once .env is edited there; rotating a key out means deleting its
+            # line on the server, not just dropping it from the secret.
             PRESERVED_GEMINI=""
-            if [ -z "$GEMINI_API_KEYS" ] && [ -f .env ]; then
+            if [ -f .env ]; then
               PRESERVED_GEMINI="$(grep -E '^GEMINI_API_KEY_[0-9]+=.+' .env || true)"
             fi
 
