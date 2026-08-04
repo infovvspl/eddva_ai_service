@@ -5257,25 +5257,29 @@ def _normalize_generated_math_markdown(markdown: str) -> str:
             continue
 
         single_dollars = len(re.findall(r"(?<!\$)\$(?!\$)", line))
-        if single_dollars % 2 == 1:
-            # A lone dollar in a line of prose is a typo, not a delimiter.
-            #
-            # The DPP and PYQ prompts insist on dollar-wrapped maths, and on a
-            # chapter with no maths in it the model sprinkles the character into
-            # ordinary words — "Wa$ter dweller", "No$stoc", "Br$own algae" were
-            # all in one biology paper. Balancing those by appending a second
-            # dollar produced "Wa$ter dweller [p.4]$", so KaTeX italicised the
-            # whole option. Removing the stray one is the only repair that can
-            # be right here: there is no maths to delimit.
-            has_latex_cmd = bool(_CONTENT_LATEX_COMMAND_RE.search(line))
-            looks_like_maths = has_latex_cmd or bool(
-                re.search(r"[A-Za-z0-9})\]]\s*(?:=|≤|≥|≠|≈|→|\+|\^|_)\s*[A-Za-z0-9({\[]", line)
+
+        # Dollars in a line with no mathematics are typos, not delimiters.
+        #
+        # The DPP and PYQ prompts insist that all mathematics is wrapped in
+        # single dollars. On a chapter with no mathematics in it the model
+        # sprinkles the character through ordinary words, and both parities
+        # render badly: an even count italicises the text between the pair
+        # ("Se$a - weed$" became *a - weed*), and an odd count used to be
+        # "balanced" by appending another, which italicised the rest of the
+        # line. Neither can be delimiting anything, so they are removed.
+        if single_dollars:
+            looks_like_maths = bool(_CONTENT_LATEX_COMMAND_RE.search(line)) or bool(
+                re.search(r"[A-Za-z0-9})\]]\s*(?:=|≤|≥|≠|≈|→|\+|\^|_|\\)\s*[A-Za-z0-9({\[]", line)
             )
             if not looks_like_maths:
                 line = re.sub(r"(?<!\$)\$(?!\$)", "", line)
+                repaired.append(line)
+                continue
+
+        if single_dollars % 2 == 1:
             # An unmatched delimiter on a calculation line otherwise consumes
             # the following Markdown and prevents KaTeX rendering.
-            elif stripped.endswith("$") and not stripped.startswith("$"):
+            if stripped.endswith("$") and not stripped.startswith("$"):
                 leading = line[:len(line) - len(line.lstrip())]
                 line = leading + "$" + line.lstrip()
             else:
