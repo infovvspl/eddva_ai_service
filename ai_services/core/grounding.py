@@ -14,6 +14,7 @@ term overlap with the topic, which is enough at this scale; embeddings would add
 infrastructure without changing which nine passages of a nine-page chapter win.
 """
 import logging
+import os
 import re
 
 logger = logging.getLogger("ai_services.grounding")
@@ -24,8 +25,23 @@ its it this that these those as at how what why when which who whom whose
 introduction chapter topic class subject exercise example
 """.split())
 
-# Leaves room for the instructions and the model's own answer inside the context.
-_DEFAULT_SOURCE_TOKEN_BUDGET = 12000
+# How much of the chapter may go into one prompt.
+#
+# This was 12,000, inherited from Groq's per-request ceiling — but grounded
+# generation runs on Gemini, whose context window is three orders of magnitude
+# larger. The old figure was cutting real chapters: measured against the indexed
+# set, "Metals and Non-metals" lost 7 of its 22 passages on the content path and
+# 2 on the slide path, silently, every time a teacher generated.
+#
+# 30,000 clears every chapter currently indexed with room to spare. It costs
+# nothing for a chapter that already fitted — only what is actually sent is
+# billed — so the extra budget is paid for exactly by the chapters that were
+# being truncated, which is where the money should go.
+#
+# Kept well below the model's real limit so instructions and the answer still
+# fit comfortably, and env-overridable so a deployment can tune it without a
+# release.
+_DEFAULT_SOURCE_TOKEN_BUDGET = int(os.getenv("GROUNDING_TOKEN_BUDGET", "30000"))
 
 
 def _terms(text: str) -> set:
