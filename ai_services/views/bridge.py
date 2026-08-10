@@ -6035,13 +6035,31 @@ def generate_topic_content(request):
     grounded = False
     grounded_pages = []
     grounded_block = ""
+    # Reported alongside the content so a teacher can tell a full chapter from a
+    # trimmed one. ppt.py has always returned this; the content path computed it
+    # and threw it away, so a DPP built from 15 of 22 passages looked identical
+    # to one built from all 22.
+    grounded_truncated = False
+    grounded_used = 0
+    grounded_available = len(source_passages)
     if source_passages:
         try:
             from ai_services.core import grounding as _gr
 
+            # No explicit budget: the shared default is sized for the model that
+            # actually serves this call. The 9,000 hard-coded here was below even
+            # that default and was the reason the content path truncated earlier
+            # than the slide path on the same chapter.
             selection = _gr.select_source(
-                source_passages, topic_name, chapter_name, token_budget=9000,
+                source_passages, topic_name, chapter_name,
             )
+            grounded_truncated = selection["truncated"]
+            grounded_used = len(selection["passages"])
+            if selection["truncated"]:
+                logger.warning(
+                    "Grounding truncated for chapter=%r topic=%r: using %d of %d passages",
+                    chapter_name, topic_name, grounded_used, grounded_available,
+                )
             if selection["passages"]:
                 grounded = True
                 grounded_pages = selection["pages"]
@@ -6290,7 +6308,12 @@ def generate_topic_content(request):
                     "content": _c,
                     "contentType": content_type,
                     "topicName": topic_name,
-                    "source": {"grounded": True, "pages": grounded_pages},
+                    "source": {
+                        "grounded": True, "pages": grounded_pages,
+                        "passagesUsed": grounded_used,
+                        "passagesAvailable": grounded_available,
+                        "truncated": grounded_truncated,
+                    },
                     "_meta": {"model": _g["model"], "latency_ms": _g["latency_ms"]},
                 })
         except Exception as exc:
@@ -6420,7 +6443,12 @@ def generate_topic_content(request):
         "topicName": topic_name,
         # Lets the caller label content written from the school's book distinctly
         # from content written from general knowledge.
-        "source": {"grounded": grounded, "pages": grounded_pages},
+        "source": {
+            "grounded": grounded, "pages": grounded_pages,
+            "passagesUsed": grounded_used,
+            "passagesAvailable": grounded_available,
+            "truncated": grounded_truncated,
+        },
         "_meta": {
             "model": llm_result.get("model", ""),
             "latency_ms": round(llm_result.get("latency_ms", 0)),
