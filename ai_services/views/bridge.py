@@ -5266,6 +5266,44 @@ def _normalize_generated_math_markdown(markdown: str) -> str:
         .replace(r"\(", "$").replace(r"\)", "$")
     )
 
+    # Clean up page tags like [p.5] or [p. 5] attached to math or text
+    text = re.sub(r"\[p\.\s*\d+\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[page\s*\d+\]", "", text, flags=re.IGNORECASE)
+
+    # Clean up multi-dollar messes like $$$$ -> $$ and $$$ -> $$
+    text = re.sub(r"\$\$\$\$+", "$$", text)
+    text = re.sub(r"\$\$\$(?!\$)", "$$", text)
+
+    # ── Step 1: Strip stray $ signs that appear inside prose function arguments
+    # e.g. LCM(306, $657) = $ $34 \times 657$ → LCM(306, 657) = $34 \times 657$
+    # Pattern: $ immediately before digits/letters that are followed by ) or ,
+    text = re.sub(r"\$(\d+)([\),])", r"\1\2", text)
+    # Pattern: $ = $ (orphan equals wrapped in dollars) → keep only inner content
+    text = re.sub(r"\$\s*=\s*\$", " = ", text)
+
+    # ── Step 2: Unnest single dollars inside display math $$...$$
+    def _clean_display_block(m):
+        inner = m.group(1)
+        cleaned = re.sub(r"(?<!\$)\$(?!\$)", "", inner)
+        return f"$$\n{cleaned.strip()}\n$$"
+
+    text = re.sub(r"\$\$([\s\S]*?)\$\$", _clean_display_block, text)
+
+    # ── Step 3: Merge left-hand prose into inline math
+    # e.g. LCM(p, q, r) = $\frac{...}$ → $LCM(p, q, r) = \frac{...}$
+    def _merge_left_hand_equation(m):
+        newline, left, inner = m.group(1), m.group(2), m.group(3)
+        if len(re.findall(r"\b[A-Za-z]{4,}\b", left)) > 2:
+            return f"{newline}{left}${inner}$"
+        clean_inner = re.sub(r"\\quad\s*$", "", inner).strip()
+        return f"{newline}${left.strip()} {clean_inner}$"
+
+    text = re.sub(
+        r"(^|\n)([ \t]*[A-Za-z0-9_(),\s]+\s*=\s*)\$([^$\n]+)\$",
+        _merge_left_hand_equation,
+        text,
+    )
+
     # Convert presentation-oriented Unicode math to valid LaTeX first.
     text = re.sub(
         r"(?<=[A-Za-z0-9})\]])([⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁽⁾]+)",
@@ -5375,6 +5413,15 @@ def _normalize_generated_math_markdown(markdown: str) -> str:
     # to swallow the remainder of the document.
     if in_display_math:
         result = result.rstrip() + "\n$$"
+
+    # Separate adjacent inline math blocks that are on the same line with only
+    # spaces between them (e.g. "$A$ $B$"). remark-math fails to parse two
+    # inline $...$ blocks on the same line — inserting a blank line makes each
+    # block its own paragraph which parses correctly.
+    # NOTE: capture both $ signs so the replacement r"\1\n\n\2" produces
+    # exactly "$\n\n$" with no extra dollar introduced.
+    result = re.sub(r"(\$)[ \t]+(\$)", r"\1\n\n\2", result)
+
     return result.strip()
 
 
