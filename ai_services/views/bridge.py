@@ -1397,36 +1397,64 @@ def _repair_low_quality_transcript(text: str, topic_id: str, language: str, inst
 
 
 
-    # Cap input to ~4500 chars (~1500 tokens for Hindi) to stay under 6000 TPM on 8b model
-    _REPAIR_INPUT_CAP = 4500
-    repair_input = cleaned[:_REPAIR_INPUT_CAP] if len(cleaned) > _REPAIR_INPUT_CAP else cleaned
+    # Process full transcript in chunks using parallel execution to prevent truncation
+    _REPAIR_CHUNK_CAP = 4500
+    if len(cleaned) <= _REPAIR_CHUNK_CAP:
+        chunks = [cleaned]
+    else:
+        # Split by paragraph/newline blocks
+        paragraphs = [p.strip() for p in cleaned.split("\n") if p.strip()]
+        chunks = []
+        current = ""
+        for p in paragraphs:
+            if len(current) + len(p) + 1 <= _REPAIR_CHUNK_CAP:
+                current = f"{current}\n{p}".strip() if current else p
+            else:
+                if current:
+                    chunks.append(current)
+                current = p
+        if current:
+            chunks.append(current)
 
-
+    def _repair_single_chunk(args):
+        idx, c_text = args
+        try:
+            llm_result = get_llm().complete(
+                system_prompt=(
+                    "You repair noisy educational lecture transcripts. Clean OCR/STT artifacts, remove garbage tokens, "
+                    "repair obvious equation formatting, and fix broken statements into coherent text while preserving "
+                    "the original source language style (Hindi/Hinglish/English as given). Do not invent new topics."
+                ),
+                user_prompt=(
+                    f"Lecture topic: {topic_id or 'General'}\n"
+                    f"Source language: {language}\n"
+                    f"Detected issues: {', '.join(flags)}\n\n"
+                    "Clean and repair this transcript segment for note generation. Preserve as much original meaning as possible.\n\n"
+                    f"{c_text}"
+                ),
+                model="llama-3.1-8b-instant",
+                temperature=0.2,
+                max_tokens=2048,
+                json_mode=False,
+                institute_id=institute_id,
+            )
+            candidate = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+            return idx, candidate.strip() or c_text
+        except Exception as exc:
+            logger.warning("Transcript repair chunk %d failed (%s)", idx, exc)
+            return idx, c_text
 
     try:
-        llm_result = get_llm().complete(
-            system_prompt=(
-                "You repair noisy educational lecture transcripts. Clean OCR/STT artifacts, remove garbage tokens, "
-                "repair obvious equation formatting, and fix broken statements into coherent text while preserving "
-                "the original source language style (Hindi/Hinglish/English as given). Do not invent new topics."
-            ),
-            user_prompt=(
-                f"Lecture topic: {topic_id or 'General'}\n"
-                f"Source language: {language}\n"
-                f"Detected issues: {', '.join(flags)}\n\n"
-                "Clean and repair this transcript for note generation. Preserve as much original meaning as possible.\n\n"
-                f"{repair_input}"
-            ),
-            model="llama-3.1-8b-instant",
-            temperature=0.2,
-            max_tokens=2048,
-            json_mode=False,
-            institute_id=institute_id,
-        )
-        candidate = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
-        return candidate.strip() or cleaned
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        repaired_chunks = [""] * len(chunks)
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as pool:
+            futures = {pool.submit(_repair_single_chunk, (i, ch)): i for i, ch in enumerate(chunks)}
+            for fut in as_completed(futures):
+                i, res = fut.result()
+                repaired_chunks[i] = res
+        return "\n\n".join(r for r in repaired_chunks if r).strip() or cleaned
     except Exception as exc:
-        logger.warning("Transcript repair failed (%s)", exc)
+        logger.warning("Parallel transcript repair failed (%s)", exc)
         return cleaned
 
 
@@ -1502,10 +1530,10 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
 
 
 
-NOTES_CHUNK_CHAR_LIMIT = 9000
-NOTES_CHUNK_OVERLAP_CHARS = 600   # used for English only; Hindi uses 0 (see _generate_comprehensive_notes)
-NOTES_SECTION_MAX_TOKENS = 700    # baseline; overridden per-call by adaptive formula below
-NOTES_MERGE_MAX_TOKENS = 1800
+NOTES_CHUNK_CHAR_LIMIT = 3500
+NOTES_CHUNK_OVERLAP_CHARS = 400   # used for English only; Hindi uses 0 (see _generate_comprehensive_notes)
+NOTES_SECTION_MAX_TOKENS = 1200    # baseline for rich detailed chunk notes
+NOTES_MERGE_MAX_TOKENS = 2500
 # Adaptive formula ensures merge never overflows 6000 TPM regardless of chunk count:
 #   section_tokens = max(350, min(700, 3900 // N))   → N × section_tokens ≤ 3900 + 300 + 1800 ≤ 6000 ✅
 _MERGE_MAX_INPUT_CHARS = 15_500   # safety net: ~3900 English tokens × 4 chars/token
@@ -1625,6 +1653,9 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
             + lang_instruction +
             "SKIP any teacher introductions, greetings, self-introductions, roll calls, or administrative "
             "announcements (e.g. 'Hello students', 'Mere pyare bacchon', 'My name is...', 'Exams are near...'). "
+            "SKIP any teacher recap, review, or end-of-class summary sections where the teacher lists or restates "
+            "what was already covered (e.g. 'We have discussed three methods...', 'Today we learned...', "
+            "'In this chapter we covered...'). "
             "Focus ONLY on academic and educational content: concepts, theory, formulas, examples. "
             "Preserve definitions, intuition, examples, formulas, derivations, steps, caveats, comparisons, "
             "and teacher reasoning. Do not compress aggressively. Cover every important idea in this chunk."
@@ -1638,10 +1669,11 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
             "- Explain concepts in a textbook-like way, not just bullets.\n"
             "- Include short definitions for important terms.\n"
             "- Include formulas or equations in plain text when relevant.\n"
-            "- Preserve examples, teacher explanations, step-by-step reasoning, and cause-effect relationships.\n"
+            "- For worked examples and step-by-step calculations/derivations, ALWAYS put each new step on its own separate line (using a numbered list, bullet list, or separate line per step). Never combine multiple calculation steps into a single paragraph.\n"
             "- Add subheadings where useful.\n"
             "- If the teacher contrasts two ideas, keep that comparison.\n"
-            "- If the teacher mentions mistakes, traps, exceptions, or exam-important points, preserve them.\n"
+            "- DO NOT generate any Summary, Conclusion, Key Takeaways, Introduction, or Overview section that just lists or recaps what was already covered.\n"
+            "- If the teacher is recapping/summarizing at the end of class (e.g. 'We have discussed...', 'Today we learned...'), SKIP that part entirely.\n"
             "- Do not add unrelated content not supported by the transcript.\n\n"
             f"{chunk_text}"
         ),
@@ -2109,38 +2141,26 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
     #   TPM:   N × section_tokens + 300 prompt + 1800 merge ≤ 6000  → section_tokens ≤ 3900 // N
     #   Chars: N × section_tokens × 4 ≤ _MERGE_MAX_INPUT_CHARS      → section_tokens ≤ _MERGE_MAX_INPUT_CHARS // (N × 4)
     n = len(chunks)
-    section_tokens = max(350, min(NOTES_SECTION_MAX_TOKENS, 3900 // n, _MERGE_MAX_INPUT_CHARS // max(n * 4, 1)))
-
-
+    section_tokens = max(800, min(1400, NOTES_SECTION_MAX_TOKENS))
 
     if n == 1:
         notes = _generate_chunk_notes(chunks[0], topic_id, language, institute_id, 1, 1, max_tokens=section_tokens).strip()
         return notes, {"chunk_count": 1, "merge_applied": False, "section_tokens": section_tokens}
-
-
 
     logger.info(
         "Generating chunked notes | chunks=%d | section_tokens=%d | topic=%s | lang=%s",
         n, section_tokens, topic_id, language,
     )
 
-
-
-    # Sequential processing with round-robin key distribution (see llm_client.py).
-    # 1.5s gap between chunks keeps each call well under 6,000 TPM.
     partial_notes: list[str] = []
     failed_chunks = 0
     _t0_generate = _time.perf_counter()
-    _MAX_GEN_TIME = 600  # 10 minutes absolute max for the chunk phase
-
-    
+    _MAX_GEN_TIME = 600
 
     for i, chunk in enumerate(chunks):
         if _time.perf_counter() - _t0_generate > _MAX_GEN_TIME:
             logger.warning("Chunk generation timed out after %.1f seconds. Using %d/%d partial chunks.", _time.perf_counter() - _t0_generate, len(partial_notes), n)
             break
-
-            
 
         try:
             notes = _generate_chunk_notes(
@@ -2152,30 +2172,84 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
             failed_chunks += 1
             partial_notes.append("")
         if i < n - 1:
-            _time.sleep(1.5)
-
-
+            _time.sleep(1.0)
 
     non_empty = [p for p in partial_notes if p.strip()]
     if not non_empty:
         return "", {"chunk_count": n, "failed_chunks": failed_chunks, "error": "all_chunks_failed"}
 
+    # Stitch all detailed chunk notes together
+    stitched_notes = "\n\n".join(non_empty).strip()
 
+    # Standardize heading levels: ensure top-level section headings are ## and sub-headings are ###
+    # This prevents uneven heading fonts (e.g. random # vs ## vs ###) across chunk boundaries.
+    standardized_lines = []
+    for line in stitched_notes.splitlines():
+        if line.startswith("#"):
+            h_match = re.match(r"^(#+)\s*(.*)", line)
+            if h_match:
+                depth = len(h_match.group(1))
+                content = h_match.group(2).strip()
+                if depth == 1:
+                    standardized_lines.append(f"## {content}")
+                elif depth > 3:
+                    standardized_lines.append(f"### {content}")
+                else:
+                    standardized_lines.append(line)
+            else:
+                standardized_lines.append(line)
+        else:
+            standardized_lines.append(line)
 
-    # Safety net: cap merge input so it never overflows 6000 TPM
-    combined = "\n\n".join(non_empty)
-    if len(combined) > _MERGE_MAX_INPUT_CHARS:
-        logger.warning(
-            "Merge input truncated %d → %d chars (adaptive formula should have prevented this)",
-            len(combined), _MERGE_MAX_INPUT_CHARS,
-        )
-        combined = combined[:_MERGE_MAX_INPUT_CHARS]
-        non_empty = [combined]
+    clean_body = "\n".join(standardized_lines).strip()
+    # Strip any residual Summary, Conclusion, or recap sections generated by LLM chunks.
+    # Matches headings literally named Summary/Conclusion/Key Takeaways:
+    clean_body = re.sub(r"(?m)^#{1,4}\s*(?:Summary|Conclusion|Key\s*Takeaways|Recap|Review|Overview)\b.*$(?:\n(?!#)[^\n]*)*", "", clean_body).strip()
+    # Also strip any section whose first non-empty line starts with typical recap language:
+    _RECAP_OPENERS = re.compile(
+        r"^(We have discussed|We have learned|In this (?:chapter|lecture|section) we|Today we (?:learned|covered|discussed)|Let us (?:recap|review|summarize))",
+        re.IGNORECASE
+    )
+    cleaned_sections = []
+    for section in re.split(r"(?m)(?=^#{1,4} )", clean_body):
+        # Find first non-empty content line of section (skip the heading itself)
+        content_lines = [l for l in section.splitlines()[1:] if l.strip()]
+        first_content = content_lines[0].strip() if content_lines else ""
+        if _RECAP_OPENERS.match(first_content):
+            continue  # skip this section
+        cleaned_sections.append(section)
+    clean_body = "".join(cleaned_sections).strip()
 
+    # Strip generic/useless headings produced by the LLM (e.g. '## General', '## Notes', '## Introduction')
+    _GENERIC_HEADINGS = re.compile(
+        r"(?m)^#{1,4}\s*(?:General|Notes?|Introduction|Overview|Lecture Notes?|Content|Main Content|Topic)\s*$",
+        re.IGNORECASE
+    )
+    clean_body = _GENERIC_HEADINGS.sub("", clean_body).strip()
 
+    # Deduplicate consecutive identical headings produced at chunk stitch boundaries
+    seen_headings: set = set()
+    deduped_lines = []
+    for line in clean_body.splitlines():
+        if re.match(r"^#{1,4}\s+", line):
+            normalized = line.strip().lower()
+            if normalized in seen_headings:
+                continue  # skip duplicate heading
+            seen_headings.add(normalized)
+        deduped_lines.append(line)
+    clean_body = "\n".join(deduped_lines).strip()
 
-    merged = _merge_chunk_notes(non_empty, topic_id, language, institute_id).strip()
-    return merged, {"chunk_count": n, "failed_chunks": failed_chunks, "merge_applied": True, "section_tokens": section_tokens}
+    # Ensure each standalone equation line is preceded and followed by a blank line
+    # so it renders on its own line and not embedded inside a prose paragraph.
+    eq_line_re = re.compile(
+        r"(?m)^(?!#|-|\d+\.|\*|>|\s*$)([A-Za-z0-9_]+(?:[_^][A-Za-z0-9{}]+)*\s*(?:=|\+|-|\*|\/|\\neq|\\leq|\\geq)\s*.+)$"
+    )
+    def _surround_eq(m):
+        return f"\n{m.group(0)}\n"
+    clean_body = eq_line_re.sub(_surround_eq, clean_body)
+    # Collapse triple+ blank lines back to double
+    clean_body = re.sub(r"\n{3,}", "\n\n", clean_body).strip()
+    return clean_body, {"chunk_count": n, "failed_chunks": failed_chunks, "merge_applied": False, "section_tokens": section_tokens}
 
 
 
