@@ -352,7 +352,7 @@ class ScientificSolver:
         llm_resp = self.llm.complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             json_mode=False
         )
         
@@ -376,7 +376,7 @@ class ScientificSolver:
                     "The very first character of your response must be the first character of the code."
                 ),
                 user_prompt=user_prompt,
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 temperature=0.0,
                 json_mode=False,
             )
@@ -463,7 +463,7 @@ class ScientificSolver:
         
         results = self.llm.parallel_complete_many(
             tasks=tasks,
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             json_mode=True
         )
         

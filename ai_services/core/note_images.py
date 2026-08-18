@@ -273,7 +273,8 @@ def label_generated_note_image(
         os.getenv("NOTES_IMAGE_OVERLAY_GROQ_MODEL", "").strip(),
         "meta-llama/llama-4-scout-17b-16e-instruct",
         "meta-llama/llama-4-maverick-17b-128e-instruct",
-        "llama-3.2-11b-vision-preview",
+        # llama-3.2-*-vision-preview were decommissioned by Groq — Llama 4 above
+        # are the current vision models.
     ]
     models = [model for idx, model in enumerate(models) if model and model not in models[:idx]]
     last_error = ""
@@ -565,7 +566,7 @@ def plan_note_images(notes: str, topic_id: str, language: str, institute_id: str
 
     all_candidates: list[dict[str, Any]] = []
     errors: list[str] = []
-    model = os.getenv("NOTES_IMAGE_PLANNER_MODEL", "llama-3.1-8b-instant")
+    model = os.getenv("NOTES_IMAGE_PLANNER_MODEL", "openai/gpt-oss-20b")
     use_gemini_planner = (
         _is_odia_language(language)
         or os.getenv("NOTES_IMAGE_PLANNER_PROVIDER", "").strip().lower() == "gemini"

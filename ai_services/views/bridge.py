@@ -1101,7 +1101,7 @@ def _repair_hindi_hinglish_wording_post_stt(
                     "Fix only ASR word mistakes and obvious incoherent phrasing. Keep meaning intact.\n\n"
                     f"{c}"
                 ),
-                model="llama-3.1-8b-instant",
+                model="openai/gpt-oss-20b",
                 temperature=0.0,
                 max_tokens=WORD_REPAIR_MAX_TOKENS,
                 json_mode=False,
@@ -1240,7 +1240,7 @@ def _refine_transcript_punctuation_post_stt(
                     "Keep Hindi in Devanagari and English in Latin; do not translate.\n\n"
                     f"{chunk}"
                 ),
-                model="llama-3.1-8b-instant",
+                model="openai/gpt-oss-20b",
                 temperature=0.0,
                 max_tokens=PUNCT_REFINE_MAX_TOKENS,
                 json_mode=False,
@@ -1275,7 +1275,7 @@ def _refine_transcript_punctuation_post_stt(
                         "For Hindi sentence ends prefer danda (।) over Latin period.\n\n"
                         f"{chunk}"
                     ),
-                    model="llama-3.1-8b-instant",
+                    model="openai/gpt-oss-20b",
                     temperature=0.0,
                     max_tokens=PUNCT_REFINE_MAX_TOKENS,
                     json_mode=False,
@@ -1412,7 +1412,7 @@ def _repair_low_quality_transcript(text: str, topic_id: str, language: str, inst
                 "Clean and repair this transcript for note generation. Preserve as much original meaning as possible.\n\n"
                 f"{repair_input}"
             ),
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             temperature=0.2,
             max_tokens=2048,
             json_mode=False,
@@ -1640,7 +1640,7 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
             "- Do not add unrelated content not supported by the transcript.\n\n"
             f"{chunk_text}"
         ),
-        model="llama-3.1-8b-instant",
+        model="openai/gpt-oss-20b",
         temperature=0.4,
         max_tokens=max_tokens,
         json_mode=False,
@@ -1684,7 +1684,7 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
             "- End with a concise Summary section.\n\n"
             f"{combined_sections}"
         ),
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.3,
         max_tokens=NOTES_MERGE_MAX_TOKENS,
         json_mode=False,
@@ -2215,7 +2215,7 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
                 "- Do not add unrelated information\n\n"
                 f"{cleaned}"
             ),
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             temperature=0.2,
             max_tokens=2048,  # was 4096; merged notes ≈ 1800 input tokens → 1800+2048=3848 fits under 6000 TPM
             json_mode=False,
@@ -2381,7 +2381,7 @@ def _detect_subject_and_type_for_doubt(question: str, has_image: bool, institute
         detect_result = get_llm().complete(
             system_prompt=_DOUBT_DETECTOR_SYSTEM,
             user_prompt=f"Classify this question:\n\n{question[:800]}",
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             temperature=0.0,
             max_tokens=60,
             json_mode=True,
@@ -2421,8 +2421,8 @@ def _detect_subject_and_type_for_doubt(question: str, has_image: bool, institute
 GROQ_MODELS = {
     "reasoning": "openai/gpt-oss-120b",
     "math":      "qwen/qwen3-32b",
-    "general":   "llama-3.3-70b-versatile",
-    "detector":  "llama-3.1-8b-instant",
+    "general":   "openai/gpt-oss-120b",
+    "detector":  "openai/gpt-oss-20b",
 }
 
 
@@ -3056,7 +3056,7 @@ def resolve_doubt(request):
             institute_type='school',
             feature_id='doubt_resolver',
             feature_category='student',
-            model_used=_doubt_model if _doubt_model != 'scientific_solver' else 'llama-3.3-70b-versatile',
+            model_used=_doubt_model if _doubt_model != 'scientific_solver' else 'openai/gpt-oss-120b',
             tokens_input=solve_result.get('tokens_input', 0),
             tokens_output=solve_result.get('tokens_output', 0),
             latency_ms=int((time.time() - _start_time) * 1000),
@@ -3203,11 +3203,11 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
 
 
 
-    # Vision models to try in order
+    # Vision models to try in order. The llama-3.2-*-vision-preview models were
+    # decommissioned by Groq — Llama 4 Scout/Maverick are the current vision models.
     vision_models = [
         "meta-llama/llama-4-scout-17b-16e-instruct",
-        "llama-3.2-11b-vision-preview",
-        "llama-3.2-90b-vision-preview",
+        "meta-llama/llama-4-maverick-17b-128e-instruct",
     ]
 
 
@@ -3461,7 +3461,7 @@ def start_tutor_session(request):
             institute_type=vertical,
             feature_id='ai_lecture_notes',
             feature_category='teacher',
-            model_used=result.get('model', 'llama-3.3-70b-versatile'),
+            model_used=result.get('model', 'openai/gpt-oss-120b'),
             tokens_input=result.get('tokens_input', 0),
             tokens_output=result.get('tokens_output', 0),
             latency_ms=int((time.time() - _start_time) * 1000),
@@ -3550,7 +3550,7 @@ def continue_tutor_session(request):
             institute_type=vertical,
             feature_id='doubt_resolver',
             feature_category='student',
-            model_used=result.get('model', 'llama-3.3-70b-versatile'),
+            model_used=result.get('model', 'openai/gpt-oss-120b'),
             tokens_input=result.get('tokens_input', 0),
             tokens_output=result.get('tokens_output', 0),
             latency_ms=int((time.time() - _start_time) * 1000),
@@ -3720,7 +3720,7 @@ def generate_stt_notes(request):
     try:
         _stt_model_used = 'sarvam-stt' if _is_odia_language(language) else 'whisper-large-v3-turbo'
         _notes_provider = notes_meta.get('provider', 'groq')
-        _notes_model = 'gemini-2.5-flash' if _notes_provider == 'gemini' else 'llama-3.3-70b-versatile'
+        _notes_model = 'gemini-2.5-flash' if _notes_provider == 'gemini' else 'openai/gpt-oss-120b'
         log_usage(
             institute_id=institute_id,
             institute_type='school',
@@ -4430,7 +4430,7 @@ def generate_quiz_questions(request):
                 institute_type='school',
                 feature_id='in_video_quiz_generator',
                 feature_category='teacher',
-                model_used='llama-3.3-70b-versatile',
+                model_used='openai/gpt-oss-120b',
                 tokens_input=int(len(source_text) / 4),
                 tokens_output=0,
                 latency_ms=int((time.time() - _start_time) * 1000),
@@ -4455,7 +4455,7 @@ def generate_quiz_questions(request):
             institute_type='school',
             feature_id='in_video_quiz_generator',
             feature_category='teacher',
-            model_used=last_meta.get('model', 'llama-3.3-70b-versatile'),
+            model_used=last_meta.get('model', 'openai/gpt-oss-120b'),
             tokens_input=int(_quiz_total_input / 4),
             tokens_output=int(len(str(all_questions)) / 4),
             latency_ms=int((time.time() - _start_time) * 1000),
@@ -5430,7 +5430,7 @@ def generate_topic_content(request):
         llm_result = get_llm().complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             temperature=0.7,
             # PYQ/DPP put complete worked solutions at the end. A 4096-token cap
             # routinely truncated that section and left math delimiters open.
@@ -5445,7 +5445,7 @@ def generate_topic_content(request):
                 institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
                 feature_id=f'content_{content_type}' if content_type else 'content_generate',
                 feature_category='content',
-                model_used='llama-3.3-70b-versatile',
+                model_used='openai/gpt-oss-120b',
                 latency_ms=int((time.time() - _start_time) * 1000),
                 success=False,
                 error_message=str(e)[:500],
@@ -5468,7 +5468,7 @@ def generate_topic_content(request):
             llm_result = get_llm().complete(
                 system_prompt=system_prompt,
                 user_prompt=retry_prompt,
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 temperature=0.35,
                 max_tokens=8192,
                 json_mode=False,
@@ -5481,7 +5481,7 @@ def generate_topic_content(request):
                     institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
                     feature_id=f'content_{content_type}' if content_type else 'content_generate',
                     feature_category='content',
-                    model_used='llama-3.3-70b-versatile',
+                    model_used='openai/gpt-oss-120b',
                     latency_ms=int((time.time() - _start_time) * 1000),
                     success=False,
                     error_message=f"MCQ retry failed: {str(e)[:500]}",
@@ -5498,7 +5498,7 @@ def generate_topic_content(request):
                     institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
                     feature_id=f'content_{content_type}' if content_type else 'content_generate',
                     feature_category='content',
-                    model_used=llm_result.get('model', 'llama-3.3-70b-versatile'),
+                    model_used=llm_result.get('model', 'openai/gpt-oss-120b'),
                     tokens_input=llm_result.get('usage', {}).get('prompt_tokens', 0),
                     tokens_output=llm_result.get('usage', {}).get('completion_tokens', 0),
                     latency_ms=int((time.time() - _start_time) * 1000),
@@ -5519,7 +5519,7 @@ def generate_topic_content(request):
             institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
             feature_id=f'content_{content_type}' if content_type else 'content_generate',
             feature_category='content',
-            model_used=llm_result.get('model', 'llama-3.3-70b-versatile'),
+            model_used=llm_result.get('model', 'openai/gpt-oss-120b'),
             tokens_input=llm_result.get('usage', {}).get('prompt_tokens', 0),
             tokens_output=llm_result.get('usage', {}).get('completion_tokens', 0),
             latency_ms=int((time.time() - _start_time) * 1000),
@@ -5640,7 +5640,7 @@ def generate_notes_from_transcript(request):
                 institute_type='school',
                 feature_id='ai_lecture_notes',
                 feature_category='teacher',
-                model_used='llama-3.3-70b-versatile',
+                model_used='openai/gpt-oss-120b',
                 tokens_input=int(len(transcript) / 4),
                 tokens_output=0,
                 latency_ms=int((time.time() - _start_time) * 1000),
@@ -5684,7 +5684,7 @@ def generate_notes_from_transcript(request):
 
     try:
         _nft_provider = notes_meta.get('provider', 'groq')
-        _nft_model = 'gemini-2.5-flash' if _nft_provider == 'gemini' else 'llama-3.3-70b-versatile'
+        _nft_model = 'gemini-2.5-flash' if _nft_provider == 'gemini' else 'openai/gpt-oss-120b'
         log_usage(
             institute_id=institute_id,
             institute_type='school',
@@ -5961,7 +5961,7 @@ def generate_notes_from_youtube(request):
                 institute_type='school',
                 feature_id='ai_lecture_notes',
                 feature_category='teacher',
-                model_used='llama-3.3-70b-versatile',
+                model_used='openai/gpt-oss-120b',
                 tokens_input=int(len(transcript) / 4),
                 tokens_output=0,
                 latency_ms=int((time.time() - _start_time) * 1000),
@@ -5982,7 +5982,7 @@ def generate_notes_from_youtube(request):
 
     try:
         _nfy_provider = notes_meta.get('provider', 'groq')
-        _nfy_model = 'gemini-2.5-flash' if _nfy_provider == 'gemini' else 'llama-3.3-70b-versatile'
+        _nfy_model = 'gemini-2.5-flash' if _nfy_provider == 'gemini' else 'openai/gpt-oss-120b'
         log_usage(
             institute_id=institute_id,
             institute_type='school',
@@ -6197,7 +6197,7 @@ NOTES:
         llm_result = get_llm().complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             max_tokens=1024,
             temperature=0.3,
             json_mode=True,

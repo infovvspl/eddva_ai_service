@@ -239,7 +239,7 @@ def _log(institute_id, vertical, model, result=None, success=True, error=None):
 # ─────────────────────────────────────────────────────────────────────────────
 #  Views
 # ─────────────────────────────────────────────────────────────────────────────
-_MODEL = "llama-3.3-70b-versatile"
+_MODEL = "openai/gpt-oss-120b"
 
 
 @api_view(["POST"])

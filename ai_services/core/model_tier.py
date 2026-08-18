@@ -2,7 +2,7 @@
 Model tiering — maps feature tiers to Groq model IDs.
 
 LLMClient._resolve_model() validates the name against _GROQ_ALLOWED_MODELS
-and falls back to GROQ_MODEL (llama-3.3-70b-versatile) for unknowns.
+and falls back to GROQ_MODEL (openai/gpt-oss-120b) for unknowns.
 
 Removed features (deleted from the platform):
   - performance_analysis   (POST /performance/analyze)
@@ -22,9 +22,11 @@ class ModelTier(str, Enum):
 
 # Groq model IDs recognised by LLMClient._resolve_model()
 MODEL_MAP = {
-    ModelTier.FAST:     "llama-3.1-8b-instant",       # low-latency, simple tasks
-    ModelTier.BALANCED: "llama-3.3-70b-versatile",    # general quality
-    ModelTier.POWER:    "llama-3.3-70b-versatile",    # complex generation (same model, max tokens)
+    # Groq decommissioned llama-3.1-8b-instant + llama-3.3-70b-versatile on
+    # 2026-08-16; migrated to the GPT-OSS models (Groq's recommended replacements).
+    ModelTier.FAST:     "openai/gpt-oss-20b",     # low-latency, simple tasks
+    ModelTier.BALANCED: "openai/gpt-oss-120b",    # general quality
+    ModelTier.POWER:    "openai/gpt-oss-120b",    # complex generation (same model, max tokens)
 }
 
 # Which tier each feature uses

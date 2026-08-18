@@ -1021,7 +1021,7 @@ def generate_practice_test(request):
             result = get_llm().complete(
                 system_prompt=template.system,
                 user_prompt=user_prompt,
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 temperature=0.4,
                 max_tokens=max_output_tokens,
                 json_mode=True,
