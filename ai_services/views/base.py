@@ -14,6 +14,7 @@ Full tenant-aware pipeline:
   10. Return response
 """
 
+import functools
 import logging
 import threading
 import os
@@ -21,7 +22,7 @@ from rest_framework.response import Response
 
 from ai_services.core.llm_client import LLMClient
 from ai_services.core.cache import ResponseCache
-from ai_services.core.rate_limiter import UsageLimiter
+from ai_services.core.rate_limiter import UsageLimiter, get_shared_limiter
 from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
 from ai_services.core.boards import board_instruction
@@ -32,7 +33,7 @@ logger = logging.getLogger("ai_services.views")
 # Shared singletons — initialized once, used by all views
 _llm = LLMClient()
 _cache = ResponseCache()
-_limiter = UsageLimiter()
+_limiter = get_shared_limiter()
 
 
 def get_llm() -> LLMClient:
@@ -45,6 +46,124 @@ def get_cache() -> ResponseCache:
 
 def get_limiter() -> UsageLimiter:
     return _limiter
+
+
+# ── Tenant gate for endpoints that generate their own content ────────────────
+#
+# ai_call()/ai_call_text() run the full pipeline in the module docstring above,
+# but they own the LLM call as well, so an endpoint with bespoke generation
+# logic — grounded content, vision OCR, Whisper transcription — cannot use them.
+# Those endpoints were therefore *logging* what a tenant spent while enforcing
+# nothing: a school on the cheapest plan could generate without limit and the
+# only evidence would arrive on the provider invoice.
+#
+# tenant_gate() applies the same admission checks without owning the call, so
+# those endpoints get plan gating, noisy-neighbour protection and the daily
+# budget while keeping their own generation code.
+#
+# Every check fails OPEN. A missing Institute row, an unreachable Redis or an
+# unexpected error must never turn into a 403 for a paying school — the cost of
+# briefly under-enforcing a budget is a few rupees, the cost of wrongly blocking
+# a classroom mid-lesson is the customer. Only an explicit, known condition
+# (feature switched off, budget exhausted, tenant at its concurrency cap) denies.
+
+
+def tenant_gate(request, feature: str):
+    """Admission checks for a tenant. Returns a Response to deny, or None to allow."""
+    try:
+        institute = getattr(request, "institute", None)
+        vertical = getattr(request, "vertical", "base")
+
+        profile = getattr(request, "profile", None)
+        if profile is not None and not profile.allows_feature(feature):
+            return Response(
+                {"error": f"Feature '{feature}' is not available for the '{vertical}' vertical"},
+                status=403,
+            )
+
+        if institute is not None and not institute.is_feature_enabled(feature):
+            return Response(
+                {"error": f"Feature '{feature}' is not enabled for your plan",
+                 "plan": institute.plan},
+                status=403,
+            )
+
+        institute_id = getattr(request, "institute_id", "default")
+        soft_cap = institute.daily_soft_cap if institute else None
+        hard_cap = institute.daily_hard_cap if institute else None
+        is_allowed, _is_warning, current = _limiter.check_budget(institute_id, soft_cap, hard_cap)
+        if not is_allowed:
+            logger.warning(
+                "Daily token budget exhausted | institute=%s feature=%s usage=%d",
+                institute_id, feature, current,
+            )
+            return Response(
+                {"error": "Daily AI usage limit reached for your institute. "
+                          "It resets at midnight, or contact your administrator to raise it.",
+                 "usage": current, "limit": hard_cap},
+                status=429,
+            )
+    except Exception as exc:
+        # Never let a bug in admission control block generation.
+        logger.error("tenant_gate failed open for feature=%s: %s", feature, exc)
+    return None
+
+
+def metered(feature: str):
+    """Apply tenant_gate + a concurrency slot to a view that generates its own content.
+
+    Sits below @api_view so it receives the DRF request, and releases the slot in
+    a finally block so an exception inside the view cannot leak it — a leaked
+    slot would shrink the tenant's concurrency permanently until the lease
+    expired.
+    """
+    def decorator(view):
+        @functools.wraps(view)
+        def wrapper(request, *args, **kwargs):
+            denial = tenant_gate(request, feature)
+            if denial is not None:
+                return denial
+
+            institute = getattr(request, "institute", None)
+            institute_id = getattr(request, "institute_id", "default")
+            max_concurrent = getattr(institute, "max_concurrent_requests", None) or 10
+
+            acquired = False
+            try:
+                acquired = _limiter.acquire_concurrency_slot(
+                    institute_id, max_concurrent, timeout=30.0
+                )
+            except Exception as exc:
+                logger.error("Concurrency gate failed open for %s: %s", feature, exc)
+                acquired = False  # proceed without a slot rather than deny
+
+            if acquired is False and _limiter_is_healthy():
+                # A healthy limiter that refuses is a real cap, not an outage.
+                return Response(
+                    {"error": "Too many requests in progress for your institute. "
+                              "Please retry in a moment."},
+                    status=429,
+                )
+            try:
+                return view(request, *args, **kwargs)
+            finally:
+                if acquired:
+                    try:
+                        _limiter.release_concurrency_slot(institute_id)
+                    except Exception as exc:
+                        logger.error("Failed to release concurrency slot: %s", exc)
+
+        return wrapper
+    return decorator
+
+
+def _limiter_is_healthy() -> bool:
+    """Whether a refusal from the limiter can be trusted as a real cap.
+
+    Without Redis the gate is per-worker, so a refusal says nothing about the
+    tenant's true in-flight count and must not deny.
+    """
+    return getattr(_limiter, "_redis", None) is not None
 
 
 def _do_log_usage_to_db(institute, institute_id: str, feature: str, result: dict, cache_hit: bool, vertical: str):
@@ -194,7 +313,9 @@ def ai_call_text(
 
         if not skip_cache:
             _cache.set(institute_id, feature, user_prompt, response_data, _cache_scope(vertical, board))
-        _limiter.record_usage(institute_id, result["usage"]["total_tokens"])
+        # Tokens are booked in usage_logger.log_usage, reached via
+        # _log_usage_to_db below — booking here as well double-counted
+        # every ai_call() against the tenant's daily budget.
         _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False, vertical=vertical)
 
         meta = {
@@ -324,7 +445,7 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
         _cache.set(institute_id, feature, user_prompt, result["content"], _cache_scope(vertical, board))
 
     # 7. Record usage (Redis for real-time + DB for billing)
-    _limiter.record_usage(institute_id, result["usage"]["total_tokens"])
+    # Booked in usage_logger.log_usage (see above) — not here.
     _log_usage_to_db(institute, institute_id, feature, result, cache_hit=False, vertical=vertical)
 
     # 8. Build response

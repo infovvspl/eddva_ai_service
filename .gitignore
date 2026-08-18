@@ -5,6 +5,12 @@ ai_study
 # Local dev database — never commit; prod uses Postgres
 db.sqlite3
 *.sqlite3
+# WAL journal and shared-memory files. They do not match *.sqlite3 (the suffix
+# comes after it), so they slipped past the rule above and got committed once.
+# They are per-machine, regenerated on every open, and meaningless without the
+# database itself — which is ignored.
+*.sqlite3-shm
+*.sqlite3-wal
 
 # Generated media — belongs in S3, not git
 /data/generated_note_images/

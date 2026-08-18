@@ -183,8 +183,12 @@ def parse_ai_result(result, topic, difficulty, qtype, style=""):
 def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int) -> dict:
     from ai_services.core.gemini_keys import (
         get_rotated_gemini_keys, has_gemini_api_key, gemini_key_count,
-        is_gemini_permanent_key_error, is_gemini_retryable_error, mark_gemini_key_disabled
+        is_gemini_permanent_key_error, is_gemini_retryable_error, mark_gemini_key_disabled,
+        is_gemini_model_unavailable_error,
+        mark_gemini_model_unavailable,
+        resolve_gemini_model,
     )
+    from ai_services.core.gemini_client import gemini_generate
     if not has_gemini_api_key():
         raise RuntimeError("GEMINI_API_KEY is not set -- add it to .env to enable Gemini generation")
     
@@ -200,27 +204,27 @@ def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int)
     last_exc = None
     response = None
     for key_index, api_key in get_rotated_gemini_keys():
+        _use_model = resolve_gemini_model(api_key, model_name)
         try:
-            client = genai.Client(api_key=api_key)
             try:
-                response = client.models.generate_content(
-                    model=model_name,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
-                        temperature=0.4,
+                        temperature=0.7,
                         max_output_tokens=max_tokens,
                         response_mime_type="application/json",
                         thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
             except TypeError:
-                response = client.models.generate_content(
-                    model=model_name,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
-                        temperature=0.4,
+                        temperature=0.7,
                         max_output_tokens=max_tokens,
                         response_mime_type="application/json",
                     ),
@@ -231,6 +235,11 @@ def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int)
             )
             break
         except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
             last_exc = exc
             msg = str(exc)
             if is_gemini_permanent_key_error(msg):
@@ -314,6 +323,11 @@ def generate_practice_test(request):
     board = str(data.get("board") or "CBSE").strip()
     if not exam_target and vertical == "school":
         exam_target = "class 10"  # School default
+
+    seed = data.get("seed") or data.get("random_seed")
+    if not seed:
+        import uuid
+        seed = str(uuid.uuid4())[:8]
 
     qtype = (data.get("type") or data.get("question_type") or "mcq").strip().lower()
     style = (data.get("style") or "").strip().lower()
@@ -947,6 +961,7 @@ def generate_practice_test(request):
         f"Generate {num_questions} distinct {qtype} questions.\n"
         f"Curriculum scope: {curriculum_context}\n"
         f"Difficulty: {difficulty}. This should be a {diff_context}.\n"
+        f"Randomization Seed: {seed} (Ensure this generation is unique and randomized based on this seed).\n"
         f"{type_instr}\n\n"
         f"{subject_rule}\n\n"
         f"{heuristic_block}\n"
@@ -963,11 +978,11 @@ def generate_practice_test(request):
             f"'Thermal Physics', 'Electrochemistry' — must be a real chapter from {subject or 'the subject'} syllabus, "
             f"NOT the subject name '{subject or ''}' itself, and NOT a vague label like 'General'). "
         )
-        + "Include an 'options' field only for MCQs."
+        + "Include an 'options' field only for MCQs, which MUST be a list of 4 distinct strings containing the option texts (e.g. [\"Option A text\", \"Option B text\", ...]). Do NOT return option labels like ['A', 'B', 'C', 'D']."
     )
 
     institute_id = getattr(request, "institute_id", "default")
-    template = get_template("test_generate")
+    template = get_template("test_generate", vertical)
 
     logger.info(
         "generate_practice_test | exam=%s | diff=%s | subject=%s | chapter=%s | topic=%s | type=%s | style=%s | n=%d | lang=%s",
@@ -1007,7 +1022,10 @@ def generate_practice_test(request):
             }
         except Exception as e:
             logger.error("Gemini Odia generation failed: %s", e)
-            cached = question_bank.get_random(subject, chapter, difficulty, qtype, num_questions)
+            cached = question_bank.get_random(
+                subject, chapter, difficulty, qtype, num_questions,
+                institute_id=institute_id, vertical=vertical
+            )
             if cached:
                 logger.info("Gemini failed — serving %d cached questions from question bank", len(cached))
                 return JsonResponse({
@@ -1022,7 +1040,7 @@ def generate_practice_test(request):
                 system_prompt=template.system,
                 user_prompt=user_prompt,
                 model="openai/gpt-oss-120b",
-                temperature=0.4,
+                temperature=0.7,
                 max_tokens=max_output_tokens,
                 json_mode=True,
                 institute_id=institute_id,
@@ -1030,7 +1048,10 @@ def generate_practice_test(request):
         except RuntimeError as e:
             logger.error("LLM complete failed: %s", e)
             # Try question bank fallback before returning error
-            cached = question_bank.get_random(subject, chapter, difficulty, qtype, num_questions)
+            cached = question_bank.get_random(
+                subject, chapter, difficulty, qtype, num_questions,
+                institute_id=institute_id, vertical=vertical
+            )
             if cached:
                 logger.info("LLM failed — serving %d cached questions from question bank", len(cached))
                 return JsonResponse({
@@ -1057,7 +1078,10 @@ def generate_practice_test(request):
 
     # Save successfully generated questions to the question bank for future fallback
     if parsed.get("questions"):
-        question_bank.save(subject, chapter, difficulty, qtype, parsed["questions"])
+        question_bank.save(
+            subject, chapter, difficulty, qtype, parsed["questions"],
+            institute_id=institute_id, vertical=vertical
+        )
 
     logger.info(
         "generate_practice_test: OK | type=%s | style=%s | returned=%d questions",

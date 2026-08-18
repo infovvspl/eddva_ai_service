@@ -60,11 +60,15 @@ from ai_services.core.gemini_keys import (
     is_gemini_permanent_key_error,
     is_gemini_retryable_error,
     mark_gemini_key_disabled,
+    is_gemini_model_unavailable_error,
+    mark_gemini_model_unavailable,
+    resolve_gemini_model,
 )
+from ai_services.core.gemini_client import gemini_generate
 from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
 from ai_services.core.usage_logger import log_usage
 from ai_services.core.serpapi_images import search_google_images
-from .base import ai_call, ai_call_text, get_llm
+from .base import ai_call, ai_call_text, get_llm, metered
 
 
 
@@ -101,6 +105,7 @@ def _resolve_institute_id(request) -> str:
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def search_educational_images(request):
     """Search for educational images. Uses Serper when configured, Wikipedia otherwise."""
     query = str(request.data.get("query") or "").strip()
@@ -1392,36 +1397,64 @@ def _repair_low_quality_transcript(text: str, topic_id: str, language: str, inst
 
 
 
-    # Cap input to ~4500 chars (~1500 tokens for Hindi) to stay under 6000 TPM on 8b model
-    _REPAIR_INPUT_CAP = 4500
-    repair_input = cleaned[:_REPAIR_INPUT_CAP] if len(cleaned) > _REPAIR_INPUT_CAP else cleaned
+    # Process full transcript in chunks using parallel execution to prevent truncation
+    _REPAIR_CHUNK_CAP = 4500
+    if len(cleaned) <= _REPAIR_CHUNK_CAP:
+        chunks = [cleaned]
+    else:
+        # Split by paragraph/newline blocks
+        paragraphs = [p.strip() for p in cleaned.split("\n") if p.strip()]
+        chunks = []
+        current = ""
+        for p in paragraphs:
+            if len(current) + len(p) + 1 <= _REPAIR_CHUNK_CAP:
+                current = f"{current}\n{p}".strip() if current else p
+            else:
+                if current:
+                    chunks.append(current)
+                current = p
+        if current:
+            chunks.append(current)
 
-
+    def _repair_single_chunk(args):
+        idx, c_text = args
+        try:
+            llm_result = get_llm().complete(
+                system_prompt=(
+                    "You repair noisy educational lecture transcripts. Clean OCR/STT artifacts, remove garbage tokens, "
+                    "repair obvious equation formatting, and fix broken statements into coherent text while preserving "
+                    "the original source language style (Hindi/Hinglish/English as given). Do not invent new topics."
+                ),
+                user_prompt=(
+                    f"Lecture topic: {topic_id or 'General'}\n"
+                    f"Source language: {language}\n"
+                    f"Detected issues: {', '.join(flags)}\n\n"
+                    "Clean and repair this transcript segment for note generation. Preserve as much original meaning as possible.\n\n"
+                    f"{c_text}"
+                ),
+                model="openai/gpt-oss-20b",
+                temperature=0.2,
+                max_tokens=2048,
+                json_mode=False,
+                institute_id=institute_id,
+            )
+            candidate = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
+            return idx, candidate.strip() or c_text
+        except Exception as exc:
+            logger.warning("Transcript repair chunk %d failed (%s)", idx, exc)
+            return idx, c_text
 
     try:
-        llm_result = get_llm().complete(
-            system_prompt=(
-                "You repair noisy educational lecture transcripts. Clean OCR/STT artifacts, remove garbage tokens, "
-                "repair obvious equation formatting, and fix broken statements into coherent text while preserving "
-                "the original source language style (Hindi/Hinglish/English as given). Do not invent new topics."
-            ),
-            user_prompt=(
-                f"Lecture topic: {topic_id or 'General'}\n"
-                f"Source language: {language}\n"
-                f"Detected issues: {', '.join(flags)}\n\n"
-                "Clean and repair this transcript for note generation. Preserve as much original meaning as possible.\n\n"
-                f"{repair_input}"
-            ),
-            model="openai/gpt-oss-20b",
-            temperature=0.2,
-            max_tokens=2048,
-            json_mode=False,
-            institute_id=institute_id,
-        )
-        candidate = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
-        return candidate.strip() or cleaned
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        repaired_chunks = [""] * len(chunks)
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 4)) as pool:
+            futures = {pool.submit(_repair_single_chunk, (i, ch)): i for i, ch in enumerate(chunks)}
+            for fut in as_completed(futures):
+                i, res = fut.result()
+                repaired_chunks[i] = res
+        return "\n\n".join(r for r in repaired_chunks if r).strip() or cleaned
     except Exception as exc:
-        logger.warning("Transcript repair failed (%s)", exc)
+        logger.warning("Parallel transcript repair failed (%s)", exc)
         return cleaned
 
 
@@ -1497,10 +1530,10 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
 
 
 
-NOTES_CHUNK_CHAR_LIMIT = 9000
-NOTES_CHUNK_OVERLAP_CHARS = 600   # used for English only; Hindi uses 0 (see _generate_comprehensive_notes)
-NOTES_SECTION_MAX_TOKENS = 700    # baseline; overridden per-call by adaptive formula below
-NOTES_MERGE_MAX_TOKENS = 1800
+NOTES_CHUNK_CHAR_LIMIT = 3500
+NOTES_CHUNK_OVERLAP_CHARS = 400   # used for English only; Hindi uses 0 (see _generate_comprehensive_notes)
+NOTES_SECTION_MAX_TOKENS = 1200    # baseline for rich detailed chunk notes
+NOTES_MERGE_MAX_TOKENS = 2500
 # Adaptive formula ensures merge never overflows 6000 TPM regardless of chunk count:
 #   section_tokens = max(350, min(700, 3900 // N))   → N × section_tokens ≤ 3900 + 300 + 1800 ≤ 6000 ✅
 _MERGE_MAX_INPUT_CHARS = 15_500   # safety net: ~3900 English tokens × 4 chars/token
@@ -1620,6 +1653,9 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
             + lang_instruction +
             "SKIP any teacher introductions, greetings, self-introductions, roll calls, or administrative "
             "announcements (e.g. 'Hello students', 'Mere pyare bacchon', 'My name is...', 'Exams are near...'). "
+            "SKIP any teacher recap, review, or end-of-class summary sections where the teacher lists or restates "
+            "what was already covered (e.g. 'We have discussed three methods...', 'Today we learned...', "
+            "'In this chapter we covered...'). "
             "Focus ONLY on academic and educational content: concepts, theory, formulas, examples. "
             "Preserve definitions, intuition, examples, formulas, derivations, steps, caveats, comparisons, "
             "and teacher reasoning. Do not compress aggressively. Cover every important idea in this chunk."
@@ -1633,10 +1669,11 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
             "- Explain concepts in a textbook-like way, not just bullets.\n"
             "- Include short definitions for important terms.\n"
             "- Include formulas or equations in plain text when relevant.\n"
-            "- Preserve examples, teacher explanations, step-by-step reasoning, and cause-effect relationships.\n"
+            "- For worked examples and step-by-step calculations/derivations, ALWAYS put each new step on its own separate line (using a numbered list, bullet list, or separate line per step). Never combine multiple calculation steps into a single paragraph.\n"
             "- Add subheadings where useful.\n"
             "- If the teacher contrasts two ideas, keep that comparison.\n"
-            "- If the teacher mentions mistakes, traps, exceptions, or exam-important points, preserve them.\n"
+            "- DO NOT generate any Summary, Conclusion, Key Takeaways, Introduction, or Overview section that just lists or recaps what was already covered.\n"
+            "- If the teacher is recapping/summarizing at the end of class (e.g. 'We have discussed...', 'Today we learned...'), SKIP that part entirely.\n"
             "- Do not add unrelated content not supported by the transcript.\n\n"
             f"{chunk_text}"
         ),
@@ -1789,11 +1826,11 @@ def _gemini_odia_generate(system_prompt: str, user_prompt: str, *, max_tokens: i
     last_exc: Exception | None = None
     response = None
     for key_index, api_key in get_rotated_gemini_keys():
+        _use_model = resolve_gemini_model(api_key, GEMINI_ODIA_NOTES_MODEL)
         try:
-            client = genai.Client(api_key=api_key)
             try:
-                response = client.models.generate_content(
-                    model=GEMINI_ODIA_NOTES_MODEL,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -1803,8 +1840,8 @@ def _gemini_odia_generate(system_prompt: str, user_prompt: str, *, max_tokens: i
                     ),
                 )
             except TypeError:
-                response = client.models.generate_content(
-                    model=GEMINI_ODIA_NOTES_MODEL,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -1818,6 +1855,11 @@ def _gemini_odia_generate(system_prompt: str, user_prompt: str, *, max_tokens: i
             )
             break
         except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
             last_exc = exc
             msg = str(exc)
             if is_gemini_permanent_key_error(msg):
@@ -2099,38 +2141,26 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
     #   TPM:   N × section_tokens + 300 prompt + 1800 merge ≤ 6000  → section_tokens ≤ 3900 // N
     #   Chars: N × section_tokens × 4 ≤ _MERGE_MAX_INPUT_CHARS      → section_tokens ≤ _MERGE_MAX_INPUT_CHARS // (N × 4)
     n = len(chunks)
-    section_tokens = max(350, min(NOTES_SECTION_MAX_TOKENS, 3900 // n, _MERGE_MAX_INPUT_CHARS // max(n * 4, 1)))
-
-
+    section_tokens = max(800, min(1400, NOTES_SECTION_MAX_TOKENS))
 
     if n == 1:
         notes = _generate_chunk_notes(chunks[0], topic_id, language, institute_id, 1, 1, max_tokens=section_tokens).strip()
         return notes, {"chunk_count": 1, "merge_applied": False, "section_tokens": section_tokens}
-
-
 
     logger.info(
         "Generating chunked notes | chunks=%d | section_tokens=%d | topic=%s | lang=%s",
         n, section_tokens, topic_id, language,
     )
 
-
-
-    # Sequential processing with round-robin key distribution (see llm_client.py).
-    # 1.5s gap between chunks keeps each call well under 6,000 TPM.
     partial_notes: list[str] = []
     failed_chunks = 0
     _t0_generate = _time.perf_counter()
-    _MAX_GEN_TIME = 600  # 10 minutes absolute max for the chunk phase
-
-    
+    _MAX_GEN_TIME = 600
 
     for i, chunk in enumerate(chunks):
         if _time.perf_counter() - _t0_generate > _MAX_GEN_TIME:
             logger.warning("Chunk generation timed out after %.1f seconds. Using %d/%d partial chunks.", _time.perf_counter() - _t0_generate, len(partial_notes), n)
             break
-
-            
 
         try:
             notes = _generate_chunk_notes(
@@ -2142,30 +2172,84 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
             failed_chunks += 1
             partial_notes.append("")
         if i < n - 1:
-            _time.sleep(1.5)
-
-
+            _time.sleep(1.0)
 
     non_empty = [p for p in partial_notes if p.strip()]
     if not non_empty:
         return "", {"chunk_count": n, "failed_chunks": failed_chunks, "error": "all_chunks_failed"}
 
+    # Stitch all detailed chunk notes together
+    stitched_notes = "\n\n".join(non_empty).strip()
 
+    # Standardize heading levels: ensure top-level section headings are ## and sub-headings are ###
+    # This prevents uneven heading fonts (e.g. random # vs ## vs ###) across chunk boundaries.
+    standardized_lines = []
+    for line in stitched_notes.splitlines():
+        if line.startswith("#"):
+            h_match = re.match(r"^(#+)\s*(.*)", line)
+            if h_match:
+                depth = len(h_match.group(1))
+                content = h_match.group(2).strip()
+                if depth == 1:
+                    standardized_lines.append(f"## {content}")
+                elif depth > 3:
+                    standardized_lines.append(f"### {content}")
+                else:
+                    standardized_lines.append(line)
+            else:
+                standardized_lines.append(line)
+        else:
+            standardized_lines.append(line)
 
-    # Safety net: cap merge input so it never overflows 6000 TPM
-    combined = "\n\n".join(non_empty)
-    if len(combined) > _MERGE_MAX_INPUT_CHARS:
-        logger.warning(
-            "Merge input truncated %d → %d chars (adaptive formula should have prevented this)",
-            len(combined), _MERGE_MAX_INPUT_CHARS,
-        )
-        combined = combined[:_MERGE_MAX_INPUT_CHARS]
-        non_empty = [combined]
+    clean_body = "\n".join(standardized_lines).strip()
+    # Strip any residual Summary, Conclusion, or recap sections generated by LLM chunks.
+    # Matches headings literally named Summary/Conclusion/Key Takeaways:
+    clean_body = re.sub(r"(?m)^#{1,4}\s*(?:Summary|Conclusion|Key\s*Takeaways|Recap|Review|Overview)\b.*$(?:\n(?!#)[^\n]*)*", "", clean_body).strip()
+    # Also strip any section whose first non-empty line starts with typical recap language:
+    _RECAP_OPENERS = re.compile(
+        r"^(We have discussed|We have learned|In this (?:chapter|lecture|section) we|Today we (?:learned|covered|discussed)|Let us (?:recap|review|summarize))",
+        re.IGNORECASE
+    )
+    cleaned_sections = []
+    for section in re.split(r"(?m)(?=^#{1,4} )", clean_body):
+        # Find first non-empty content line of section (skip the heading itself)
+        content_lines = [l for l in section.splitlines()[1:] if l.strip()]
+        first_content = content_lines[0].strip() if content_lines else ""
+        if _RECAP_OPENERS.match(first_content):
+            continue  # skip this section
+        cleaned_sections.append(section)
+    clean_body = "".join(cleaned_sections).strip()
 
+    # Strip generic/useless headings produced by the LLM (e.g. '## General', '## Notes', '## Introduction')
+    _GENERIC_HEADINGS = re.compile(
+        r"(?m)^#{1,4}\s*(?:General|Notes?|Introduction|Overview|Lecture Notes?|Content|Main Content|Topic)\s*$",
+        re.IGNORECASE
+    )
+    clean_body = _GENERIC_HEADINGS.sub("", clean_body).strip()
 
+    # Deduplicate consecutive identical headings produced at chunk stitch boundaries
+    seen_headings: set = set()
+    deduped_lines = []
+    for line in clean_body.splitlines():
+        if re.match(r"^#{1,4}\s+", line):
+            normalized = line.strip().lower()
+            if normalized in seen_headings:
+                continue  # skip duplicate heading
+            seen_headings.add(normalized)
+        deduped_lines.append(line)
+    clean_body = "\n".join(deduped_lines).strip()
 
-    merged = _merge_chunk_notes(non_empty, topic_id, language, institute_id).strip()
-    return merged, {"chunk_count": n, "failed_chunks": failed_chunks, "merge_applied": True, "section_tokens": section_tokens}
+    # Ensure each standalone equation line is preceded and followed by a blank line
+    # so it renders on its own line and not embedded inside a prose paragraph.
+    eq_line_re = re.compile(
+        r"(?m)^(?!#|-|\d+\.|\*|>|\s*$)([A-Za-z0-9_]+(?:[_^][A-Za-z0-9{}]+)*\s*(?:=|\+|-|\*|\/|\\neq|\\leq|\\geq)\s*.+)$"
+    )
+    def _surround_eq(m):
+        return f"\n{m.group(0)}\n"
+    clean_body = eq_line_re.sub(_surround_eq, clean_body)
+    # Collapse triple+ blank lines back to double
+    clean_body = re.sub(r"\n{3,}", "\n\n", clean_body).strip()
+    return clean_body, {"chunk_count": n, "failed_chunks": failed_chunks, "merge_applied": False, "section_tokens": section_tokens}
 
 
 
@@ -2765,6 +2849,7 @@ def _coerce_tutor_or_doubt_text(raw) -> str:
 
 
 @api_view(["POST"])
+@metered("doubt_resolver")
 def resolve_doubt(request):
     import re as _re
     _start_time = time.time()
@@ -2781,19 +2866,29 @@ def resolve_doubt(request):
     else:
         mode = "detailed"
 
+    language = (data.get("language") or "").strip().lower()
+    def _has_odia_chars_early(text):
+        return any(0x0B00 <= ord(c) <= 0x0B7F for c in (text or ""))
+    def _has_devanagari_chars_early(text):
+        return any(0x0900 <= ord(c) <= 0x097F for c in (text or ""))
 
+    if not language:
+        if _has_odia_chars_early(question_text):
+            language = "odia"
+            print("[DOUBT RESOLVER] Auto-detected Odia script in question early — overriding language to 'odia'")
+        elif _has_devanagari_chars_early(question_text):
+            language = "hindi"
+            print("[DOUBT RESOLVER] Auto-detected Devanagari script in question early — overriding language to 'hindi'")
 
     # Image support: base64 data URL (from NestJS) or raw HTTPS URL
     image_description = ""
     image_source = (data.get("questionImageBase64") or data.get("questionImageUrl") or "").strip()
     has_image = bool(image_source)
 
-
-
     if image_source:
-        logger.info("[DOUBT] Image detected, attempting Groq vision... url_len=%d", len(image_source))
-        # Primary: Groq Llama 4 Scout vision
-        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT)
+        logger.info("[DOUBT] Image detected, attempting vision transcription... url_len=%d", len(image_source))
+        # Primary: Groq Qwen 3.6 27B vision (or Gemini directly for Odia)
+        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT, language)
         if image_description:
             logger.info("[DOUBT] Groq vision succeeded: %d chars", len(image_description))
         else:
@@ -2838,11 +2933,29 @@ def resolve_doubt(request):
 
 
     # ── Step 1: Classify subject and question type ────────────────────────────
-    # Keyword detection runs first (free, instant). LLM runs only as fallback
-    # for image-only questions or when zero keywords matched.
-    subject, qtype = _detect_subject_and_type_for_doubt(
-        combined_question, has_image=bool(image_description), institute_id=institute_id,
-    )
+    student_ctx = data.get("studentContext") or {}
+    provided_subject = str(data.get("subjectName") or student_ctx.get("subject") or "").strip().lower()
+    
+    if provided_subject and any(k in provided_subject for k in ["english", "literature", "gramm", "communicative", "reading", "writing"]):
+        subject, qtype = "english", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["history", "civics", "geography", "social", "sst"]):
+        subject, qtype = "social_science", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["hindi"]):
+        subject, qtype = "hindi", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["odia"]):
+        subject, qtype = "odia", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["math", "algebra", "geometry", "calculus"]):
+        subject, qtype = "math", "derivation"
+    elif provided_subject and any(k in provided_subject for k in ["physics"]):
+        subject, qtype = "physics", "numerical"
+    elif provided_subject and any(k in provided_subject for k in ["chemistry"]):
+        subject, qtype = "chemistry", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["biology", "science", "botany", "zoology"]):
+        subject, qtype = "biology", "conceptual"
+    else:
+        subject, qtype = _detect_subject_and_type_for_doubt(
+            combined_question, has_image=bool(image_description), institute_id=institute_id,
+        )
 
 
 
@@ -3135,15 +3248,20 @@ def _url_to_base64_data_uri(image_url: str) -> str:
         _PILImage = None
 
     try:
-        resp = _requests.get(image_url, timeout=20)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = _requests.get(image_url, headers=headers, timeout=20)
         resp.raise_for_status()
         
         image_data = resp.content
         content_type = "image/jpeg" # Default to JPEG for compression benefits
 
-        # Compress if PIL is available
+        # Compress and auto-rotate if PIL is available
         if _PILImage:
+            from PIL import ImageOps as _PILImageOps
             with _PILImage.open(_BytesIO(image_data)) as img:
+                img = _PILImageOps.exif_transpose(img)
                 # Convert to RGB if necessary (e.g. for PNG with alpha or GIF)
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGB")
@@ -3167,31 +3285,161 @@ def _url_to_base64_data_uri(image_url: str) -> str:
         return image_url
 
 
+def _strip_thinking_tags(text: str) -> str:
+    import re
+    cleaned = re.sub(r'(?i)<think>.*?</think>', '', text, flags=re.DOTALL)
+    if "<think>" in cleaned.lower():
+        cleaned = cleaned.split("<think>", 1)[0]
+    
+    cleaned = cleaned.strip()
+    # If the cleaning removed almost all text, but the original raw text was substantial,
+    # it means the model put the transcription inside the thinking tags (or failed to close them).
+    # In this case, keep the content and just strip the tags.
+    if len(cleaned) < 3 and len(text.strip()) > 3:
+        cleaned = re.sub(r'(?i)</?think>', '', text).strip()
+    return cleaned
 
 
+def _extract_transcription(text: str) -> str:
+    import re
+    # Clean thinking tags first
+    cleaned = _strip_thinking_tags(text)
+    
+    # Try to find <transcription>...</transcription>
+    match = re.search(r'<transcription>(.*?)</transcription>', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+        
+    # Unclosed tag fallback
+    if "<transcription>" in cleaned.lower():
+        parts = re.split(r'<transcription>', cleaned, flags=re.IGNORECASE)
+        if len(parts) > 1:
+            val = parts[1].strip()
+            if "</transcription>" in val.lower():
+                val = val.split("</transcription>", 1)[0].strip()
+            return val
+            
+    return cleaned
 
-def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
-    """Groq vision — tries Llama 4 Scout first, then Llama 3.2 Vision as fallback.
-    Returns '' on complete failure (caller adds EasyOCR or placeholder fallback)."""
+
+def _image_to_bytes_and_mime(image_source: str) -> tuple[bytes, str]:
+    import base64 as _b64
+    import requests as _requests
+    
+    if image_source.startswith("data:"):
+        try:
+            header, encoded = image_source.split(",", 1)
+            mime = header.split(";")[0].split(":")[1]
+            data = _b64.b64decode(encoded)
+            return data, mime
+        except Exception:
+            pass
+            
+    if image_source.startswith(("http://", "https://")):
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            resp = _requests.get(image_source, headers=headers, timeout=20)
+            resp.raise_for_status()
+            mime = resp.headers.get("Content-Type", "image/jpeg")
+            return resp.content, mime
+        except Exception:
+            pass
+            
     try:
-        from groq import Groq
-    except ImportError:
-        logger.warning("groq package not installed; vision OCR unavailable")
+        import os
+        if os.path.exists(image_source):
+            with open(image_source, "rb") as f:
+                data = f.read()
+                mime = "image/jpeg"
+                if image_source.endswith(".png"):
+                    mime = "image/png"
+                elif image_source.endswith(".webp"):
+                    mime = "image/webp"
+                return data, mime
+    except Exception:
+        pass
+        
+    return b"", "image/jpeg"
+
+
+def _call_gemini_vision(image_source: str, prompt: str) -> str:
+    import os
+    try:
+        from google import genai
+        from google.genai import types
+        from ai_services.core.gemini_keys import (
+            gemini_key_count,
+            get_rotated_gemini_keys,
+            is_gemini_permanent_key_error,
+            mark_gemini_key_disabled,
+            is_gemini_model_unavailable_error,
+            mark_gemini_model_unavailable,
+            resolve_gemini_model,
+        )
+    except Exception as exc:
+        logger.warning("[VISION] Gemini SDK/keys import failed: %s", exc)
         return ""
 
+    keys = get_rotated_gemini_keys()
+    if not keys:
+        logger.warning("[VISION] No Gemini API keys found for vision fallback")
+        return ""
+
+    image_bytes, mime_type = _image_to_bytes_and_mime(image_source)
+    if not image_bytes:
+        logger.warning("[VISION] Failed to resolve image to bytes for Gemini")
+        return ""
+
+    # gemini-2.5-flash, not 2.0. Every configured key returns 429
+    # RESOURCE_EXHAUSTED for gemini-2.0-flash, so this fallback produced nothing
+    # — and because the Groq vision models above it were withdrawn (404 "model
+    # does not exist") and EasyOCR is not installed, a student's photographed
+    # doubt had no working path at all and simply came back blank.
+    model = os.getenv(
+        "NOTES_IMAGE_OVERLAY_GEMINI_MODEL",
+        os.getenv("GEMINI_VISION_MODEL", os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")),
+    )
+    for key_index, api_key in keys:
+        _use_model = resolve_gemini_model(api_key, model)
+        try:
+            logger.info("[VISION] Trying Gemini model=%s key=%d/%d", model, key_index, gemini_key_count())
+            contents = [
+                prompt,
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+            ]
+            response = gemini_generate(api_key,
+                model=_use_model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    max_output_tokens=1024,
+                ),
+            )
+            out = (response.text or "").strip()
+            if out:
+                logger.info("[VISION] Gemini vision model succeeded: %d chars", len(out))
+                return out
+        except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
+            msg = str(exc)
+            logger.warning("[VISION] Gemini vision failed on key %d/%d: %s", key_index, gemini_key_count(), msg[:180])
+            if is_gemini_permanent_key_error(msg):
+                mark_gemini_key_disabled(api_key)
+                
+    return ""
 
 
+def _vision_text_from_image(image_url: str, user_prompt: str, language: str = "") -> str:
+    """Groq vision — tries Qwen 3.6 27B first, then Llama 3.2 Vision as fallback.
+    Returns '' on complete failure (caller adds EasyOCR or placeholder fallback)."""
     if not (image_url or "").strip():
         return ""
-
-
-
-    keys = get_rotated_groq_keys()
-    if not keys:
-        logger.warning("No GROQ API keys in rotation; vision OCR skipped")
-        return ""
-
-
 
     # Download HTTP(S) images to base64 so Groq doesn't need to reach S3/presigned URLs.
     # Data URIs and already-base64 strings are passed as-is.
@@ -3201,25 +3449,57 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
     else:
         effective_image = image_url
 
+    # Check if Odia language was explicitly passed or auto-detected
+    is_odia_image = str(language).strip().lower() in ("odia", "od", "or", "or-in", "od-in")
+    if is_odia_image:
+        logger.info("[VISION] Odia language requested — forcing Gemini Vision directly")
+        gemini_out = _call_gemini_vision(effective_image, user_prompt)
+        extracted_gemini = _extract_transcription(gemini_out)
+        if extracted_gemini:
+            return extracted_gemini
+        logger.warning("[VISION] Gemini Vision failed for Odia image. Trying Groq fallback.")
+
+    try:
+        from groq import Groq
+    except ImportError:
+        logger.warning("groq package not installed; vision OCR unavailable")
+        return ""
+
+    user_prompt = user_prompt + (
+        "\n\nIMPORTANT: You MUST wrap your final transcribed answer/description inside "
+        "<transcription> and </transcription> tags, with nothing else inside them. "
+        "Example: <transcription>your final transcribed answer here</transcription>"
+    )
+
+    keys = get_rotated_groq_keys()
+    if not keys:
+        logger.warning("No GROQ API keys in rotation; vision OCR skipped")
+        return ""
 
 
-    # Vision models to try in order. The llama-3.2-*-vision-preview models were
-    # decommissioned by Groq — Llama 4 Scout/Maverick are the current vision models.
+    # Vision models to try in order. The llama-3.2-*-vision models were
+    # decommissioned by Groq — Llama 4 Scout/Maverick are the current vision
+    # models. Configurable: set GROQ_VISION_MODELS to a comma-separated list to
+    # point at whatever the account serves, or an empty string to skip Groq and
+    # go straight to the Gemini fallback below.
     vision_models = [
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "meta-llama/llama-4-maverick-17b-128e-instruct",
+        m.strip() for m in os.getenv(
+            "GROQ_VISION_MODELS",
+            "meta-llama/llama-4-scout-17b-16e-instruct,meta-llama/llama-4-maverick-17b-128e-instruct",
+        ).split(",") if m.strip()
     ]
 
-
-
-    for api_key in keys:
+    for api_key in keys[:2]:
         for model_name in vision_models:
             try:
                 if api_key not in _groq_vision_clients:
-                    _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=45.0)
+                    _groq_vision_clients[api_key] = Groq(api_key=api_key, timeout=12.0)
                 client = _groq_vision_clients[api_key]
                 logger.info("[VISION] Trying model=%s (base64=%s)", model_name, str(effective_image).startswith("data:"))
-                response = client.chat.completions.create(
+
+                # Build kwargs — suppress chain-of-thought for reasoning models
+                # (Qwen 3.6 27B enters infinite <think> loops on OCR prompts).
+                call_kwargs = dict(
                     model=model_name,
                     messages=[
                         {
@@ -3233,21 +3513,38 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
                             ],
                         }
                     ],
-                    max_tokens=1024,
+                    max_tokens=4096,
                     temperature=0.0,
                 )
-                out = (response.choices[0].message.content or "").strip()
-                if out:
-                    logger.info("[VISION] Model=%s succeeded: %d chars", model_name, len(out))
-                    return out
+                if "qwen" in model_name.lower():
+                    # Disable the extended reasoning budget so Qwen answers
+                    # directly without looping in its <think> block.
+                    try:
+                        call_kwargs["reasoning_effort"] = "none"
+                    except Exception:
+                        pass
+
+                response = client.chat.completions.create(**call_kwargs)
+                raw = (response.choices[0].message.content or "").strip()
+
+                # Strip any leaked <think>...</think> reasoning block that a
+                # reasoning model may emit even with reasoning_effort=none.
+                import re as _re
+                out = _re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=_re.IGNORECASE).strip()
+
+                logger.info("[VISION] Model=%s raw output: %r", model_name, out[:300])
+                extracted_out = _extract_transcription(out)
+                if extracted_out:
+                    logger.info("[VISION] Model=%s succeeded: %d chars", model_name, len(extracted_out))
+                    return extracted_out
                 else:
-                    logger.warning("[VISION] Model=%s returned empty content", model_name)
+                    logger.warning("[VISION] Model=%s returned empty content after cleaning", model_name)
             except Exception as exc:
                 exc_str = str(exc)
                 # If it's a model-not-found / unsupported error, try next model immediately
                 if any(kw in exc_str.lower() for kw in ["not found", "not supported", "invalid model", "does not exist", "404"]):
                     logger.warning("[VISION] Model=%s not available: %s — trying next model", model_name, exc_str[:120])
-                    break  # break inner loop (models), move to next key
+                    continue  # try next model with same key
                 # Rate limit — try next key
                 elif "rate" in exc_str.lower() or "429" in exc_str:
                     logger.warning("[VISION] Model=%s rate-limited, rotating key", model_name)
@@ -3256,25 +3553,24 @@ def _vision_text_from_image(image_url: str, user_prompt: str) -> str:
                     logger.warning("[VISION] Model=%s failed: %s", model_name, exc_str[:200])
                     continue  # try next model with same key
 
-
+    # Try Gemini vision fallback
+    logger.info("[VISION] All Groq vision models failed; trying Gemini Vision fallback...")
+    gemini_out = _call_gemini_vision(effective_image, user_prompt)
+    extracted_gemini = _extract_transcription(gemini_out)
+    if extracted_gemini:
+        return extracted_gemini
 
     return ""
 
 
-
-
-
-def _describe_image_with_vision(image_url: str) -> str:
+def _describe_image_with_vision(image_url: str, language: str = "") -> str:
     """Doubt / general: extract and describe full content (equations, diagrams, etc.)."""
-    return _vision_text_from_image(image_url, _DOUBT_VISION_PROMPT)
+    return _vision_text_from_image(image_url, _DOUBT_VISION_PROMPT, language)
 
 
-
-
-
-def _transcribe_exam_answer_with_vision(image_url: str) -> str:
+def _transcribe_exam_answer_with_vision(image_url: str, language: str = "") -> str:
     """Mock test / grading: answer text only, no photo narration."""
-    return _vision_text_from_image(image_url, _GRADING_VISION_PROMPT)
+    return _vision_text_from_image(image_url, _GRADING_VISION_PROMPT, language)
 
 
 
@@ -3332,9 +3628,10 @@ def _extract_text_from_image_url(
 
 
 @api_view(["POST"])
+@metered("image_ocr_handwriting")
 def ocr_doubt_image(request):
     """Transcribe handwritten / diagram content for grading and doubt flows.
-    Prefers Groq **Llama 4 Scout** vision (handwriting, equations, diagrams), then EasyOCR.
+    Prefers Groq **Qwen 3.6 27B** vision (handwriting, equations, diagrams), then EasyOCR.
 
 
 
@@ -3351,17 +3648,18 @@ def ocr_doubt_image(request):
     is_grading = purpose in ("grading", "mock", "assessment", "mock_test", "answer")
     institute_id_ocr = _resolve_institute_id(request)
     user_id_ocr = request.data.get('userId') or request.data.get('user_id') or ''
+    language = (request.data.get("language") or "").strip().lower()
     if is_grading:
-        text = _transcribe_exam_answer_with_vision(image_url)
+        text = _transcribe_exam_answer_with_vision(image_url, language)
     else:
-        text = _describe_image_with_vision(image_url)
+        text = _describe_image_with_vision(image_url, language)
     if not text:
         # English-only EasyOCR for grading — reduces garbage Devanagari on Latin handwriting
         text = _extract_text_from_image_url(
             image_url, languages=["en"] if is_grading else None
         )
     try:
-        _ocr_model = 'llama-4-scout-17b-16e-instruct' if text else 'easyocr-local'
+        _ocr_model = 'qwen/qwen3.6-27b' if text else 'easyocr-local'
         log_usage(
             institute_id=institute_id_ocr,
             institute_type='school',
@@ -3387,6 +3685,7 @@ def ocr_doubt_image(request):
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def start_tutor_session(request):
     _start_time = time.time()
     data = request.data
@@ -3490,6 +3789,7 @@ def start_tutor_session(request):
 
 
 @api_view(["POST"])
+@metered("doubt_resolver")
 def continue_tutor_session(request):
     _start_time = time.time()
     data = request.data
@@ -3609,6 +3909,7 @@ def recommend_content(request):
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def generate_stt_notes(request):
     _start_time = time.time()
     data = request.data
@@ -3786,6 +4087,7 @@ def generate_stt_notes(request):
 
 
 @api_view(["POST"])
+@metered("lecture_transcription")
 def stt_transcribe_only(request):
     """Whisper transcription only -- no LLM. Saves transcript in ~2-5 min (vs 15+ min for full pipeline)."""
     import time as _time
@@ -4166,11 +4468,11 @@ def _gemini_complete(system_prompt: str, user_prompt: str, max_tokens: int, temp
     response = None
     start_time = time.perf_counter()
     for key_index, api_key in get_rotated_gemini_keys():
+        _use_model = resolve_gemini_model(api_key, model_name)
         try:
-            client = genai.Client(api_key=api_key)
             try:
-                response = client.models.generate_content(
-                    model=model_name,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -4180,8 +4482,8 @@ def _gemini_complete(system_prompt: str, user_prompt: str, max_tokens: int, temp
                     ),
                 )
             except TypeError:
-                response = client.models.generate_content(
-                    model=model_name,
+                response = gemini_generate(api_key,
+                    model=_use_model,
                     contents=[user_prompt],
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
@@ -4195,6 +4497,11 @@ def _gemini_complete(system_prompt: str, user_prompt: str, max_tokens: int, temp
             )
             break
         except Exception as exc:
+            # A 404 here means this key's project lost access to the model,
+            # not that the key is bad. Record it so the next request on this
+            # key goes straight to a model it can serve.
+            if is_gemini_model_unavailable_error(str(exc)):
+                mark_gemini_model_unavailable(api_key, _use_model)
             last_exc = exc
             msg = str(exc)
             if is_gemini_permanent_key_error(msg):
@@ -4260,6 +4567,7 @@ def _gemini_parallel_complete_many(tasks: list[dict], temperature: float = 0.3) 
 
 
 @api_view(["POST"])
+@metered("in_video_quiz_generator")
 def generate_quiz_questions(request):
     _start_time = time.time()
     data = request.data
@@ -4494,6 +4802,7 @@ def generate_quiz_questions(request):
 
 
 @api_view(["POST"])
+@metered("multilingual_translation")
 def translate_text(request):
     import time as _time
     _start_time = time.time()
@@ -4661,6 +4970,98 @@ _CONTENT_TYPE_PROMPTS = {
         "never raw fractions outside math delimiters and never the Unicode square-root symbol.\n\n"
         "Questions must be syllabus-aligned, conceptually varied, and gradually increasing in difficulty. "
         "Do NOT mention any class, grade, board, or exam name anywhere in the output."
+    ),
+    "assessment_paper": (
+        "Generate the QUESTION CONTENT for a formal school assessment/exam paper — this is an exam, "
+        "not lesson notes, a summary, or a concept explainer. Every item must be something a student "
+        "answers, not something they read.\n\n"
+        "STEP 1 — before writing any question, silently list EVERY standard sub-mechanism, sub-process, or "
+        "sub-concept that a real school textbook groups under this exact topic name. Do not artificially cap "
+        "this list at a small number — a narrow topic may genuinely have only 3-4, but a broad topic covering "
+        "multiple related processes (e.g. a topic spanning both plant and animal/human versions of a process) "
+        "can easily have 8-10+, and ALL of them belong on your list, not just the first few that come to mind. "
+        "Example: for a Science/Chemistry topic on the chemical properties/reactions of acids and bases, the "
+        "standard sub-mechanisms are: (a) reaction with reactive metals -> salt + hydrogen gas, "
+        "(b) reaction with metal carbonates/bicarbonates -> salt + water + carbon dioxide, "
+        "(c) reaction with metal oxides -> salt + water, (d) reaction of bases with non-metal oxides, "
+        "(e) the neutralization reaction acid + base -> salt + water, (f) the role of H+ / OH- ions in "
+        "solution and behaviour of indicators. For a different subject/topic, identify the equivalent "
+        "textbook sub-mechanisms yourself the same way — going as broad as the topic genuinely requires.\n\n"
+        "STEP 2 — your question set MUST include AT LEAST ONE question covering EACH sub-mechanism you "
+        "identified that is relevant to the stated topic, spread across the available sections. Do not let "
+        "2-3 themes (e.g. only neutralization and pH) dominate the paper while other core sub-mechanisms "
+        "from your list are skipped entirely — that produces a shallow, unbalanced paper and is the single "
+        "most common failure mode to avoid.\n\n"
+        "Additional question-selection rules:\n"
+        "- FACTUAL ACCURACY (applies to every subject, not just science/maths): before including ANY "
+        "specific factual claim — a reaction/equation, a numeric answer, a plot event, a character's action, "
+        "a historical date or event, a quoted line, a scientific fact — verify it against what you actually "
+        "know to be true about that exact source/topic. Do NOT invent a specific-sounding detail (a wrong "
+        "plot event, a wrong date, a wrong equation, a wrong outcome) just to make a question sound concrete. "
+        "If you are not fully confident a specific detail is accurate, fall back to a simpler claim or "
+        "question you ARE confident is correct — a vaguer-but-correct question is always better than a "
+        "specific-but-wrong one.\n"
+        "- PRECISION ON MULTI-STAGE PROCESSES: many real processes happen in multiple stages, involve more "
+        "than one organ/agent, or have a 'begins here, completed there' structure (e.g. digestion of a "
+        "nutrient starting in one organ and finishing in another; one organ being the primary regulator of "
+        "something while a second organ plays a supporting role). Do NOT collapse this into a single vague "
+        "'primary site' / 'main organ' / 'is responsible for' claim that glosses over the other stage(s) or "
+        "contributor(s) — that is misleading even when it points at the most-correct single answer. Instead, "
+        "either name the specific stage precisely ('X begins in the mouth and is completed in the small "
+        "intestine' -> ask about the specific stage, e.g. 'where does X begin'), or ask students to compare/"
+        "sequence the stages, rather than asking for one flattened 'the' answer to a multi-part process.\n"
+        "- Prioritise questions that test APPLICATION and UNDERSTANDING over bare RECALL: observable "
+        "outcomes of a process/reaction, cause-and-effect ('what happens when...', 'why does...'), "
+        "calculations, interpreting a given scenario, comparing/distinguishing correct vs. incorrect "
+        "statements about a process, and short 'explain why' reasoning.\n"
+        "- Include AT LEAST ONE balanced chemical equation, formula, or fully worked numerical step "
+        "directly inside a question or its answer key, wherever the subject supports it (Chemistry, "
+        "Physics, Maths, etc.) — do not leave every reaction described only in words. Before including any "
+        "chemical equation, verify it yourself: correct reactants/products for that exact reaction, and "
+        "atom-balanced coefficients on both sides. If you are not fully certain a specific equation is "
+        "correct and balanced, use a simpler equation you ARE certain is correct instead of a more complex "
+        "but possibly wrong one — an incorrect equation is worse than no equation.\n"
+        "- When a numerical/Maths question specifies a particular solution METHOD (e.g. 'solve by "
+        "factorisation', 'solve by completing the square'), you MUST actually work through that exact "
+        "method yourself on the numbers you chose before finalising the question, and only use numbers for "
+        "which that specific method cleanly succeeds (e.g. for 'solve by factorisation', only use a "
+        "quadratic whose discriminant is a perfect square — do not set a students an equation that method "
+        "cannot actually solve).\n"
+        "- Math/equation delimiter formatting: wrap ONLY the equation or numeric expression itself in `$...$` "
+        "(inline) or `$$...$$` (standalone). NEVER include the option label (e.g. `a)`, `b)`), question "
+        "number, or any surrounding English words inside the `$...$` delimiters — those stay as plain text "
+        "outside the math delimiters.\n"
+        "- Where the underlying process has a directly observable real-world effect (gas evolution / "
+        "effervescence, colour change, precipitate formation, temperature change, etc.), include at least "
+        "one question that tests the observable outcome itself, not just the abstract fact behind it. Phrase "
+        "these as facts/observations to identify (e.g. 'X is sour in taste', 'what would you observe when...') "
+        "— never as an instruction implying the student should personally taste, smell, or touch a hazardous "
+        "substance.\n"
+        "- For every MCQ, exactly ONE option may be correct. Before finalising each MCQ, check whether more "
+        "than one option is technically/scientifically defensible as correct under a literal reading — if so, "
+        "rewrite the question or options so only one is unambiguously correct. Separately, the four options "
+        "within one MCQ must all be textually distinct from each other — never repeat the same option text "
+        "twice in the same question.\n"
+        "- Pure definition, terminology, or trivia questions (e.g. 'what is X called', 'who coined/discovered "
+        "X', fill-in-the-blank answers that are themselves a vocabulary term like 'acidity'/'basicity'/"
+        "'ionization'/'proton donor') must be a SMALL MINORITY of the paper (roughly 1 in 5 questions at "
+        "most) — never the dominant question style, even for Section A (MCQ).\n"
+        "- Every question must be answerable strictly from the syllabus content of the stated topic — not "
+        "the wider chapter, not a different chapter, not a different subject area entirely, and not adjacent/"
+        "more-advanced theory a student at this class level would not have been taught (e.g. do not introduce "
+        "Bronsted-Lowry acid-base theory or formal proton-donor/acceptor terminology into a foundational "
+        "school-level topic unless the topic name itself calls for it). Before finalising each question, check: "
+        "'does this question's core content belong to the STATED topic, or does it actually belong to a "
+        "different topic — even one from a completely different chapter or subject area that happens to be "
+        "loosely thematically related?' If the latter, cut it. Example: if the topic is the chemical "
+        "properties/reactions of acids and bases, do not include questions about the general properties of "
+        "salts as a class of compounds (a different topic in the same chapter) — a salt appearing only as the "
+        "product of a stated acid/base reaction is expected and fine. Example: if the topic is Nutrition "
+        "(within a Life Processes chapter), do not include questions about food chains, producers/consumers, "
+        "or ecosystems — those belong to a separate Ecology chapter entirely, even though they are loosely "
+        "thematically adjacent to 'nutrition'.\n"
+        "- Vary question stems across items — do not reuse the same sentence pattern "
+        "(e.g. 'Which of the following is...') for every MCQ in a section."
     ),
     "pyq": (
         "Generate a school Previous Year Question (PYQ) style practice set on this topic in Markdown. "
@@ -4877,6 +5278,23 @@ _CONTENT_LATEX_COMMAND_RE = re.compile(
     r"theta|alpha|beta|gamma|delta|pi|phi|psi|omega|lambda|sigma|mu|"
     r"times|cdot|div|pm|leq|geq|neq|to)(?:\b|(?=[_^{]))"
 )
+# A line that is nothing but a dollar and a short identifier — "$f", "$x1".
+#
+# This is not prose with a stray dollar in it; it is the head of a formula the
+# model split across a blank line:
+#
+#     $f
+#
+#     (0) = 0^2 - 3(0) + 2$
+#
+# Deleting the dollar there strands the variable outside the maths and renders
+# a bare "f" above the equation. Balancing it instead gives "$f$" alongside
+# "$(0) = 0^2 - 3(0) + 2$", which is what the reader expects to see.
+#
+# Anchored at both ends on purpose: a prose line that merely starts with a
+# dollar ("Se$a - weed$") has more on it than one short token, so it still
+# takes the stray-dollar path.
+_CONTENT_MATH_FRAGMENT_RE = re.compile(r"^\s*\$[A-Za-z][A-Za-z0-9]{0,2}\s*$")
 _CONTENT_SUPERSCRIPT_MAP = str.maketrans({
     "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
     "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
@@ -4913,6 +5331,44 @@ def _normalize_generated_math_markdown(markdown: str) -> str:
     text = (
         text.replace(r"\[", "$$").replace(r"\]", "$$")
         .replace(r"\(", "$").replace(r"\)", "$")
+    )
+
+    # Clean up page tags like [p.5] or [p. 5] attached to math or text
+    text = re.sub(r"\[p\.\s*\d+\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[page\s*\d+\]", "", text, flags=re.IGNORECASE)
+
+    # Clean up multi-dollar messes like $$$$ -> $$ and $$$ -> $$
+    text = re.sub(r"\$\$\$\$+", "$$", text)
+    text = re.sub(r"\$\$\$(?!\$)", "$$", text)
+
+    # ── Step 1: Strip stray $ signs that appear inside prose function arguments
+    # e.g. LCM(306, $657) = $ $34 \times 657$ → LCM(306, 657) = $34 \times 657$
+    # Pattern: $ immediately before digits/letters that are followed by ) or ,
+    text = re.sub(r"\$(\d+)([\),])", r"\1\2", text)
+    # Pattern: $ = $ (orphan equals wrapped in dollars) → keep only inner content
+    text = re.sub(r"\$\s*=\s*\$", " = ", text)
+
+    # ── Step 2: Unnest single dollars inside display math $$...$$
+    def _clean_display_block(m):
+        inner = m.group(1)
+        cleaned = re.sub(r"(?<!\$)\$(?!\$)", "", inner)
+        return f"$$\n{cleaned.strip()}\n$$"
+
+    text = re.sub(r"\$\$([\s\S]*?)\$\$", _clean_display_block, text)
+
+    # ── Step 3: Merge left-hand prose into inline math
+    # e.g. LCM(p, q, r) = $\frac{...}$ → $LCM(p, q, r) = \frac{...}$
+    def _merge_left_hand_equation(m):
+        newline, left, inner = m.group(1), m.group(2), m.group(3)
+        if len(re.findall(r"\b[A-Za-z]{4,}\b", left)) > 2:
+            return f"{newline}{left}${inner}$"
+        clean_inner = re.sub(r"\\quad\s*$", "", inner).strip()
+        return f"{newline}${left.strip()} {clean_inner}$"
+
+    text = re.sub(
+        r"(^|\n)([ \t]*[A-Za-z0-9_(),\s]+\s*=\s*)\$([^$\n]+)\$",
+        _merge_left_hand_equation,
+        text,
     )
 
     # Convert presentation-oriented Unicode math to valid LaTeX first.
@@ -4954,6 +5410,25 @@ def _normalize_generated_math_markdown(markdown: str) -> str:
             continue
 
         single_dollars = len(re.findall(r"(?<!\$)\$(?!\$)", line))
+
+        # Dollars in a line with no mathematics are typos, not delimiters.
+        #
+        # The DPP and PYQ prompts insist that all mathematics is wrapped in
+        # single dollars. On a chapter with no mathematics in it the model
+        # sprinkles the character through ordinary words, and both parities
+        # render badly: an even count italicises the text between the pair
+        # ("Se$a - weed$" became *a - weed*), and an odd count used to be
+        # "balanced" by appending another, which italicised the rest of the
+        # line. Neither can be delimiting anything, so they are removed.
+        if single_dollars:
+            looks_like_maths = bool(_CONTENT_LATEX_COMMAND_RE.search(line)) or bool(
+                re.search(r"[A-Za-z0-9})\]]\s*(?:=|≤|≥|≠|≈|→|\+|\^|_|\\)\s*[A-Za-z0-9({\[]", line)
+            )
+            if not looks_like_maths and not _CONTENT_MATH_FRAGMENT_RE.match(line):
+                line = re.sub(r"(?<!\$)\$(?!\$)", "", line)
+                repaired.append(line)
+                continue
+
         if single_dollars % 2 == 1:
             # An unmatched delimiter on a calculation line otherwise consumes
             # the following Markdown and prevents KaTeX rendering.
@@ -5005,6 +5480,15 @@ def _normalize_generated_math_markdown(markdown: str) -> str:
     # to swallow the remainder of the document.
     if in_display_math:
         result = result.rstrip() + "\n$$"
+
+    # Separate adjacent inline math blocks that are on the same line with only
+    # spaces between them (e.g. "$A$ $B$"). remark-math fails to parse two
+    # inline $...$ blocks on the same line — inserting a blank line makes each
+    # block its own paragraph which parses correctly.
+    # NOTE: capture both $ signs so the replacement r"\1\n\n\2" produces
+    # exactly "$\n\n$" with no extra dollar introduced.
+    result = re.sub(r"(\$)[ \t]+(\$)", r"\1\n\n\2", result)
+
     return result.strip()
 
 
@@ -5086,10 +5570,394 @@ def _has_incomplete_mcq_options(markdown: str) -> bool:
     return option_count == 0
 
 
+def _decompose_topic_coverage(
+    topic_name: str, subject_name: str, chapter_name: str, class_name: str, institute_id: str,
+) -> list[str] | None:
+    """Ask the LLM, as a separate short call, to enumerate the genuine distinct
+    sub-areas a real school textbook covers under this exact topic name.
 
+    Why a separate call instead of asking the main generation call to "silently
+    list" its own coverage plan: that in-line approach was tested and found
+    unreliable — for broad topics spanning multiple sub-areas (e.g. a "Nutrition"
+    topic covering both plant/autotrophic and animal/human digestion), the main
+    generation call consistently narrowed to just one sub-area across repeated
+    generations, skipping the other(s) entirely, every single time. Deciding the
+    coverage list BEFORE writing any questions — and then feeding it back in as an
+    explicit, mandatory structural requirement — is what actually gets followed
+    (structural requirements like exact section/question counts are reliably
+    honoured; open-ended "think broadly" judgement calls are not).
+
+    Returns None on any failure (LLM error, bad/missing JSON) so callers can fall
+    back to the in-line instruction — this pre-step must never break generation.
+    """
+    try:
+        result = get_llm().complete(
+            system_prompt=(
+                "You are a school curriculum expert. Given a subject/chapter/topic, list the distinct "
+                "sub-areas a real school textbook covers under that exact topic — not the whole chapter, "
+                "just this topic. A narrow topic may genuinely have only 2-3 sub-areas; a broad topic "
+                "spanning multiple related processes (e.g. one that covers both a plant/biological version "
+                "and a human/animal version of a concept) can have 6-10+. List ALL of them — do not "
+                "artificially limit yourself to a small number, and do not omit an entire major branch of "
+                "the topic (e.g. do not describe only the human/animal side of a topic that also covers "
+                "plants, or vice versa)."
+            ),
+            user_prompt=(
+                f"Class: {class_name or 'not specified'}\n"
+                f"Subject: {subject_name}\n"
+                f"Chapter: {chapter_name}\n"
+                f"Topic: {topic_name}\n\n"
+                "List the distinct sub-areas of THIS topic (not the wider chapter) as they would genuinely "
+                "appear in a school textbook treatment of it. Each item should be a short phrase (3-8 words), "
+                "specific enough that a question could be written to test it directly.\n"
+                'Respond as JSON: {"sub_areas": ["...", "...", ...]}'
+            ),
+            model="openai/gpt-oss-120b",
+            temperature=0.3,
+            max_tokens=600,
+            json_mode=True,
+            institute_id=institute_id,
+        )
+        sub_areas = result["content"].get("sub_areas")
+        if not isinstance(sub_areas, list):
+            return None
+        cleaned = [str(s).strip() for s in sub_areas if str(s).strip()]
+        return cleaned[:12] if cleaned else None
+    except Exception as exc:
+        logger.warning("Topic coverage decomposition failed (%s) — falling back to in-line instruction", exc)
+        return None
+
+
+_SUBJECTIVE_RUBRIC_SYSTEM_PROMPT = (
+    "You are an experienced school examiner writing the internal marking scheme for a set of short/long-answer "
+    "exam questions — the rubric a teacher would use to mark student answers, not the questions themselves. "
+    "A BOARD CONTEXT block (if present above) tells you which board's syllabus, terminology, and paper style "
+    "to follow — apply it to every criterion, key concept, and model answer you write.\n\n"
+    "For EACH question, produce:\n"
+    "1. `criteria`: 2-4 independent marking points, each with its own mark value. The `marks` values across "
+    "all criteria for one question MUST sum to EXACTLY that question's stated marks (e.g. a 3-mark question "
+    "might be split 1+1+1 or 1+2; a 5-mark question might be 1+2+2). Never leave marks unallocated, never "
+    "exceed the total.\n"
+    "2. `keyConcepts`: 2-5 short phrases naming the core ideas/terms a correct answer should demonstrate — "
+    "these are GUIDANCE for a human or AI marker to recognise the concept in ANY correct phrasing, not exact "
+    "strings a student's words must literally match (e.g. 'hydrogen gas released', not just the word "
+    "'hydrogen').\n"
+    "3. `modelAnswer`: a concise reference answer (2-5 sentences for short answer, a short paragraph for long "
+    "answer) that would earn full marks.\n\n"
+    "Write criteria the way a real board marking scheme reads: concrete and checkable (e.g. 'States that the "
+    "reaction produces carbon dioxide gas', not 'Good explanation'). Keep criteria at the class/board level "
+    "implied by the question — do not require content beyond the syllabus depth a student at that level would "
+    "have been taught."
+)
 
 
 @api_view(["POST"])
+@metered("subjective_rubric_generation")
+def generate_subjective_rubrics(request):
+    """
+    POST body: {"questions": [{"questionId","text","marks","type"}, ...], "subjectName", "className", "board"}
+    Returns:   {"rubrics": [{"questionId","criteria":[{"text","marks"}],"keyConcepts":[...],"modelAnswer"}, ...]}
+
+    Best-effort / non-critical: this only enriches questions with a marking-scheme
+    rubric at assessment-creation time. A caller (school-assessment.service.ts)
+    must never fail assessment creation because this failed, so failures return
+    200 with an empty rubrics list rather than a 4xx/5xx — the grading step later
+    already has a fallback for questions with no stored rubric.
+    """
+    _start_time = time.time()
+    institute_id = _resolve_institute_id(request)
+    vertical = getattr(request, "vertical", "school")
+    board = getattr(request, "board", None)
+
+    questions = (request.data or {}).get("questions", [])
+    if not questions:
+        return Response({"rubrics": []})
+
+    subject_name = (request.data or {}).get("subjectName", "") or ""
+    class_name = (request.data or {}).get("className", "") or ""
+
+    simplified = [
+        {
+            "questionId": q.get("questionId"),
+            "text": q.get("text", ""),
+            "marks": q.get("marks", 1),
+        }
+        for q in questions
+        if q.get("questionId") and q.get("text")
+    ]
+    if not simplified:
+        return Response({"rubrics": []})
+
+    user_prompt = (
+        f"Subject: {subject_name}\nClass: {class_name}\n\n"
+        "Questions (produce one rubric object per question, matching questionId):\n"
+        f"{json.dumps(simplified, indent=2, ensure_ascii=False)}\n\n"
+        'Respond as JSON: {"rubrics": [{"questionId": "...", "criteria": [{"text": "...", "marks": 1}], '
+        '"keyConcepts": ["..."], "modelAnswer": "..."}]}'
+    )
+
+    from ai_services.core.boards import board_instruction
+
+    try:
+        result = get_llm().complete(
+            system_prompt=board_instruction(board) + _SUBJECTIVE_RUBRIC_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            model="openai/gpt-oss-120b",
+            temperature=0.3,
+            max_tokens=2048,
+            json_mode=True,
+            institute_id=institute_id,
+        )
+        rubrics = result["content"].get("rubrics")
+        if not isinstance(rubrics, list):
+            rubrics = []
+
+        # Defensive re-clamp: LLM JSON-mode occasionally drifts by a mark or two.
+        marks_by_id = {q["questionId"]: q["marks"] for q in simplified}
+        cleaned = []
+        for r in rubrics:
+            qid = r.get("questionId")
+            if not qid or qid not in marks_by_id:
+                continue
+            target_marks = float(marks_by_id[qid] or 1)
+            criteria = [
+                {"text": str(c.get("text", "")).strip(), "marks": max(0, float(c.get("marks", 0) or 0))}
+                for c in (r.get("criteria") or [])
+                if str(c.get("text", "")).strip()
+            ]
+            if not criteria:
+                continue
+            criteria_sum = sum(c["marks"] for c in criteria) or 1
+            if abs(criteria_sum - target_marks) > 0.01:
+                scale = target_marks / criteria_sum
+                for c in criteria:
+                    c["marks"] = round(c["marks"] * scale, 2)
+            key_concepts = [str(k).strip() for k in (r.get("keyConcepts") or []) if str(k).strip()][:5]
+            cleaned.append({
+                "questionId": qid,
+                "criteria": criteria,
+                "keyConcepts": key_concepts,
+                "modelAnswer": str(r.get("modelAnswer", "")).strip(),
+            })
+
+        try:
+            _usage = result.get("usage", {})
+            log_usage(
+                institute_id=institute_id,
+                institute_type=vertical if vertical in ("school", "coaching") else "coaching",
+                feature_id="subjective_rubric_generation",
+                feature_category="teacher",
+                model_used=result.get("model", "openai/gpt-oss-120b"),
+                tokens_input=_usage.get("prompt_tokens", 0),
+                tokens_output=_usage.get("completion_tokens", 0),
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=True,
+            )
+        except Exception:
+            pass
+
+        return Response({"rubrics": cleaned})
+    except Exception as exc:
+        logger.warning("Subjective rubric generation failed (institute=%s): %s", institute_id, exc)
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type=vertical if vertical in ("school", "coaching") else "coaching",
+                feature_id="subjective_rubric_generation",
+                feature_category="teacher",
+                model_used="openai/gpt-oss-120b",
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(exc)[:500],
+            )
+        except Exception:
+            pass
+        return Response({"rubrics": []})
+
+
+_SUBJECTIVE_GRADING_SYSTEM_PROMPT = (
+    "You are an experienced school examiner marking one student's answer to one short/long-answer exam "
+    "question. A BOARD CONTEXT block (if present above) tells you which board's syllabus, terminology, and "
+    "paper style to apply — mark strictly within that board's conventions, not any other board's. Follow "
+    "these rules exactly — a human teacher reviews every mark you give before it reaches the student, so "
+    "it is always safe to flag uncertainty rather than guess.\n\n"
+    "1. Award marks ONLY against the given criteria. If no criteria are supplied, first infer 2-4 sensible "
+    "criteria yourself from the question and (if given) the model answer, summing to the question's max "
+    "marks, then grade against those — never invent marks that aren't tied to a stated or inferred "
+    "criterion.\n"
+    "2. Grade each criterion independently (step-wise/partial credit) — a student can earn some criteria "
+    "and not others; do not make the whole answer all-or-nothing.\n"
+    "3. Accept scientifically/mathematically EQUIVALENT phrasing as correct, even if the wording differs "
+    "from the model answer. Example: if a criterion is 'names the gas produced' and the model answer says "
+    "'hydrogen gas', a student who writes 'H2 gas' or 'H₂' must get that criterion in full — do not require "
+    "matching words, only matching meaning.\n"
+    "4. For numerical/calculation questions: if the student's method and setup are correct but the final "
+    "numeric answer is wrong ONLY because of an arithmetic slip in the last step, award every method-related "
+    "criterion in full and withhold only the criterion that specifically asks for the correct final answer. "
+    "Example: a 5-mark question split as [formula: 1, substitution: 1, working: 2, final answer: 1] where the "
+    "student sets up and substitutes correctly, makes one arithmetic error in simplifying, and states a wrong "
+    "final number — award 4/5, not 0/5 and not 5/5.\n"
+    "5. Never penalise spelling, grammar, or awkward phrasing when the underlying concept/answer is correct.\n"
+    "6. The sum of awarded marks must never exceed the question's max marks and never go below 0. Do not round "
+    "up generously — award exactly what the criteria justify.\n"
+    "7. Set `flagForReview: true` (with a short `reviewNote`) whenever the answer is ambiguous, suspiciously "
+    "short/generic, appears copied verbatim from the question, or you are otherwise not confident in your "
+    "grading — this costs nothing and a teacher will check it.\n"
+    "8. Never grade based on handwriting quality, answer length alone, or presentation — grade the content.\n\n"
+    "Worked example: Question (3 marks): 'What happens when dilute hydrochloric acid is added to sodium "
+    "carbonate?' Criteria: [1: states carbon dioxide gas is produced, 1: mentions sodium chloride is formed, "
+    "1: mentions water is formed]. Student answer: 'It makes CO2 gas and NaCl salt.' -> Criterion 1 (CO2 gas): "
+    "award 1 — 'CO2 gas' matches 'carbon dioxide gas' exactly in meaning. Criterion 2 (sodium chloride): award "
+    "1 — 'NaCl salt' matches 'sodium chloride' in meaning. Criterion 3 (water): award 0 — water is not "
+    "mentioned at all. Total: 2/3, not flagged (clear and gradable, just incomplete)."
+)
+
+
+@api_view(["POST"])
+@metered("subjective_answer_grading")
+def grade_subjective_answer(request):
+    """
+    POST body: {
+      "questionText", "maxMarks", "studentAnswer",
+      "criteria"?: [{"text","marks"}], "keyConcepts"?: [...], "modelAnswer"?: "...",
+      "subjectName"?, "className"?
+    }
+    Board (CBSE/ICSE/IB/State) comes from the X-Board header, same as every other
+    school-vertical endpoint — resolved by TenantAuthMiddleware into request.board,
+    not a body field.
+    Returns: {
+      "criteria": [{"criterion","maxMarks","awardedMarks","justification"}],
+      "totalAwarded", "maxMarks", "strengths": [...], "missingPoints": [...], "suggestions": [...],
+      "flagForReview", "reviewNote"
+    }
+    """
+    _start_time = time.time()
+    institute_id = _resolve_institute_id(request)
+    vertical = getattr(request, "vertical", "school")
+    board = getattr(request, "board", None)
+
+    data = request.data or {}
+    question_text = str(data.get("questionText", "")).strip()
+    student_answer = str(data.get("studentAnswer", "")).strip()
+    try:
+        max_marks = float(data.get("maxMarks"))
+    except (TypeError, ValueError):
+        max_marks = None
+    if not question_text or not student_answer or max_marks is None:
+        return Response({"error": "questionText, studentAnswer, and maxMarks are required"}, status=400)
+
+    criteria = data.get("criteria") or []
+    key_concepts = data.get("keyConcepts") or []
+    model_answer = data.get("modelAnswer", "") or ""
+    subject_name = data.get("subjectName", "") or ""
+    class_name = data.get("className", "") or ""
+
+    user_prompt_parts = [
+        f"Subject: {subject_name}" if subject_name else "",
+        f"Class: {class_name}" if class_name else "",
+        f"Question ({max_marks} marks): {question_text}",
+    ]
+    if criteria:
+        criteria_lines = "\n".join(f"- ({c.get('marks', 0)} marks) {c.get('text', '')}" for c in criteria)
+        user_prompt_parts.append(f"Marking criteria:\n{criteria_lines}")
+    else:
+        user_prompt_parts.append(
+            "No marking criteria were supplied — infer 2-4 sensible criteria yourself, summing to "
+            f"{max_marks} marks, before grading (per rule 1)."
+        )
+    if key_concepts:
+        user_prompt_parts.append(f"Key concepts to look for (any equivalent phrasing counts): {', '.join(key_concepts)}")
+    if model_answer:
+        user_prompt_parts.append(f"Model answer (for reference, not for literal matching): {model_answer}")
+    user_prompt_parts.append(f"Student's answer: {student_answer}")
+    user_prompt_parts.append(
+        'Respond as JSON: {"criteria": [{"criterion": "...", "maxMarks": 1, "awardedMarks": 1, '
+        '"justification": "..."}], "strengths": ["..."], "missingPoints": ["..."], "suggestions": ["..."], '
+        '"flagForReview": false, "reviewNote": ""}'
+    )
+    user_prompt = "\n\n".join(p for p in user_prompt_parts if p)
+
+    from ai_services.core.boards import board_instruction
+
+    try:
+        result = get_llm().complete(
+            system_prompt=board_instruction(board) + _SUBJECTIVE_GRADING_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            model="openai/gpt-oss-120b",
+            temperature=0.2,
+            max_tokens=1536,
+            json_mode=True,
+            institute_id=institute_id,
+        )
+    except Exception as exc:
+        logger.error("Subjective answer grading failed (institute=%s): %s", institute_id, exc)
+        try:
+            log_usage(
+                institute_id=institute_id,
+                institute_type=vertical if vertical in ("school", "coaching") else "coaching",
+                feature_id="subjective_answer_grading",
+                feature_category="teacher",
+                model_used="openai/gpt-oss-120b",
+                latency_ms=int((time.time() - _start_time) * 1000),
+                success=False,
+                error_message=str(exc)[:500],
+            )
+        except Exception:
+            pass
+        return Response({"error": str(exc)}, status=502)
+
+    content = result.get("content", {}) if isinstance(result.get("content"), dict) else {}
+    raw_criteria = content.get("criteria") if isinstance(content.get("criteria"), list) else []
+
+    # Defensive clamp: each criterion's award never exceeds its own max, and the
+    # total never exceeds the question's max marks (rule 6, restated as code —
+    # LLM JSON-mode occasionally overshoots by a fraction).
+    graded_criteria = []
+    for c in raw_criteria:
+        try:
+            c_max = max(0.0, float(c.get("maxMarks", 0) or 0))
+            c_awarded = min(c_max, max(0.0, float(c.get("awardedMarks", 0) or 0)))
+        except (TypeError, ValueError):
+            c_max, c_awarded = 0.0, 0.0
+        graded_criteria.append({
+            "criterion": str(c.get("criterion", "")).strip(),
+            "maxMarks": c_max,
+            "awardedMarks": c_awarded,
+            "justification": str(c.get("justification", "")).strip(),
+        })
+    total_awarded = min(max_marks, max(0.0, sum(c["awardedMarks"] for c in graded_criteria)))
+
+    try:
+        _usage = result.get("usage", {})
+        log_usage(
+            institute_id=institute_id,
+            institute_type=vertical if vertical in ("school", "coaching") else "coaching",
+            feature_id="subjective_answer_grading",
+            feature_category="teacher",
+            model_used=result.get("model", "openai/gpt-oss-120b"),
+            tokens_input=_usage.get("prompt_tokens", 0),
+            tokens_output=_usage.get("completion_tokens", 0),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=True,
+        )
+    except Exception:
+        pass
+
+    return Response({
+        "criteria": graded_criteria,
+        "totalAwarded": round(total_awarded, 2),
+        "maxMarks": max_marks,
+        "strengths": [str(s).strip() for s in (content.get("strengths") or []) if str(s).strip()],
+        "missingPoints": [str(s).strip() for s in (content.get("missingPoints") or []) if str(s).strip()],
+        "suggestions": [str(s).strip() for s in (content.get("suggestions") or []) if str(s).strip()],
+        "flagForReview": bool(content.get("flagForReview", False)) or not graded_criteria,
+        "reviewNote": str(content.get("reviewNote", "")).strip(),
+        "_meta": {"model": result.get("model", "openai/gpt-oss-120b"), "latency_ms": round(result.get("latency_ms", 0))},
+    })
+
+
+@api_view(["POST"])
+@metered("content_generate")
 def generate_topic_content(request):
     _start_time = time.time()
     data = request.data
@@ -5103,7 +5971,12 @@ def generate_topic_content(request):
     exam_target   = (data.get("examTarget") or data.get("exam_target") or "").strip()
     course_name   = (data.get("courseName") or data.get("course_name") or "").strip()
     extra_context = data.get("extraContext", "").strip()
-    board         = str(data.get("board") or "CBSE").strip()
+    board = str(
+        data.get("board")
+        or request.headers.get("X-Board")
+        or request.headers.get("x-board")
+        or "CBSE"
+    ).strip()
     # Language: 'english' (default/None) → Groq/llama; 'hindi' → Groq with Devanagari instruction;
     # 'odia' → Gemini (Groq/llama are weak at Odia script, same as for STT notes).
     language = str(data.get("language") or "").strip().lower()
@@ -5145,7 +6018,16 @@ def generate_topic_content(request):
     if not topic_name:
         return Response({"error": "Missing topicName"}, status=400)
 
-
+    # Assessment papers get a dedicated coverage-decomposition pre-step (see
+    # _decompose_topic_coverage docstring for why this is a separate call rather
+    # than an in-line "silently list your coverage" instruction). Other content
+    # types skip this — it's an extra LLM round-trip, only worth the latency/cost
+    # for exam papers where under-coverage was the observed, confirmed problem.
+    coverage_sub_areas: list[str] | None = None
+    if content_type == "assessment_paper":
+        coverage_sub_areas = _decompose_topic_coverage(
+            topic_name, subject_name, chapter_name, exam_target, _resolve_institute_id(request),
+        )
 
     active_prompts = _get_content_prompts(vertical)
     exam_upper = exam_target.upper() if exam_target else "JEE"
@@ -5204,7 +6086,6 @@ def generate_topic_content(request):
 
     # Build exam-specific constraint block — injected first in system prompt
     exam_rule = _resolve_exam_rule(exam_target, board)
-    exam_rule = _resolve_exam_rule(exam_target, getattr(request, "board", ""))
 
 
 
@@ -5252,6 +6133,86 @@ def generate_topic_content(request):
         f"Target length: {word_limit}",
     ]
     user_prompt = "\n".join(user_prompt_parts) + "\n"
+
+    # ── Textbook grounding ───────────────────────────────────────────────────
+    # When the caller supplies passages from the school's own chapter, every
+    # content type generated here — notes, DPP, PYQ, flashcards, mind maps and
+    # the question sets behind assessments — is written from the book instead of
+    # the model's general knowledge, and cites the pages it used.
+    source_passages = data.get("sourcePassages") or []
+    # Kept so the Groq fallback can be given the original, un-grounded prompt.
+    # Grounding adds roughly 9,000 tokens of textbook to the request, which
+    # Gemini has room for and Groq does not — its on-demand tier rejects any
+    # single request over 12,000 TPM outright, on every key, since that is a
+    # size limit rather than a quota.
+    ungrounded_system_prompt = system_prompt
+    grounded = False
+    grounded_pages = []
+    grounded_block = ""
+    # Reported alongside the content so a teacher can tell a full chapter from a
+    # trimmed one. ppt.py has always returned this; the content path computed it
+    # and threw it away, so a DPP built from 15 of 22 passages looked identical
+    # to one built from all 22.
+    grounded_truncated = False
+    grounded_used = 0
+    grounded_available = len(source_passages)
+    if source_passages:
+        try:
+            from ai_services.core import grounding as _gr
+
+            # No explicit budget: the shared default is sized for the model that
+            # actually serves this call. The 9,000 hard-coded here was below even
+            # that default and was the reason the content path truncated earlier
+            # than the slide path on the same chapter.
+            selection = _gr.select_source(
+                source_passages, topic_name, chapter_name,
+            )
+            grounded_truncated = selection["truncated"]
+            grounded_used = len(selection["passages"])
+            if selection["truncated"]:
+                logger.warning(
+                    "Grounding truncated for chapter=%r topic=%r: using %d of %d passages",
+                    chapter_name, topic_name, grounded_used, grounded_available,
+                )
+            if selection["passages"]:
+                grounded = True
+                grounded_pages = selection["pages"]
+                system_prompt = (
+                    "═══ THE TEXTBOOK EXTRACT BELOW IS YOUR ONLY PERMITTED SOURCE ═══\n"
+                    "1. Every fact, definition, formula, number, name and worked example must come\n"
+                    "   from the SOURCE TEXT. If it is not there, it does not go in the output.\n"
+                    "2. Do NOT add material from your own knowledge, even when you are certain it is\n"
+                    "   correct. A true statement absent from this book is still wrong here, because\n"
+                    "   the teacher must be able to point to it in their copy.\n"
+                    "3. Keep the book's own terminology, notation and worked examples. Do not\n"
+                    "   substitute a more general or more advanced treatment.\n"
+                    "4. If the source does not cover enough for the requested length or question\n"
+                    "   count, produce LESS. Never pad from outside the book.\n"
+                    "5. Cite the page inline as [p.N] wherever you state something specific.\n\n"
+                    + system_prompt
+                )
+                grounded_block = (
+                    "\n═══ SOURCE TEXT — the school's own chapter, your only permitted facts ═══\n"
+                    + _gr.format_source_block(selection["passages"])
+                    + "\n═══ END OF SOURCE TEXT ═══\n"
+                    "Write the requested content from the passages above and nothing else. "
+                    "Cite the page inline as [p.N] after each specific claim.\n"
+                )
+        except Exception as exc:
+            # Grounding is an enhancement; falling back to general knowledge is
+            # far better than failing the teacher's request outright.
+            logger.warning("Topic-content grounding failed (%s) — using general knowledge", exc)
+            grounded = False
+
+    if coverage_sub_areas:
+        user_prompt += (
+            "\nMANDATORY COVERAGE — these sub-areas of this exact topic were identified in advance as core "
+            "to a real school textbook treatment of it. Your question set MUST include AT LEAST ONE question "
+            "addressing EACH sub-area below, spread across the available sections. Do not skip any of "
+            "them, and do not let 2-3 of them dominate while the rest are ignored:\n"
+            + "\n".join(f"{i}. {s}" for i, s in enumerate(coverage_sub_areas, 1))
+            + "\n"
+        )
     if extra_context:
         user_prompt += f"Additional instructions: {extra_context}\n"
     user_prompt += (
@@ -5300,12 +6261,12 @@ def generate_topic_content(request):
             _odia_content = None
             _odia_exc_last = None
             for _key_idx, _api_key in get_rotated_gemini_keys():
+                _use_model = resolve_gemini_model(_api_key, GEMINI_ODIA_NOTES_MODEL)
                 try:
-                    _client = genai.Client(api_key=_api_key)
                     _max_tok_odia = 8192 if content_type in {"dpp", "pyq"} else 4096
                     try:
-                        _resp = _client.models.generate_content(
-                            model=GEMINI_ODIA_NOTES_MODEL,
+                        _resp = gemini_generate(_api_key,
+                            model=_use_model,
                             contents=[user_prompt],
                             config=_gtypes.GenerateContentConfig(
                                 system_instruction=system_prompt,
@@ -5315,8 +6276,8 @@ def generate_topic_content(request):
                             ),
                         )
                     except TypeError:
-                        _resp = _client.models.generate_content(
-                            model=GEMINI_ODIA_NOTES_MODEL,
+                        _resp = gemini_generate(_api_key,
+                            model=_use_model,
                             contents=[user_prompt],
                             config=_gtypes.GenerateContentConfig(
                                 system_instruction=system_prompt,
@@ -5333,6 +6294,11 @@ def generate_topic_content(request):
                     )
                     break
                 except Exception as _key_exc:
+                    # A 404 here means this key's project lost access to the model,
+                    # not that the key is bad. Record it so the next request on this
+                    # key goes straight to a model it can serve.
+                    if is_gemini_model_unavailable_error(str(_key_exc)):
+                        mark_gemini_model_unavailable(_api_key, _use_model)
                     _odia_exc_last = _key_exc
                     msg = str(_key_exc)
                     if is_gemini_permanent_key_error(msg):
@@ -5363,11 +6329,11 @@ def generate_topic_content(request):
                 )
                 _retry_odia = None
                 for _key_r, _api_key_r in get_rotated_gemini_keys():
+                    _use_model = resolve_gemini_model(_api_key_r, GEMINI_ODIA_NOTES_MODEL)
                     try:
-                        _client_r = genai.Client(api_key=_api_key_r)
                         try:
-                            _resp_r = _client_r.models.generate_content(
-                                model=GEMINI_ODIA_NOTES_MODEL,
+                            _resp_r = gemini_generate(_api_key_r,
+                                model=_use_model,
                                 contents=[_retry_prompt_odia],
                                 config=_gtypes.GenerateContentConfig(
                                     system_instruction=system_prompt,
@@ -5377,8 +6343,8 @@ def generate_topic_content(request):
                                 ),
                             )
                         except TypeError:
-                            _resp_r = _client_r.models.generate_content(
-                                model=GEMINI_ODIA_NOTES_MODEL,
+                            _resp_r = gemini_generate(_api_key_r,
+                                model=_use_model,
                                 contents=[_retry_prompt_odia],
                                 config=_gtypes.GenerateContentConfig(
                                     system_instruction=system_prompt,
@@ -5391,6 +6357,11 @@ def generate_topic_content(request):
                         _retry_odia = re.sub(r"\s*```$", "", _retry_odia).strip()
                         break
                     except Exception as _r_exc:
+                        # A 404 here means this key's project lost access to the model,
+                        # not that the key is bad. Record it so the next request on this
+                        # key goes straight to a model it can serve.
+                        if is_gemini_model_unavailable_error(str(_r_exc)):
+                            mark_gemini_model_unavailable(_api_key_r, _use_model)
                         logger.warning("Gemini Odia MCQ retry key error: %s", _r_exc)
                         continue
                 if _retry_odia:
@@ -5425,6 +6396,53 @@ def generate_topic_content(request):
             )
             # Fall through to Groq below
 
+
+    ungrounded_user_prompt = user_prompt
+    if grounded_block:
+        user_prompt += grounded_block
+
+    # Grounded output runs on Gemini. Groq's llama-3.3-70b did not hold to
+    # "use only this source" across a prompt this long — it returned fluent but
+    # uncited general-knowledge content with none of the book's own markers —
+    # and a chapter plus instructions also crowds Groq's 12k TPM ceiling.
+    if grounded:
+        try:
+            from ai_services.core import gemini_client as _gc
+            if _gc.is_available():
+                _g = _gc.complete_text(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.3,
+                    max_output_tokens=8000,
+                )
+                _c = _normalize_generated_math_markdown(_g["content"])
+                if content_type == "pyq":
+                    _c = _normalize_pyq_exam_tags(_c)
+                return Response({
+                    "content": _c,
+                    "contentType": content_type,
+                    "topicName": topic_name,
+                    "source": {
+                        "grounded": True, "pages": grounded_pages,
+                        "passagesUsed": grounded_used,
+                        "passagesAvailable": grounded_available,
+                        "truncated": grounded_truncated,
+                    },
+                    "_meta": {"model": _g["model"], "latency_ms": _g["latency_ms"]},
+                })
+        except Exception as exc:
+            # Drop the textbook from the prompt before falling back. Groq's
+            # on-demand tier rejects any request over 12,000 tokens outright —
+            # a size limit, not a quota — so leaving the ~9,000-token source
+            # block in place made every one of the 20 keys return 413 and the
+            # teacher got a 500 instead of an ungrounded document.
+            logger.warning(
+                "Grounded generation via Gemini failed (%s) — retrying on Groq "
+                "without the source block", exc,
+            )
+            grounded = False
+            system_prompt = ungrounded_system_prompt
+            user_prompt = ungrounded_user_prompt
 
     try:
         llm_result = get_llm().complete(
@@ -5537,6 +6555,14 @@ def generate_topic_content(request):
         "content": content,
         "contentType": content_type,
         "topicName": topic_name,
+        # Lets the caller label content written from the school's book distinctly
+        # from content written from general knowledge.
+        "source": {
+            "grounded": grounded, "pages": grounded_pages,
+            "passagesUsed": grounded_used,
+            "passagesAvailable": grounded_available,
+            "truncated": grounded_truncated,
+        },
         "_meta": {
             "model": llm_result.get("model", ""),
             "latency_ms": round(llm_result.get("latency_ms", 0)),
@@ -5560,6 +6586,7 @@ def generate_topic_content(request):
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def generate_notes_from_transcript(request):
     import time as _time
     _start_time = time.time()
@@ -5876,6 +6903,7 @@ def _fetch_yt_captions_python(video_id: str) -> str:
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def generate_notes_from_youtube(request):
     import time as _time
     _start_time = time.time()
@@ -6086,6 +7114,7 @@ def ai_engine_health(request):
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def regenerate_single_note_image(request):
     data = request.data
     topic_id = data.get("topicId", "General")
@@ -6156,6 +7185,7 @@ def _parse_sections_from_llm_content(raw: str) -> list:
 
 
 @api_view(["POST"])
+@metered("ai_lecture_notes")
 def extract_image_search_terms(request):
     data = request.data
     notes = data.get("notes", "").strip()
@@ -6213,3 +7243,18 @@ NOTES:
         logger.warning("Groq extract headings failed: %s", exc)
         err_detail = f"Groq failed: {exc}" if gemini_exc is None else f"Gemini failed: {gemini_exc}; Groq fallback also failed: {exc}"
         return Response({"error": err_detail}, status=502)
+
+
+@api_view(["POST"])
+def generate_memorization_items(request):
+    data = request.data
+    weak_concepts = data.get("weakConcepts", [])
+    is_default = data.get("isDefaultTemplate", False)
+
+    feature_name = "ai_memorization_default_template" if is_default else "ai_memorization_retention"
+    template = get_template(feature_name)
+    user_prompt = template.user_template.format(
+        weak_concepts_json=json.dumps(weak_concepts)
+    )
+
+    return ai_call(request, feature_name, user_prompt, temperature=0.7)

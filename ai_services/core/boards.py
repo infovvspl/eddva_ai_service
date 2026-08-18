@@ -129,15 +129,26 @@ def env_default_board() -> str:
 def normalize_board(value: Optional[str]) -> str:
     """
     Coerce any incoming value into a known board key.
-    Falls back to DEFAULT_BOARD for empty/unknown values — never raises, because a
-    tenant may have typed anything into the registration form.
+    Falls back to DEFAULT_BOARD for empty/unknown values.
     """
     if not value:
         return DEFAULT_BOARD
     key = str(value).strip().lower()
     if key in BOARDS:
         return key
-    return _ALIASES.get(key, DEFAULT_BOARD)
+    if key in _ALIASES:
+        return _ALIASES[key]
+
+    # Look for matching keywords of known central boards
+    if any(k in key for k in ["cbse", "central board", "ncert"]):
+        return "cbse"
+    if any(k in key for k in ["icse", "cisce", "isc"]):
+        return "icse"
+    if any(k in key for k in ["ib", "baccalaureate", "pyp", "myp"]):
+        return "ib"
+
+    # Truly unknown values fall back to the deployment default (cbse unless overridden).
+    return DEFAULT_BOARD
 
 
 def get_board(board: Optional[str]) -> BoardProfile:
@@ -147,4 +158,30 @@ def get_board(board: Optional[str]) -> BoardProfile:
 
 def board_instruction(board: Optional[str]) -> str:
     """Prompt block for a board. Safe for any input."""
-    return get_board(board).instruction()
+    profile = get_board(board)
+    raw_board = (board or "").strip()
+
+    # If the resolved board profile is "state" and we have the raw board name,
+    # build a highly specific board context using the state name!
+    if profile.key == "state" and raw_board:
+        raw_lower = raw_board.lower()
+        if "board" in raw_lower or "state" in raw_lower:
+            display_name = raw_board
+        else:
+            display_name = f"{raw_board} State Board"
+
+        guidance = (
+            f"- Follow the {display_name} syllabus and its prescribed textbooks for the class.\n"
+            f"- Use the {display_name} paper pattern and keep the depth at that syllabus level.\n"
+            f"- Do not assume another board's textbooks; stay with this specific {display_name} curriculum treatment."
+        )
+
+        return (
+            f"BOARD CONTEXT — {display_name}:\n"
+            f"{guidance}\n"
+            f"Follow this board's syllabus, terminology and paper pattern. Do NOT "
+            "reference textbooks, chapter names or exam patterns from another board.\n"
+            "----------------------------------------------------------------------\n"
+        )
+
+    return profile.instruction()

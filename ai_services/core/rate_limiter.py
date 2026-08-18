@@ -315,3 +315,21 @@ class UsageLimiter:
             "soft_cap_pct": round(current / soft * 100, 1) if soft else 0,
             "hard_cap_pct": round(current / hard * 100, 1) if hard else 0,
         }
+
+
+# ── Shared instance ──────────────────────────────────────────────────────────
+# Constructing a UsageLimiter opens a Redis connection, so building one per call
+# would add a connect/handshake to the hot path and leak sockets under load.
+# Callers that only need the shared counters should use this rather than
+# instantiating their own.
+_SHARED_LIMITER: Optional["UsageLimiter"] = None
+_SHARED_LOCK = Lock()
+
+
+def get_shared_limiter() -> "UsageLimiter":
+    global _SHARED_LIMITER
+    if _SHARED_LIMITER is None:
+        with _SHARED_LOCK:
+            if _SHARED_LIMITER is None:
+                _SHARED_LIMITER = UsageLimiter()
+    return _SHARED_LIMITER
