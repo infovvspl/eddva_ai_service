@@ -176,10 +176,16 @@ Slide {{SLIDE_COUNT}}  → type "summary"
   • bullets: 5 bullet points, each a complete sentence of 15–30 words summarising one key fact or fundamental formula.
 
 ═══ IMAGE SEARCH TERM RULES ═══
-imageSearchTerm MUST match the exact sub-topic of THAT slide — never the general topic.
-  1. Term must name the concept specific to THAT slide.
-  2. 4–7 words long.
-  3. Include a visual type word: map, diagram, photograph, excavation, artifact, chart, illustration.
+imageSearchTerm MUST name a REAL, depictable subject that visually shows THAT slide's
+specific content — built from the concrete nouns and examples in THAT slide's bullets,
+NOT the abstract slide title and NOT the chapter name.
+  1. Use the concrete examples the bullets mention. If a slide's bullets say metals occur
+     natively as gold, silver and platinum → "native gold nugget specimen", NOT "metals in nature".
+  2. Prefer a real object, mineral specimen, labelled science diagram, or clear photograph —
+     something an image search returns a clean, on-topic picture of.
+  3. Avoid generic industrial or process words (mining, factory, extraction, plant, machinery)
+     UNLESS that slide is actually about that process.
+  4. 4–7 words, ending with one visual type word: photograph, diagram, specimen, map, chart, illustration.
 
 ALL slides:
   • speakerNotes: 2–3 sentences — a teaching tip or discussion question for the teacher
@@ -412,8 +418,12 @@ Not a fragment. Not a long paragraph.
 
 {slide_rule}
 
-IMAGE RULE: imageSearchTerm must describe the exact visual content of THIS slide’s sub-topic — \
-not the general topic. Include a visual type hint (map, diagram, photograph, artifact, chart).
+IMAGE RULE: imageSearchTerm must name a REAL, depictable subject that visually shows THIS slide’s \
+specific content — built from the concrete nouns and examples in the bullets above, not the abstract \
+slide title and not the chapter name. Use the bullets’ real examples (e.g. metals occurring natively \
+as gold/silver/platinum → "native gold nugget specimen", NOT "metals in nature"). Avoid generic \
+industrial/process words (mining, extraction, factory, machinery) unless this slide is about that \
+process. 4–7 words ending with a visual type hint (photograph, diagram, specimen, map, chart).
 
 Return ONLY valid JSON:
 {{
