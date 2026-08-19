@@ -16,7 +16,7 @@ import sys
 import time
 
 BASE_URL = "http://127.0.0.1:8000"
-API_KEY = "ask_test_key_for_development_only_1234"
+API_KEY = "apexiq-dev-secret-key-2026"
 
 HEADERS = {
     "X-API-Key": API_KEY,

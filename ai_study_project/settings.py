@@ -5,7 +5,7 @@ Production-ready configuration with environment variable overrides.
 
 import os
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -40,7 +40,22 @@ DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() in ("true", "1", "yes")
 # deploy is green, Redis connects) while serving nothing. That actually happened.
 # So: default only when the value is genuinely absent, and refuse to boot in
 # production when it is empty.
-_allowed_hosts = os.getenv("ALLOWED_HOSTS", "").strip()
+# .env wins for this one setting, deliberately.
+#
+# The service runs under pm2, which replays the environment it captured when the
+# app was first started. load_dotenv does not override an already-set variable,
+# so editing .env had no effect and `pm2 restart --update-env` from a shell that
+# had not exported ALLOWED_HOSTS silently reverted it. The failure is invisible
+# until it bites: Django only validates the host on unsafe methods, so health
+# checks and every GET kept returning 200 while POSTs — the ones that actually
+# generate content — failed with a bare 400 DisallowedHost page.
+#
+# Only ALLOWED_HOSTS is read this way. API keys keep the normal precedence, so a
+# key exported by the process still beats a stale one left in the file.
+_allowed_hosts = (
+    (dotenv_values(os.path.join(BASE_DIR, ".env")).get("ALLOWED_HOSTS") or "").strip()
+    or os.getenv("ALLOWED_HOSTS", "").strip()
+)
 if not _allowed_hosts:
     if DEBUG:
         _allowed_hosts = "localhost,127.0.0.1,0.0.0.0"

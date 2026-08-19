@@ -1,5 +1,5 @@
 """
-LLM client -- Groq API (llama-3.3-70b-versatile).
+LLM client -- Groq API (openai/gpt-oss-120b).
 
 Keeps the same .complete() interface as the previous Ollama client so every
 view continues to work without changes.
@@ -47,24 +47,28 @@ def _next_key_offset() -> int:
 # holding 20 valid keys in the environment. Do not reintroduce it.
 GROQ_API_KEYS: list[str] = get_groq_api_keys()
 GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""  # backward compat
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Groq decommissioned llama-3.1-8b-instant + llama-3.3-70b-versatile on
+# 2026-08-16. Default is now GPT-OSS (Groq's recommended replacement).
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
-# Models that can be requested by name -- anything else falls back to GROQ_MODEL
+# Models that can be requested by name -- anything else falls back to GROQ_MODEL.
+# The old llama-3.x names are intentionally dropped so any lingering request
+# for them resolves to the current default instead of a decommissioned model.
 _GROQ_ALLOWED_MODELS = {
-    "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
-    "gemma2-9b-it",
-    "llama-3.2-11b-vision-preview",
-    "llama-3.2-90b-vision-preview",
-    "quiz",
-    "qwen/qwen3-32b",
+    "openai/gpt-oss-20b",
     "openai/gpt-oss-120b",
+    "qwen/qwen3-32b",
+    "gemma2-9b-it",
+    "quiz",
 }
 _GROQ_MODEL_ALIAS = {
-    "quiz": "llama-3.3-70b-versatile",
+    # Legacy aliases remapped onto current models.
+    "quiz": "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+    "llama-3.1-8b-instant": "openai/gpt-oss-20b",
     "qwen/qwen3-32b": "qwen/qwen3-32b",
     "openai/gpt-oss-120b": "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b": "openai/gpt-oss-20b",
     "math": "qwen/qwen3-32b",
     "reasoning": "openai/gpt-oss-120b",
 }
@@ -172,7 +176,7 @@ def check_groq_keys() -> dict:
             from groq import RateLimitError as _RLE, AuthenticationError as _AE
             client = Groq(api_key=key)
             client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model="openai/gpt-oss-20b",
                 messages=[{"role": "user", "content": "Reply with the single word: OK"}],
                 max_tokens=5,
                 temperature=0,

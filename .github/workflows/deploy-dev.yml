@@ -21,6 +21,22 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Comma-separated extra Gemini keys, mirroring GROQ_API_KEYS above.
+          # Without this the deploy writes only the single key and the service
+          # drops from six keys to one — every vision and grounded call then
+          # shares one project's quota.
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          # Left unset on purpose: an unset secret arrives as an empty string,
+          # which is exactly the value that skips the withdrawn Groq vision
+          # models. Set it only if the account serves vision models again.
+          GROQ_VISION_MODELS: ${{ secrets.GROQ_VISION_MODELS }}
+          # Image search is Serper. SERPAPI_KEY is the name a previous provider
+          # (SerpAPI) left behind, and it is the LAST of the three names the
+          # service checks — so a stray SERPER_API_KEY line on a box would
+          # silently win over whatever this deploy wrote. Both secrets are read
+          # here so the rename can happen without a flag day; SERPER_API_KEY
+          # takes precedence once it exists.
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           DJANGO_SECRET_KEY: ${{ secrets.DEV_DJANGO_SECRET_KEY }}
@@ -50,7 +66,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 25m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL,GROQ_API_KEYS,DEV_NESTJS_URL
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,GEMINI_API_KEYS,GROQ_VISION_MODELS,SERPER_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL,GROQ_API_KEYS,DEV_NESTJS_URL
           script: |
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -74,7 +90,15 @@ jobs:
             #   ALLOWED_HOSTS=""  -> Django 400s EVERY request (DisallowedHost)
             #   AI_API_KEY=""     -> no tenant can be seeded, so every request 401s
             # Both actually happened. Default them instead of writing blanks.
-            ALLOWED_HOSTS_VALUE="${ALLOWED_HOSTS:-dev-ai.eddva.in,localhost,127.0.0.1}"
+            # 172.31.20.183 is this instance's own private address. The dev NestJS
+            # backend calls the AI service directly on http://172.31.20.183:8001,
+            # so that host must be allowed or every POST from the backend fails
+            # with a 400 DisallowedHost — while GETs and health checks keep
+            # returning 200, because Django only validates the host on unsafe
+            # methods. Leaving it out of this default silently broke content and
+            # doubt generation three separate times: each deploy rewrote .env from
+            # here, quietly undoing the value that had been set on the box.
+            ALLOWED_HOSTS_VALUE="${ALLOWED_HOSTS:-dev-ai.eddva.in,localhost,127.0.0.1,172.31.20.183}"
             CORS_VALUE="${CORS_ALLOWED_ORIGINS:-https://dev.eddva.in,https://dev-api.eddva.in}"
             AI_API_KEY_VALUE="${AI_API_KEY:-apexiq-dev-secret-key-2026}"
 
@@ -89,13 +113,58 @@ jobs:
             export CORS_ALLOWED_ORIGINS="$CORS_VALUE"
             export AI_API_KEY="$AI_API_KEY_VALUE"
 
+            # Capture numbered provider keys before .env is truncated below.
+            #
+            # This file is rewritten from scratch on every deploy, so any key
+            # added directly on the box disappears without a word. That happened
+            # three times in one day with GEMINI_API_KEY_1..5: the service
+            # silently dropped from six Gemini keys to one, and the next grounded
+            # generation failed because the single remaining key was rate-limited.
+            #
+            # Carried over unconditionally. Making this conditional on the
+            # GEMINI_API_KEYS secret being unset was itself a trap: setting that
+            # secret to add a key would silently delete every numbered key on the
+            # box, shrinking the pool at the exact moment someone was trying to
+            # grow it. get_gemini_api_keys() de-duplicates, so a key that appears
+            # in both places costs nothing.
+            #
+            # The trade-off is that a key removed from the box only disappears
+            # once .env is edited there; rotating a key out means deleting its
+            # line on the server, not just dropping it from the secret.
+            PRESERVED_GEMINI=""
+            if [ -f .env ]; then
+              PRESERVED_GEMINI="$(grep -E '^GEMINI_API_KEY_[0-9]+=.+' .env || true)"
+            fi
+
             # Write .env (printf avoids leading-whitespace issues from heredoc)
             printf 'GROQ_API_KEY=%s\n' "$GROQ_API_KEY" > .env
             # Optional: comma-separated list of Groq keys for rotation (the client
             # reads GROQ_API_KEY, GROQ_API_KEYS, or GROQ_API_KEY_1..N).
             printf 'GROQ_API_KEYS=%s\n' "$GROQ_API_KEYS" >> .env
             printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY" >> .env
-            printf 'SERPAPI_KEY=%s\n' "$SERPAPI_KEY" >> .env
+            # Extra Gemini keys for rotation (the client reads GEMINI_API_KEY,
+            # GEMINI_API_KEYS, or GEMINI_API_KEY_1..N). Vision, textbook OCR and
+            # grounded generation all run on Gemini, so writing only the single
+            # key silently drops the service from six keys to one.
+            printf 'GEMINI_API_KEYS=%s\n' "$GEMINI_API_KEYS" >> .env
+            # Numbered keys that were on the box and are not managed by a secret.
+            if [ -n "$PRESERVED_GEMINI" ]; then
+              printf '%s\n' "$PRESERVED_GEMINI" >> .env
+              echo "Preserved $(printf '%s\n' "$PRESERVED_GEMINI" | wc -l) existing GEMINI_API_KEY_n entries"
+            fi
+            # Groq withdrew its llama-3.2 vision models, so the vision path tries
+            # two models that always 404 before falling through to Gemini. An
+            # empty value skips Groq entirely; set the secret to a comma-separated
+            # list if the account serves vision models again.
+            printf 'GROQ_VISION_MODELS=%s\n' "$GROQ_VISION_MODELS" >> .env
+            # Write the name serpapi_images.py checks first, so nothing can
+            # shadow it. Falls back to the legacy secret while the rename is in
+            # progress; writing only one name keeps .env unambiguous.
+            SERPER_VALUE="${SERPER_API_KEY:-$SERPAPI_KEY}"
+            printf 'SERPER_API_KEY=%s\n' "$SERPER_VALUE" >> .env
+            if [ -z "$SERPER_VALUE" ]; then
+              echo "WARNING: no Serper key set — slide images will be skipped"
+            fi
             printf 'SARVAM_API_KEY=%s\n' "$SARVAM_API_KEY" >> .env
             printf 'DJANGO_SECRET_KEY=%s\n' "$DJANGO_SECRET_KEY" >> .env
             printf 'ALLOWED_HOSTS=%s\n' "$ALLOWED_HOSTS_VALUE" >> .env

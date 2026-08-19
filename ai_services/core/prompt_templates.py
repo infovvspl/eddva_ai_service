@@ -919,8 +919,95 @@ immediateActions: what to do in next 3 months
 encouragement: personal, warm, specific to this student
 """
 
+MEMORIZATION_SYSTEM = """You are an expert cognitive learning assistant. Your goal is to help students retain difficult or weak academic concepts.
+Generate highly effective retention aids including Flashcards, Mnemonics, Memory Stories, and Formulas.
+
+Generate a JSON object with a single key "items" containing a list of retention aids. Each item in the list must have the following structure:
+{
+  "subject_name": "<Subject Name>",
+  "topic_name": "<Topic Name>",
+  "concept_name": "<Specific Concept Name>",
+  "item_type": "<FLASHCARD|MNEMONIC|STORY|FORMULA>",
+  "content_json": <Content JSON Object matching item_type specification>,
+  "weak_score": <Integer from 30 to 80>
+}
+
+Content JSON structures per item_type:
+1. FLASHCARD:
+   {
+     "front": "<Question or term to recall>",
+     "back": "<Concise answer or explanation>"
+   }
+2. MNEMONIC:
+   {
+     "mnemonic": "<Catchy acronym or memory phrase>",
+     "meaning": "<Explanation of what each letter/word stands for>"
+   }
+3. STORY:
+   {
+     "story": "<A short creative story linking the conceptual elements together for visual memory>"
+   }
+4. FORMULA:
+   {
+     "title": "<Formula sheet title>",
+     "formulas": ["<Formula 1>", "<Formula 2>"]
+   }
+"""
+
+MEMORIZATION_DEFAULT_SYSTEM = """You are an expert cognitive learning assistant. Your goal is to help students retain difficult or weak academic concepts.
+Generate highly effective retention aids including Flashcards, Mnemonics, Memory Stories, and Formulas.
+
+Generate a JSON object with a single key "items" containing a list of retention aids.
+CRITICAL: You must generate exactly one retention card for each distinct subject name represented in the input list (for example, one for Physics, one for Chemistry, one for Mathematics, and one for Biology). Do not duplicate subjects or omit any of the requested subjects.
+
+Each item in the list must have the following structure:
+{
+  "subject_name": "<Subject Name>",
+  "topic_name": "<Topic Name>",
+  "concept_name": "<Specific Concept Name>",
+  "item_type": "<FLASHCARD|MNEMONIC|STORY|FORMULA>",
+  "content_json": <Content JSON Object matching item_type specification>,
+  "weak_score": <Integer from 30 to 80>
+}
+
+Content JSON structures per item_type:
+1. FLASHCARD:
+   {
+     "front": "<Question or term to recall>",
+     "back": "<Concise answer or explanation>"
+   }
+2. MNEMONIC:
+   {
+     "mnemonic": "<Catchy acronym or memory phrase>",
+     "meaning": "<Explanation of what each letter/word stands for>"
+   }
+3. STORY:
+   {
+     "story": "<A short creative story linking the conceptual elements together for visual memory>"
+   }
+4. FORMULA:
+   {
+     "title": "<Formula sheet title>",
+     "formulas": ["<Formula 1>", "<Formula 2>"]
+   }
+"""
+
+MEMORIZATION_USER = """Generate personalized retention aids for the following weak concepts:
+{weak_concepts_json}
+
+Return ONLY a JSON object with the "items" key.
+"""
+
 
 TEMPLATES: Dict[str, PromptTemplate] = {
+    "ai_memorization_retention": PromptTemplate(
+        system=MEMORIZATION_SYSTEM,
+        user_template=MEMORIZATION_USER,
+    ),
+    "ai_memorization_default_template": PromptTemplate(
+        system=MEMORIZATION_DEFAULT_SYSTEM,
+        user_template=MEMORIZATION_USER,
+    ),
     # â"€â"€ NestJS ai-bridge endpoints â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     "doubt_resolve": PromptTemplate(
         system=DOUBT_SYSTEM,

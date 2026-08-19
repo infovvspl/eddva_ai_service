@@ -6,6 +6,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from ai_services.core.model_tier import get_model_for_task
+from ai_services.core.pii import restore_name, to_prompt_name
 from ai_services.core.prompt_templates import get_template
 from ai_services.core.usage_logger import log_usage
 from .base import ai_call, ai_call_text, get_llm
@@ -36,7 +37,12 @@ def career_guidance(request):
     data = request.data or {}
     grade = data.get('grade', 10)
     board = data.get('board', 'CBSE')
+    # The real name never reaches the provider. The prompt gets a sentinel and
+    # the name is put back into the report before it is returned — the analysis
+    # is driven by marks, attendance and interest scores, none of which need to
+    # know who the student is. See core/pii.py.
     student_name = data.get('studentName', 'Student')
+    prompt_name = to_prompt_name(student_name)
     subject_marks = data.get('subjectMarks', []) or []
     strong_subjects = data.get('strongSubjects', []) or []
     weak_subjects = data.get('weakSubjects', []) or []
@@ -47,7 +53,10 @@ def career_guidance(request):
     holland_scores = data.get('hollandScores', {}) or {}
     top_career_matches = data.get('topCareerMatches', []) or []
     institute_id = data.get('instituteId', '') or getattr(request, 'institute_id', '')
-    user_id_cg = data.get('userId') or data.get('user_id') or data.get('studentName') or ''
+    # Falling back to studentName here wrote the student's name into the usage
+    # log and forwarded it to the billing dashboard, which is the same exposure
+    # this endpoint otherwise avoids. An absent id stays absent.
+    user_id_cg = data.get('userId') or data.get('user_id') or ''
 
     marks_text = '\n'.join([
         f"  {s.get('subject')}: {s.get('percentage')}% ({s.get('grade')})"
@@ -62,7 +71,7 @@ def career_guidance(request):
 
     template = get_template('career_guidance')
     user_prompt = template.user_template.format(
-        student_name=student_name,
+        student_name=prompt_name,
         grade=grade,
         board=board,
         academic_year='2025-26',
@@ -82,7 +91,7 @@ def career_guidance(request):
         result = get_llm().complete(
             system_prompt=template.system,
             user_prompt=user_prompt,
-            model='llama-3.3-70b-versatile',
+            model='openai/gpt-oss-120b',
             temperature=0.4,
             max_tokens=2048,
             json_mode=False,
@@ -96,7 +105,7 @@ def career_guidance(request):
                 institute_type='school',
                 feature_id='career_guidance_report',
                 feature_category='student',
-                model_used='llama-3.3-70b-versatile',
+                model_used='openai/gpt-oss-120b',
                 latency_ms=int((time.time() - _start_time) * 1000),
                 success=False,
                 error_message=str(exc)[:500],
@@ -125,13 +134,17 @@ def career_guidance(request):
         logger.error("career_guidance JSON parse failed: %s", exc)
         return Response({'error': 'Failed to parse AI response', 'raw': str(raw)[:500]}, status=500)
 
+    # Put the student's name back wherever the model personalised the report.
+    # No-op when the caller sent no real name.
+    report = restore_name(report, student_name)
+
     try:
         log_usage(
             institute_id=institute_id,
             institute_type='school',
             feature_id='career_guidance_report',
             feature_category='student',
-            model_used=result.get('model', 'llama-3.3-70b-versatile'),
+            model_used=result.get('model', 'openai/gpt-oss-120b'),
             tokens_input=result.get('tokens_input', 0),
             tokens_output=result.get('tokens_output', 0),
             latency_ms=int((time.time() - _start_time) * 1000),

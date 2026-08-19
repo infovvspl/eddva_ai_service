@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     feedback, notes, content, test, career,
-    personalization, admin_api, bridge, evaluate, ppt,
+    personalization, admin_api, bridge, evaluate, ppt, textbook,
 )
 
 urlpatterns = [
@@ -59,11 +59,18 @@ urlpatterns = [
     # AI #13 — In-Video Quiz Generator
     path("quiz/generate", bridge.generate_quiz_questions),
 
+    # AI Memorization Generator
+    path("memorization/generate", bridge.generate_memorization_items),
+
     # AI #15 — Text Translation
     path("translate", bridge.translate_text),
 
     # AI #16 — Topic Content Generator
     path("content/generate", bridge.generate_topic_content),
+
+    # Subjective-answer grading — rubric generation (marking scheme, per question)
+    path("grading/subjective-rubric-batch", bridge.generate_subjective_rubrics),
+    path("grading/subjective-answer", bridge.grade_subjective_answer),
 
     # AI Engine Health (teacher/admin panel)
     path("ai/health", bridge.ai_engine_health),
@@ -72,6 +79,9 @@ urlpatterns = [
     path("ppt/generate", ppt.generate_presentation),
     path("ppt/regenerate-slide", ppt.regenerate_slide),
     path("ppt/search-image", ppt.search_image),
+
+    # Textbook ingestion (chapter PDF -> page-tagged passages for grounded generation)
+    path("textbook/ingest", textbook.ingest_textbook),
 
     # Batch Question Evaluator (QA for AI-generated questions)
     path("evaluate/batch", evaluate.evaluate_batch),

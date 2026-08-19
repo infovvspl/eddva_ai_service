@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import threading
 from django.apps import AppConfig
@@ -87,4 +88,58 @@ class AiServicesConfig(AppConfig):
 
         # ── Rate Limiter Init ─────────────────────────────────────────────────
         UsageLimiter()
+
+        # ── Local dev self-heal ──────────────────────────────────────────────
+        # SQLite dev DBs (DB_ENGINE unset, see settings.py) start empty. Without
+        # migrations + a service-account Institute row matching NESTJS_SERVICE_
+        # API_KEY, every call from the NestJS ai-bridge 500s ("no such table")
+        # or 401s. Auto-repair on `runserver` so a fresh clone / wiped db.sqlite3
+        # just works — both operations are idempotent, safe to run every start.
+        # Scoped to `runserver` only so `migrate`/`makemigrations`/`test`/`shell`
+        # aren't affected, and skipped entirely once DB_ENGINE points at a real
+        # (production) database.
+        if not os.getenv("DB_ENGINE") and "runserver" in sys.argv:
+            try:
+                from django.core.management import call_command
+                call_command("migrate", verbosity=0, interactive=False)
+                service_key = os.getenv("NESTJS_SERVICE_API_KEY", "").strip()
+                if service_key:
+                    call_command("ensure_service_account", api_key=service_key, verbosity=0)
+                else:
+                    logger.warning(
+                        "NESTJS_SERVICE_API_KEY not set — skipping service-account "
+                        "self-heal. Calls from the NestJS backend will 401 until "
+                        "`python manage.py ensure_service_account --api-key <AI_API_KEY>` "
+                        "is run manually."
+                    )
+            except Exception as exc:
+                logger.error("Local dev self-heal (migrate/ensure_service_account) failed: %s", exc)
+
+        # ── Gemini key pool ───────────────────────────────────────────────────
+        # Grounded generation, textbook OCR, image doubts and answer-sheet
+        # grading all run on Gemini, so the size of this pool decides how much
+        # of the platform keeps working under load. It has silently dropped from
+        # six keys to one on a deploy more than once — .env is rewritten from
+        # scratch and only the keys CI knows about are put back — and the first
+        # sign was a teacher's generation failing. Logging the count at boot
+        # makes that visible in the deploy output instead.
+        try:
+            from ai_services.core.gemini_keys import get_gemini_api_keys
+
+            _gemini_keys = get_gemini_api_keys()
+            if not _gemini_keys:
+                logger.error(
+                    "Gemini: NO keys configured — grounded generation, textbook OCR, "
+                    "image doubts and answer-sheet grading will all fail"
+                )
+            elif len(_gemini_keys) == 1:
+                logger.warning(
+                    "Gemini: only 1 key configured. Everything grounded shares one "
+                    "project's quota; set GEMINI_API_KEYS (comma-separated) to widen it."
+                )
+            else:
+                logger.info("Gemini: %d keys available for rotation", len(_gemini_keys))
+        except Exception as exc:  # never block startup over a diagnostic
+            logger.warning("Gemini key check skipped: %s", exc)
+
         logger.info("AI Services ready — all components initialized")

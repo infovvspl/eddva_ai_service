@@ -15,9 +15,12 @@ MODEL_COSTS = {
     'llama-3.3-70b-versatile':        {'input': 0.59,  'output': 0.79},
     'qwen/qwen3-32b':                  {'input': 0.29,  'output': 0.59},
     'openai/gpt-oss-120b':             {'input': 0.15,  'output': 0.60},
+    'openai/gpt-oss-20b':              {'input': 0.10,  'output': 0.50},
+    'meta-llama/llama-4-scout-17b-16e-instruct':     {'input': 0.11,  'output': 0.34},
+    'meta-llama/llama-4-maverick-17b-128e-instruct': {'input': 0.20,  'output': 0.60},
     'llama-3.2-11b-vision-preview':    {'input': 0.18,  'output': 0.18},
     'llama-3.2-90b-vision-preview':    {'input': 0.90,  'output': 0.90},
-    'llama-4-scout-17b-16e-instruct':  {'input': 0.11,  'output': 0.34},
+    'qwen/qwen3.6-27b':                {'input': 0.11,  'output': 0.34},
     'gemini-2.5-flash':                {'input': 0.075, 'output': 0.30},
     'mayura:v1':                       {'input': 0.10,  'output': 0.10},
     'whisper-large-v3-turbo':          {'input': 0.04,  'output': 0.0},
@@ -101,6 +104,26 @@ def log_usage(
     user_id: str = None,
 ):
     """Fire-and-forget — never blocks the AI response."""
+    # Count the spend against the tenant's daily budget.
+    #
+    # This is the ONE place tokens are booked. Every generating endpoint already
+    # calls log_usage, so putting the accounting here means the budget reflects
+    # all traffic rather than only the calls that happen to run through
+    # ai_call() — previously the majority of spend (grounded content, vision
+    # OCR, transcription) was invisible to the cap it was supposed to obey.
+    #
+    # Done on the caller's thread, before the reporting thread starts: the next
+    # request's budget check must see this call, and a daemon thread gives no
+    # such ordering. It is a Redis INCR, so the cost is microseconds, and any
+    # failure is swallowed — accounting must never break generation.
+    try:
+        from ai_services.core.rate_limiter import get_shared_limiter
+        total = (tokens_input or 0) + (tokens_output or 0)
+        if total > 0:
+            get_shared_limiter().record_usage(institute_id or "default", total)
+    except Exception as exc:
+        logger.warning("Could not record usage against the daily budget: %s", exc)
+
     t = threading.Thread(
         target=log_ai_usage_sync,
         kwargs=dict(
