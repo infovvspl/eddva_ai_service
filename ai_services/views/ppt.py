@@ -566,15 +566,52 @@ def _is_stock_photo(item: dict) -> bool:
     return any(s in haystack for s in _STOCK_SOURCES)
 
 
+# Words that carry no topic meaning, so they must not count as a caption match.
+_RELEVANCE_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "in", "on", "and", "or", "to", "for", "with", "from",
+    "by", "at", "is", "are", "this", "that", "these", "those", "its", "their",
+    "between", "within", "into", "over", "educational", "slide", "topic",
+    "overview", "content", "class", "chapter", "science", "study", "concept",
+})
+
+
+def _keywords(text: str) -> "set[str]":
+    """Meaningful lowercase words from a phrase — drops stopwords, visual-type
+    hints (diagram/photograph/…) and very short tokens."""
+    return {
+        w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(w) >= 3 and w not in _RELEVANCE_STOPWORDS and w not in _VISUAL_HINTS
+    }
+
+
+def _caption_is_relevant(caption: str, strong: "set[str]", broad: "set[str]") -> bool:
+    """A returned image is on-topic if its caption shares the slide's specific
+    subject words. `strong` = words from the slide's own search term (the exact
+    sub-topic); `broad` = strong + slide-title words. One strong-word match, or
+    two broad-word matches, is enough — captions are short."""
+    cap = _keywords(caption)
+    if not cap:
+        return False
+    if strong & cap:
+        return True
+    return len(broad & cap) >= 2
+
+
 def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None" = None) -> dict:
-    """Search Serper and return the first downloadable image as a base64 data URI.
+    """Search Serper and return the first downloadable, ON-TOPIC image as base64.
 
     Results are ranked by source before anything is downloaded, so a teaching
-    figure is taken ahead of a stock photo or a social post. Relevance order is
-    preserved inside each tier, so the best on-topic result still wins.
+    figure is taken ahead of a stock photo. We then only accept a result whose
+    caption actually shares the slide's subject words (`_caption_is_relevant`),
+    so a slightly-off search can't put an unrelated picture on the slide. If no
+    query yields a relevant image, the best downloadable one is used as a
+    fallback rather than leaving the slide blank.
     """
     queries = _search_queries(search_term, slide_title, ctx)
+    strong = _keywords(search_term)
+    broad = strong | _keywords(slide_title)
     first_url = None
+    fallback: "dict | None" = None  # best downloadable image even if off-caption
 
     for attempt, query in enumerate(queries, 1):
         try:
@@ -590,18 +627,28 @@ def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None
                 url = item.get("imageUrl")
                 if not url:
                     continue
+                relevant = _caption_is_relevant(item.get("title") or "", strong, broad)
+                # Skip off-topic results once we already hold a fallback — no need
+                # to download more of them.
+                if not relevant and fallback is not None:
+                    continue
                 b64 = _download_image_as_base64(url)
-                if b64:
+                if not b64:
+                    continue
+                if relevant:
                     if attempt > 1:
-                        logger.info(
-                            "Slide image found on attempt %d (query %r)", attempt, query,
-                        )
+                        logger.info("Slide image found on attempt %d (query %r)", attempt, query)
                     return {"imageUrl": url, "imageBase64": b64}
+                if fallback is None:
+                    fallback = {"imageUrl": url, "imageBase64": b64}
         except Exception as exc:
             logger.warning("Image search failed for %r: %s", query, exc)
 
-    # Nothing downloaded. Hand back the best URL anyway — the client proxies it,
-    # and a hotlink that this server cannot fetch often still loads in a browser.
+    # No caption-relevant image anywhere — use the best downloadable one so the
+    # slide isn't blank, then the raw best URL as a last resort (client proxies it).
+    if fallback is not None:
+        logger.info("No caption-relevant image for %r; using best available", search_term)
+        return fallback
     if first_url:
         logger.info("No downloadable image for %r; returning URL only", search_term)
         return {"imageUrl": first_url, "imageBase64": None}
