@@ -2152,27 +2152,39 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
         n, section_tokens, topic_id, language,
     )
 
-    partial_notes: list[str] = []
+    # Generate the per-chunk notes IN PARALLEL. These calls are independent, so
+    # running them one-after-another (plus a 1s sleep between each) made an
+    # N-chunk lecture take N sequential model calls — the main slowness. A small
+    # worker pool overlaps the waiting while staying under Groq's shared rate
+    # limit (LLMClient rotates keys + retries on 429). Results are placed back
+    # in chunk order.
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _notes_done
+    partial_notes: list[str] = [""] * n
     failed_chunks = 0
     _t0_generate = _time.perf_counter()
-    _MAX_GEN_TIME = 600
+    _workers = min(n, int(os.getenv("NOTES_CHUNK_WORKERS", "4")))
 
-    for i, chunk in enumerate(chunks):
-        if _time.perf_counter() - _t0_generate > _MAX_GEN_TIME:
-            logger.warning("Chunk generation timed out after %.1f seconds. Using %d/%d partial chunks.", _time.perf_counter() - _t0_generate, len(partial_notes), n)
-            break
+    with ThreadPoolExecutor(max_workers=_workers) as _pool:
+        _futures = {
+            _pool.submit(
+                _generate_chunk_notes,
+                chunk, topic_id, language, institute_id, i + 1, n, section_tokens,
+            ): i
+            for i, chunk in enumerate(chunks)
+        }
+        for _fut in _notes_done(_futures):
+            i = _futures[_fut]
+            try:
+                partial_notes[i] = _fut.result().strip()
+            except Exception as exc:
+                logger.warning("Chunk %d/%d notes failed (%s) — skipping", i + 1, n, exc)
+                partial_notes[i] = ""
+                failed_chunks += 1
 
-        try:
-            notes = _generate_chunk_notes(
-                chunk, topic_id, language, institute_id, i + 1, n, max_tokens=section_tokens,
-            ).strip()
-            partial_notes.append(notes)
-        except Exception as exc:
-            logger.warning("Chunk %d/%d notes failed (%s) — skipping", i + 1, n, exc)
-            failed_chunks += 1
-            partial_notes.append("")
-        if i < n - 1:
-            _time.sleep(1.0)
+    logger.info(
+        "Chunk notes generated | chunks=%d | workers=%d | failed=%d | %.1fs",
+        n, _workers, failed_chunks, _time.perf_counter() - _t0_generate,
+    )
 
     non_empty = [p for p in partial_notes if p.strip()]
     if not non_empty:

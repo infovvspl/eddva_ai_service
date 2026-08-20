@@ -778,22 +778,23 @@ def enrich_notes_with_images(notes: str, topic_id: str, language: str, institute
     if not candidates:
         return notes, [], meta
 
-    generated: list[dict[str, Any]] = []
-    for candidate in candidates:
+    # Build each note image (generate + label) IN PARALLEL. Each candidate is
+    # independent, so doing them one-by-one made image enrichment take
+    # (candidates × per-image time) sequentially. A small pool overlaps the
+    # waiting; kept conservative because image APIs are rate-limited. pool.map
+    # preserves candidate order.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _build_one(candidate: dict[str, Any]) -> dict[str, Any]:
         image_prompt = _build_image_prompt(candidate, topic_id)
         image_result = generate_note_image(image_prompt)
         if not image_result.get("ok"):
-            meta["errors"].append(str(image_result.get("error") or "image_generation_failed"))
-            if image_result.get("fatal"):
-                logger.warning("Stopping note image generation after fatal provider error: %s", image_result.get("error"))
-                break
-            continue
+            return {"error": str(image_result.get("error") or "image_generation_failed"),
+                    "fatal": bool(image_result.get("fatal"))}
         overlay_labels, overlay_error = label_generated_note_image(image_result, candidate, notes, language)
-        if overlay_error:
-            meta["errors"].append(overlay_error)
-
-        generated.append(
-            {
+        return {
+            "overlay_error": overlay_error,
+            "image": {
                 "url": image_result["url"],
                 "caption": candidate["caption"],
                 "visual_description": candidate["visual_description"],
@@ -807,8 +808,23 @@ def enrich_notes_with_images(notes: str, topic_id: str, language: str, institute
                 "aspect_ratio": image_result.get("aspect_ratio"),
                 "embedded_text_removed": image_result.get("embedded_text_removed", 0),
                 "embedded_text_strip_error": image_result.get("embedded_text_strip_error"),
-            }
-        )
+            },
+        }
+
+    _img_workers = min(len(candidates), max(1, int(os.getenv("NOTE_IMAGE_WORKERS", "3"))))
+    with ThreadPoolExecutor(max_workers=_img_workers) as _pool:
+        _results = list(_pool.map(_build_one, candidates))
+
+    generated: list[dict[str, Any]] = []
+    for r in _results:
+        if r.get("error"):
+            meta["errors"].append(r["error"])
+            if r.get("fatal"):
+                logger.warning("Note image generation hit a fatal provider error: %s", r["error"])
+            continue
+        if r.get("overlay_error"):
+            meta["errors"].append(r["overlay_error"])
+        generated.append(r["image"])
 
     enriched = notes
     fallback_blocks: list[str] = []
