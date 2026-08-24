@@ -1532,7 +1532,10 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
 
 NOTES_CHUNK_CHAR_LIMIT = 3500
 NOTES_CHUNK_OVERLAP_CHARS = 400   # used for English only; Hindi uses 0 (see _generate_comprehensive_notes)
-NOTES_SECTION_MAX_TOKENS = 1200    # baseline for rich detailed chunk notes
+# Per-chunk note budget. Each chunk is generated in its own request (multi-chunk
+# notes are stitched, not LLM-merged), so this only bounds one chunk's output —
+# 1200 was truncating rich chunks mid-section, leaving the notes "incomplete".
+NOTES_SECTION_MAX_TOKENS = int(os.getenv("NOTES_SECTION_MAX_TOKENS", "3000"))
 NOTES_MERGE_MAX_TOKENS = 2500
 # Adaptive formula ensures merge never overflows 6000 TPM regardless of chunk count:
 #   section_tokens = max(350, min(700, 3900 // N))   → N × section_tokens ≤ 3900 + 300 + 1800 ≤ 6000 ✅
@@ -2137,11 +2140,13 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
 
 
 
-    # Adaptive section token budget — satisfies both constraints simultaneously:
-    #   TPM:   N × section_tokens + 300 prompt + 1800 merge ≤ 6000  → section_tokens ≤ 3900 // N
-    #   Chars: N × section_tokens × 4 ≤ _MERGE_MAX_INPUT_CHARS      → section_tokens ≤ _MERGE_MAX_INPUT_CHARS // (N × 4)
+    # Per-chunk output budget. Chunks are generated in independent parallel
+    # requests and then stitched (no LLM merge sums them), so the old
+    # "N × section_tokens ≤ 6000 TPM" clamp no longer applies — it was capping
+    # each chunk at 1400 and truncating detailed sections. Give each chunk the
+    # full budget so a rich section is written in full.
     n = len(chunks)
-    section_tokens = max(800, min(1400, NOTES_SECTION_MAX_TOKENS))
+    section_tokens = max(1500, min(4000, NOTES_SECTION_MAX_TOKENS))
 
     if n == 1:
         notes = _generate_chunk_notes(chunks[0], topic_id, language, institute_id, 1, 1, max_tokens=section_tokens).strip()
@@ -2313,7 +2318,9 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
             ),
             model="openai/gpt-oss-20b",
             temperature=0.2,
-            max_tokens=2048,  # was 4096; merged notes ≈ 1800 input tokens → 1800+2048=3848 fits under 6000 TPM
+            # Rewrites the WHOLE notes, so a small cap truncated long notes. Give
+            # it room to reproduce them in full.
+            max_tokens=int(os.getenv("NOTES_POLISH_MAX_TOKENS", "4096")),
             json_mode=False,
             institute_id=institute_id,
         )
