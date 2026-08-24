@@ -13,6 +13,7 @@ school database is owned by the NestJS backend, which persists what it gets back
 """
 import io
 import logging
+import os
 import re
 
 import requests as _requests
@@ -26,7 +27,11 @@ _TARGET_CHARS = 2400          # ≈600 tokens
 _MAX_CHARS = 3600             # hard ceiling before a forced split
 _MIN_CHARS = 120              # below this a "page" is a header or scan artefact
 
-_MAX_PDF_BYTES = 60 * 1024 * 1024
+# Chapter PDFs are usually small, but whole-book or high-resolution scanned
+# uploads can be large. The file is buffered in memory up to this size, so raise
+# it in step with the AI service's available RAM. Env-overridable.
+_MAX_PDF_MB = int(os.getenv("TEXTBOOK_MAX_PDF_MB", "250"))
+_MAX_PDF_BYTES = _MAX_PDF_MB * 1024 * 1024
 
 # Pages per vision request. Measured on real indexed chapters, transcription runs
 # 570-700 output tokens per page, so a single request against a 30k output ceiling
