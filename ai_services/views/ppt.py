@@ -799,19 +799,29 @@ def _generate_grounded(
 
     _log(institute_id, vertical, result.get("model", "gemini"), result=result)
 
-    data = result["content"]
+    data = result.get("content")
+    if not isinstance(data, dict):
+        # A JSON array or scalar would crash the .get() below; treat it as a
+        # grounding miss and let the caller fall back rather than 500.
+        logger.warning("Grounded generation returned non-object JSON — falling back")
+        return None
     slides = data.get("slides") or []
     if not slides:
         return None
 
-    with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
-        images = list(pool.map(
-            lambda s: _fetch_image_for_slide(
-                s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
-            ),
-            slides,
-        ))
-    data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
+    # Images are a nice-to-have; a search/fetch failure must not sink a deck that
+    # already has its (grounded) text.
+    try:
+        with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
+            images = list(pool.map(
+                lambda s: _fetch_image_for_slide(
+                    s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
+                ),
+                slides,
+            ))
+        data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
+    except Exception as exc:
+        logger.warning("Grounded slide-image fetch failed (%s) — returning slides without images", exc)
 
     # The caller shows this to the teacher, so a grounded deck is never mistaken
     # for one written from general knowledge.
@@ -862,10 +872,16 @@ def generate_presentation(request):
     # max_tokens exceeds the key's 12k TPM ceiling.
     passages = request.data.get("sourcePassages") or []
     if passages:
-        grounded = _generate_grounded(
-            passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
-            language=language, institute_id=institute_id, vertical=vertical,
-        )
+        try:
+            grounded = _generate_grounded(
+                passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
+                language=language, institute_id=institute_id, vertical=vertical,
+            )
+        except Exception as exc:
+            # Grounding is best-effort — never let a Gemini/parsing hiccup 500 the
+            # whole request; fall back to general-knowledge generation instead.
+            logger.warning("Grounded generation errored (%s) — falling back to general knowledge", exc)
+            grounded = None
         if grounded is not None:
             return grounded
         logger.warning("Grounded generation unavailable — falling back to general knowledge")
@@ -940,17 +956,21 @@ def generate_presentation(request):
         return Response({"error": err}, status=status.HTTP_502_BAD_GATEWAY)
 
     slides = [_repair_slide_latex(s) for s in (data.get("slides") or [])]
-    # Fetched concurrently: sequentially this cost 1s of sleep plus a download per
-    # slide, which at 25 slides ran up against the caller's request timeout.
-    with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
-        images = list(pool.map(
-            lambda s: _fetch_image_for_slide(
-                s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
-            ),
-            slides,
-        ))
-
-    data["slides"] = [{**slide, **image} for slide, image in zip(slides, images)]
+    # Fetched concurrently. Images are a nice-to-have — a Serper/network failure
+    # must not sink a deck whose text is already written, so it degrades to
+    # slides without images rather than raising (which would 500 the request).
+    try:
+        with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
+            images = list(pool.map(
+                lambda s: _fetch_image_for_slide(
+                    s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
+                ),
+                slides,
+            ))
+        data["slides"] = [{**slide, **image} for slide, image in zip(slides, images)]
+    except Exception as exc:
+        logger.warning("Slide-image fetch failed (%s) — returning slides without images", exc)
+        data["slides"] = slides
     return Response({"success": True, "data": data})
 
 
