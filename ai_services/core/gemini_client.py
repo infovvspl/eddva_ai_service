@@ -232,6 +232,41 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
     raise RuntimeError(f"All {len(keys)} Gemini key(s) failed for {what}: {last_exc}")
 
 
+def check_gemini_health() -> str:
+    """Verify a configured Gemini key actually WORKS, not just that one exists.
+
+    is_available() only checks that a key string is present and the SDK imports;
+    a key can still be expired, project-restricted, or out of quota. This does
+    one tiny generate so a broken Gemini surfaces at boot instead of as a
+    teacher's grounded PPT/notes silently falling back to general knowledge.
+
+    Returns one of: "ok", "no_keys", "key_rejected", "rate_limited",
+    "model_unavailable", "error".
+    """
+    if not get_gemini_api_keys():
+        return "no_keys"
+    try:
+        from google.genai import types
+    except Exception:
+        return "error"
+    try:
+        generate_with_rotation(
+            contents=["ping"],
+            config=types.GenerateContentConfig(max_output_tokens=8, temperature=0.0),
+            what="health check",
+        )
+        return "ok"
+    except Exception as exc:
+        if _looks_key_rejected(exc):
+            return "key_rejected"
+        if _looks_rate_limited(exc):
+            return "rate_limited"
+        if _looks_model_unavailable(exc):
+            return "model_unavailable"
+        logger.warning("Gemini health check error: %s", exc)
+        return "error"
+
+
 def complete_text(
     *,
     system_prompt: str,
