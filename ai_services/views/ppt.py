@@ -12,7 +12,6 @@ browsers cannot send Authorization headers on bare <img src> requests.
 import base64
 import json
 import logging
-import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
@@ -599,43 +598,61 @@ def _caption_is_relevant(caption: str, strong: "set[str]", broad: "set[str]") ->
 
 
 def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None" = None) -> dict:
-    """Search Serper and return the best ON-TOPIC image URL for the slide.
+    """Search Serper and return the first downloadable, ON-TOPIC image as base64.
 
-    Images are NOT downloaded here: the client loads them (the preview proxies
-    the URL via /ppt/proxy-image, and export/save materialise base64 once).
-    Downloading every slide's image to base64 during generation was the largest,
-    most variable part of the request time. Results are still ranked by source so
-    a teaching figure beats a stock photo, and only a caption that shares the
-    slide's subject words is accepted; otherwise the best-ranked URL is used so
-    the slide is never blank.
+    Results are ranked by source before anything is downloaded, so a teaching
+    figure is taken ahead of a stock photo. We then only accept a result whose
+    caption actually shares the slide's subject words (`_caption_is_relevant`),
+    so a slightly-off search can't put an unrelated picture on the slide. If no
+    query yields a relevant image, the best downloadable one is used as a
+    fallback rather than leaving the slide blank.
     """
     queries = _search_queries(search_term, slide_title, ctx)
     strong = _keywords(search_term)
     broad = strong | _keywords(slide_title)
-    fallback_url = None  # best-ranked URL even if its caption is off-topic
+    first_url = None
+    fallback: "dict | None" = None  # best downloadable image even if off-caption
 
-    for query in queries:
+    for attempt, query in enumerate(queries, 1):
         try:
             results = search_google_images(query, limit=10)
             if not results:
                 continue
             # sorted() is stable, so Serper's own ranking survives within a tier.
             ordered = sorted(results, key=_source_rank)
-            if fallback_url is None:
-                fallback_url = ordered[0].get("imageUrl")
+            if first_url is None:
+                first_url = ordered[0].get("imageUrl")
+
             for item in ordered:
                 url = item.get("imageUrl")
                 if not url:
                     continue
-                if _caption_is_relevant(item.get("title") or "", strong, broad):
-                    return {"imageUrl": url, "imageBase64": None}
+                relevant = _caption_is_relevant(item.get("title") or "", strong, broad)
+                # Skip off-topic results once we already hold a fallback — no need
+                # to download more of them.
+                if not relevant and fallback is not None:
+                    continue
+                b64 = _download_image_as_base64(url)
+                if not b64:
+                    continue
+                if relevant:
+                    if attempt > 1:
+                        logger.info("Slide image found on attempt %d (query %r)", attempt, query)
+                    return {"imageUrl": url, "imageBase64": b64}
+                if fallback is None:
+                    fallback = {"imageUrl": url, "imageBase64": b64}
         except Exception as exc:
             logger.warning("Image search failed for %r: %s", query, exc)
 
-    # No caption-relevant hit — hand back the best-ranked URL so the slide is
-    # never blank; the client loads it. Nothing is downloaded here.
-    if fallback_url:
-        return {"imageUrl": fallback_url, "imageBase64": None}
+    # No caption-relevant image anywhere — use the best downloadable one so the
+    # slide isn't blank, then the raw best URL as a last resort (client proxies it).
+    if fallback is not None:
+        logger.info("No caption-relevant image for %r; using best available", search_term)
+        return fallback
+    if first_url:
+        logger.info("No downloadable image for %r; returning URL only", search_term)
+        return {"imageUrl": first_url, "imageBase64": None}
+
     logger.warning("No image at all for slide %r (tried %d queries)", slide_title, len(queries))
     return {"imageUrl": None, "imageBase64": None}
 
@@ -754,12 +771,6 @@ _IMAGE_WORKERS = 5
 # and anything the planner burns is taken from the actual slide generation.
 _COVERAGE_DEADLINE_S = 25
 
-# The coverage-planning call is an extra LLM round-trip before any slide is
-# written. Skipping it removes that whole call from the critical path (the main
-# generation prompt still plans the deck inline), which is a meaningful speedup.
-# Env-reversible: set PPT_SKIP_COVERAGE=false to restore the planning step.
-_SKIP_COVERAGE = os.getenv("PPT_SKIP_COVERAGE", "true").strip().lower() in ("1", "true", "yes")
-
 
 def _generate_grounded(
     *, passages, ctx, topic, slide_count, language, institute_id, vertical,
@@ -799,29 +810,19 @@ def _generate_grounded(
 
     _log(institute_id, vertical, result.get("model", "gemini"), result=result)
 
-    data = result.get("content")
-    if not isinstance(data, dict):
-        # A JSON array or scalar would crash the .get() below; treat it as a
-        # grounding miss and let the caller fall back rather than 500.
-        logger.warning("Grounded generation returned non-object JSON — falling back")
-        return None
+    data = result["content"]
     slides = data.get("slides") or []
     if not slides:
         return None
 
-    # Images are a nice-to-have; a search/fetch failure must not sink a deck that
-    # already has its (grounded) text.
-    try:
-        with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
-            images = list(pool.map(
-                lambda s: _fetch_image_for_slide(
-                    s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
-                ),
-                slides,
-            ))
-        data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
-    except Exception as exc:
-        logger.warning("Grounded slide-image fetch failed (%s) — returning slides without images", exc)
+    with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
+        images = list(pool.map(
+            lambda s: _fetch_image_for_slide(
+                s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
+            ),
+            slides,
+        ))
+    data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
 
     # The caller shows this to the teacher, so a grounded deck is never mistaken
     # for one written from general knowledge.
@@ -872,16 +873,10 @@ def generate_presentation(request):
     # max_tokens exceeds the key's 12k TPM ceiling.
     passages = request.data.get("sourcePassages") or []
     if passages:
-        try:
-            grounded = _generate_grounded(
-                passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
-                language=language, institute_id=institute_id, vertical=vertical,
-            )
-        except Exception as exc:
-            # Grounding is best-effort — never let a Gemini/parsing hiccup 500 the
-            # whole request; fall back to general-knowledge generation instead.
-            logger.warning("Grounded generation errored (%s) — falling back to general knowledge", exc)
-            grounded = None
+        grounded = _generate_grounded(
+            passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
+            language=language, institute_id=institute_id, vertical=vertical,
+        )
         if grounded is not None:
             return grounded
         logger.warning("Grounded generation unavailable — falling back to general knowledge")
@@ -890,19 +885,18 @@ def generate_presentation(request):
     # Run it under a wall-clock deadline: if the LLM is unhealthy this step would
     # otherwise consume the whole request budget retrying, and it is optional.
     sub_areas = None
-    if not _SKIP_COVERAGE:
-        try:
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                sub_areas = pool.submit(
-                    _decompose_ppt_coverage, ctx, slide_count, institute_id
-                ).result(timeout=_COVERAGE_DEADLINE_S)
-        except FuturesTimeout:
-            logger.warning(
-                "PPT coverage planning exceeded %ss — generating without a slide plan",
-                _COVERAGE_DEADLINE_S,
-            )
-        except Exception as exc:  # never let the optional pre-step break generation
-            logger.warning("PPT coverage planning failed (%s) — generating without a slide plan", exc)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            sub_areas = pool.submit(
+                _decompose_ppt_coverage, ctx, slide_count, institute_id
+            ).result(timeout=_COVERAGE_DEADLINE_S)
+    except FuturesTimeout:
+        logger.warning(
+            "PPT coverage planning exceeded %ss — generating without a slide plan",
+            _COVERAGE_DEADLINE_S,
+        )
+    except Exception as exc:  # never let the optional pre-step break generation
+        logger.warning("PPT coverage planning failed (%s) — generating without a slide plan", exc)
 
     if sub_areas:
         # Keep the deck exactly as long as the plan (+ title + summary). A scope with
@@ -956,21 +950,17 @@ def generate_presentation(request):
         return Response({"error": err}, status=status.HTTP_502_BAD_GATEWAY)
 
     slides = [_repair_slide_latex(s) for s in (data.get("slides") or [])]
-    # Fetched concurrently. Images are a nice-to-have — a Serper/network failure
-    # must not sink a deck whose text is already written, so it degrades to
-    # slides without images rather than raising (which would 500 the request).
-    try:
-        with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
-            images = list(pool.map(
-                lambda s: _fetch_image_for_slide(
-                    s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
-                ),
-                slides,
-            ))
-        data["slides"] = [{**slide, **image} for slide, image in zip(slides, images)]
-    except Exception as exc:
-        logger.warning("Slide-image fetch failed (%s) — returning slides without images", exc)
-        data["slides"] = slides
+    # Fetched concurrently: sequentially this cost 1s of sleep plus a download per
+    # slide, which at 25 slides ran up against the caller's request timeout.
+    with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
+        images = list(pool.map(
+            lambda s: _fetch_image_for_slide(
+                s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
+            ),
+            slides,
+        ))
+
+    data["slides"] = [{**slide, **image} for slide, image in zip(slides, images)]
     return Response({"success": True, "data": data})
 
 
