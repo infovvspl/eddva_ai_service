@@ -12,6 +12,7 @@ browsers cannot send Authorization headers on bare <img src> requests.
 import base64
 import json
 import logging
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
@@ -788,12 +789,21 @@ def _generate_grounded(
     if not _gc.is_available():
         return None
 
+    # Slides need far fewer passages than detailed notes, and the grounded Gemini
+    # call scales with prompt size — so cap the source context for PPT well below
+    # the notes default (30k). This keeps the deck grounded in the book while
+    # cutting the wait substantially. Env-tunable.
+    _ppt_budget = int(os.getenv("PPT_GROUNDING_TOKEN_BUDGET", "12000"))
     selection = _gr.select_source(
         passages, ctx.get("topicName") or topic, ctx.get("chapterName") or "",
+        token_budget=_ppt_budget,
     )
     if not selection["passages"]:
         return None
 
+    # Output budget scales with the deck: ~320 tokens/slide is ample for slide
+    # bullets, and a smaller ceiling means Gemini finishes sooner. Capped at 8000.
+    _out_tokens = max(2500, min(8000, slide_count * 320))
     try:
         result = _gc.complete_json(
             system_prompt=_gr.GROUNDED_SYSTEM_PROMPT,
@@ -801,7 +811,7 @@ def _generate_grounded(
                 slide_count=slide_count, language=language, topic=topic,
                 ctx=ctx, source_block=_gr.format_source_block(selection["passages"]),
             ),
-            max_output_tokens=8000,
+            max_output_tokens=_out_tokens,
         )
     except Exception as exc:
         logger.warning("Grounded generation failed (%s)", exc)
