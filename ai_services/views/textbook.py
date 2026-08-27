@@ -43,6 +43,16 @@ def ingest_textbook(request):
 
     try:
         result = ingest_pdf(file_url, allow_ocr=allow_ocr)
+    except ValueError as exc:
+        # Size ceiling (or an obviously malformed download) — report specifically
+        # so the teacher is told to split/replace the file, not "try again".
+        logger.warning("Textbook ingest rejected for %s: %s", file_url[:120], exc)
+        log_usage(
+            institute_id=institute_id, institute_type=vertical,
+            feature_id="textbook_ingest", feature_category="content_ingestion",
+            model_used="pdfplumber", success=False, error_message=str(exc),
+        )
+        return Response({"error": str(exc)}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
     except Exception as exc:
         logger.error("Textbook ingest failed for %s: %s", file_url[:120], exc)
         log_usage(

@@ -443,11 +443,22 @@ def _transcribe_with_groq(audio_path: str, language: str, prev_context: str = ""
             except GroqRateLimitError as exc:
                 last_exc = exc
                 logger.info("Groq key %d/%d rate-limited -- rotating to next key", key_idx + 1, len(GROQ_API_KEYS))
+            except Exception as exc:
+                # A non-rate-limit error (network blip, transient 5xx, malformed
+                # response) on ONE key used to abort transcription of this whole
+                # chunk immediately, without even trying the other keys -- that
+                # silently dropped a section of the lecture from the transcript.
+                # Rotate through the remaining keys the same way rate limits do.
+                last_exc = exc
+                logger.warning(
+                    "Groq key %d/%d error (%s) -- rotating to next key",
+                    key_idx + 1, len(GROQ_API_KEYS), exc,
+                )
         if round_num == 0 and last_exc is not None:
-            wait = _parse_groq_retry_after(str(last_exc))
+            wait = _parse_groq_retry_after(str(last_exc)) if isinstance(last_exc, GroqRateLimitError) else 3.0
             logger.warning(
-                "All %d Groq keys rate-limited -- waiting %.0fs before retry",
-                len(GROQ_API_KEYS), wait,
+                "All %d Groq keys failed (round %d) -- waiting %.0fs before retry",
+                len(GROQ_API_KEYS), round_num + 1, wait,
             )
             import time as _time
             _time.sleep(wait)
@@ -639,6 +650,7 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                     return sorted(_glob.glob(os.path.join(tmpdir, f"sarvam_chunk_{chunk_idx:04d}_part_*.mp3")))
 
                 transcript_parts: list = []
+                failed_chunk_nums: list = []
                 for idx, chunk_file in enumerate(chunks):
                     logger.info("Sarvam Odia STT | chunk %d/%d", idx + 1, len(chunks))
                     try:
@@ -671,6 +683,22 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                             part = ""
                     if part:
                         transcript_parts.append(part)
+                    else:
+                        failed_chunk_nums.append(idx + 1)
+
+                if failed_chunk_nums:
+                    # _sarvam_transcribe_file already retries internally (3
+                    # attempts x every configured key) before raising, so a
+                    # chunk landing here has exhausted that. Previously this
+                    # section of the lecture was silently dropped from the
+                    # transcript with only a log line. Fail loudly instead —
+                    # this surfaces as transcript_status='failed' (which
+                    # already has a retry path) rather than a false
+                    # transcript_status='done' missing part of the lecture.
+                    raise RuntimeError(
+                        f"{len(failed_chunk_nums)}/{len(chunks)} Odia audio chunk(s) failed after exhausting "
+                        f"Sarvam's retries (chunks {failed_chunk_nums}) — refusing to return an incomplete transcript"
+                    )
 
                 transcript = " ".join(transcript_parts).strip()
                 if not transcript:
@@ -748,17 +776,42 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                     with open(chunk_file, "rb") as _f:
                         file_bytes = _f.read()
                     filename = os.path.basename(chunk_file)
+                    last_exc: Exception | None = None
                     for attempt in range(2):
                         try:
                             return idx, _transcribe_with_groq_one_key(file_bytes, filename, language, "", api_key)
                         except _WGroqRateLimit as exc:
+                            last_exc = exc
                             if attempt == 0:
                                 wait = _parse_groq_retry_after(str(exc))
                                 logger.warning("Whisper key %d rate-limited — waiting %.0fs", key_num, wait)
                                 _wtime.sleep(wait)
-                                continue
-                            raise
-                    return idx, ""
+                        except Exception as exc:
+                            # A transient/non-rate-limit error on this chunk's
+                            # assigned key used to be raised immediately and
+                            # silently drop this section of the lecture. Retry
+                            # once on the same key first (cheap, handles blips).
+                            last_exc = exc
+                            logger.warning(
+                                "Whisper chunk %d/%d failed on key %d (%s) — retrying",
+                                idx + 1, len(chunks), key_num, exc,
+                            )
+                    # The assigned key didn't work after 2 attempts. Fall back to
+                    # _transcribe_with_groq, which rotates through EVERY
+                    # available key (2 full rounds) — a much higher bar than one
+                    # key failing twice before this chunk is given up on.
+                    logger.warning(
+                        "Whisper chunk %d/%d exhausted its assigned key (%s) — trying all remaining keys",
+                        idx + 1, len(chunks), last_exc,
+                    )
+                    try:
+                        return idx, _transcribe_with_groq(chunk_file, language)
+                    except Exception as exc2:
+                        logger.error(
+                            "Whisper chunk %d/%d failed after exhausting ALL Groq keys (%s)",
+                            idx + 1, len(chunks), exc2,
+                        )
+                        return idx, ""
 
 
 
@@ -769,29 +822,36 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                 transcript_parts = [""] * len(chunks)
                 max_parallel = min(len(chunks), len(GROQ_API_KEYS), 8)
 
-
-
-                try:
-                    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
-                        futs = {pool.submit(_whisper_one_chunk, a): a[0] for a in chunk_assignments}
-                        for fut in _futures_done(futs):
-                            idx, text = fut.result()
-                            if text:
-                                transcript_parts[idx] = text
-                except Exception as exc:
-                    logger.warning("Parallel Whisper failed (%s) — falling back to sequential", exc)
-                    transcript_parts = []
-                    prev_ctx = ""
-                    for idx, chunk_file in enumerate(chunks):
-                        logger.info("Sending chunk %d/%d to Groq (sequential fallback)...", idx + 1, len(chunks))
+                # Each future is handled independently below — one chunk
+                # exhausting all retries no longer discards every OTHER
+                # chunk's already-successful transcript (the old code wrapped
+                # the whole loop in one try/except and threw away all parallel
+                # results, then re-transcribed everything from scratch, on
+                # ANY single exception).
+                with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+                    futs = {pool.submit(_whisper_one_chunk, a): a[0] for a in chunk_assignments}
+                    for fut in _futures_done(futs):
+                        idx = futs[fut]
                         try:
-                            text = _transcribe_with_groq(chunk_file, language, prev_context=prev_ctx)
-                        except Exception as exc2:
-                            logger.warning("Groq chunk %d/%d failed (%s) — skipping", idx + 1, len(chunks), exc2)
+                            _, text = fut.result()
+                        except Exception as exc:
+                            logger.error("Whisper chunk %d/%d raised unexpectedly (%s)", idx + 1, len(chunks), exc)
                             text = ""
-                        if text:
-                            transcript_parts.append(text)
-                            prev_ctx = text
+                        transcript_parts[idx] = text
+
+                failed_chunk_nums = [i + 1 for i, t in enumerate(transcript_parts) if not t]
+                if failed_chunk_nums:
+                    # Every retry path (same-key retry, then all-keys rotation)
+                    # has been exhausted for these chunks. Rather than silently
+                    # shipping a transcript that's missing entire sections of
+                    # the lecture (with no signal to notes generation or the
+                    # teacher), fail the whole transcription loudly — this
+                    # surfaces as transcript_status='failed', which already has
+                    # a retry path, instead of a false transcript_status='done'.
+                    raise RuntimeError(
+                        f"{len(failed_chunk_nums)}/{len(chunks)} audio chunk(s) failed after exhausting all "
+                        f"Groq keys (chunks {failed_chunk_nums}) — refusing to return an incomplete transcript"
+                    )
 
 
 
@@ -1532,11 +1592,38 @@ def _prepare_transcript_for_notes(transcript: str, topic_id: str, language: str,
 
 NOTES_CHUNK_CHAR_LIMIT = 3500
 NOTES_CHUNK_OVERLAP_CHARS = 400   # used for English only; Hindi uses 0 (see _generate_comprehensive_notes)
-NOTES_SECTION_MAX_TOKENS = 1200    # baseline for rich detailed chunk notes
+# Per-chunk note budget. Each chunk is generated in its own request (multi-chunk
+# notes are stitched, not LLM-merged), so this only bounds one chunk's output —
+# 1200 was truncating rich chunks mid-section, leaving the notes "incomplete".
+NOTES_SECTION_MAX_TOKENS = int(os.getenv("NOTES_SECTION_MAX_TOKENS", "3000"))
 NOTES_MERGE_MAX_TOKENS = 2500
 # Adaptive formula ensures merge never overflows 6000 TPM regardless of chunk count:
 #   section_tokens = max(350, min(700, 3900 // N))   → N × section_tokens ≤ 3900 + 300 + 1800 ≤ 6000 ✅
 _MERGE_MAX_INPUT_CHARS = 15_500   # safety net: ~3900 English tokens × 4 chars/token
+
+# Groq's shared/on-demand tier enforces a hard per-request cap on prompt+completion
+# tokens (observed: "Limit 8000, Requested 9944" 413 on openai/gpt-oss-20b) that is
+# NOT a transient rate limit — retrying an identically-sized request fails every
+# time. Devanagari-script content (Hindi/Hinglish/Odia) tokenizes far less
+# efficiently than the ~4 chars/token assumed elsewhere in this file, so a fixed
+# max_tokens request that's safe for an English chunk can blow this budget for a
+# same-length Hindi chunk. Clamp requested max_tokens so prompt + completion stays
+# under budget, using a conservative (worst-case-script) chars-per-token estimate.
+GROQ_REQUEST_TOKEN_BUDGET = int(os.getenv("GROQ_REQUEST_TOKEN_BUDGET", "7500"))
+_CONSERVATIVE_CHARS_PER_TOKEN = 2.0
+
+# Cap on how much chunk-notes content goes into a SINGLE merge request (see
+# _merge_notes_hierarchical below). Sized so that even at the conservative
+# 2 chars/token estimate (~5000 est. prompt tokens for 10,000 chars) there's
+# still comfortable output headroom under GROQ_REQUEST_TOKEN_BUDGET — merging
+# everything in one shot instead of in bounded groups is what caused the
+# "Request too large" 413 in the first place for any multi-chunk lecture.
+_MERGE_GROUP_MAX_CHARS = int(os.getenv("NOTES_MERGE_GROUP_MAX_CHARS", "10000"))
+
+
+def _safe_max_tokens(prompt_text: str, desired_max_tokens: int, budget: int = GROQ_REQUEST_TOKEN_BUDGET) -> int:
+    estimated_prompt_tokens = int(len(prompt_text) / _CONSERVATIVE_CHARS_PER_TOKEN)
+    return max(500, min(desired_max_tokens, budget - estimated_prompt_tokens))
 
 # ── Odia notes via Gemini (Groq/llama are weak at Odia script) ───────────────
 GEMINI_ODIA_NOTES_ENABLED = os.getenv("GEMINI_ODIA_NOTES_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
@@ -1646,40 +1733,50 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
 
 
 
+    system_prompt = (
+        "You are an expert academic note-taker creating textbook-like lecture notes in English. "
+        "Convert this section of a lecture transcript into rich, detailed, classroom-quality Markdown notes. "
+        + lang_instruction +
+        "SKIP any teacher introductions, greetings, self-introductions, roll calls, or administrative "
+        "announcements (e.g. 'Hello students', 'Mere pyare bacchon', 'My name is...', 'Exams are near...'). "
+        "SKIP any teacher recap, review, or end-of-class summary sections where the teacher lists or restates "
+        "what was already covered (e.g. 'We have discussed three methods...', 'Today we learned...', "
+        "'In this chapter we covered...'). "
+        "Focus ONLY on academic and educational content: concepts, theory, formulas, examples. "
+        "Preserve definitions, intuition, examples, formulas, derivations, steps, caveats, comparisons, "
+        "and teacher reasoning. Do not compress aggressively. Cover every important idea in this chunk."
+    )
+    user_prompt = (
+        f"Lecture topic: {topic_id or 'General'}\n"
+        f"Source language: {language}\n"
+        f"Transcript chunk: {chunk_index} of {total_chunks}\n\n"
+        "Write detailed Markdown notes for this chunk only.\n"
+        "Requirements:\n"
+        "- Explain concepts in a textbook-like way, not just bullets.\n"
+        "- Include short definitions for important terms.\n"
+        "- Include formulas or equations in plain text when relevant.\n"
+        "- For subscripts and superscripts (e.g. K_f, H_2O, x^2), write them as plain-text subscript/superscript notation like `K_f` or `x^2` — NEVER use HTML tags like `<sub>f</sub>` or `<sup>2</sup>`; they will not render and show up as literal text.\n"
+        "- For worked examples and step-by-step calculations/derivations, ALWAYS put each new step on its own separate line (using a numbered list, bullet list, or separate line per step). Never combine multiple calculation steps into a single paragraph.\n"
+        "- The same rule applies to any enumerated list of properties, points, or stages (e.g. '(1)... (2)... (3)...'): put EACH numbered item on its own line as a proper Markdown list, never chained together in one paragraph or one line.\n"
+        "- A heading line (starting with #, ##, or ###) must contain ONLY the heading title — never follow it with body content, definitions, or a numbered list on the same line. Put a blank line after every heading before its content starts.\n"
+        "- When a formula has multiple symbols to define (e.g. π : osmotic pressure, C : concentration), give the formula its own line, then put EACH symbol's definition on its own bullet line below it — never chain them together on one line with a dash (e.g. do not write 'π : osmotic pressure - C : concentration - R : gas constant' on one line).\n"
+        "- After a worked example's final numeric answer, do not tack on an extra explanatory sentence with a dash on the same line (e.g. 'π = 2475.772 Pa - In the classroom animation...'). End the calculation there; put any further explanation as a new, separate sentence or paragraph.\n"
+        "- Add subheadings where useful, using `##`/`###` — never a `#` (single-hash) heading, and never a "
+        "document title (this is one chunk of a larger lecture, and the lecture title is already shown "
+        "separately).\n"
+        "- If the teacher contrasts two ideas, keep that comparison.\n"
+        "- DO NOT generate any Summary, Conclusion, Key Takeaways, Introduction, or Overview section that just lists or recaps what was already covered.\n"
+        "- If the teacher is recapping/summarizing at the end of class (e.g. 'We have discussed...', 'Today we learned...'), SKIP that part entirely.\n"
+        "- Do not add unrelated content not supported by the transcript.\n\n"
+        f"{chunk_text}"
+    )
+    safe_max_tokens = _safe_max_tokens(system_prompt + user_prompt, max_tokens)
     llm_result = get_llm().complete(
-        system_prompt=(
-            "You are an expert academic note-taker creating textbook-like lecture notes in English. "
-            "Convert this section of a lecture transcript into rich, detailed, classroom-quality Markdown notes. "
-            + lang_instruction +
-            "SKIP any teacher introductions, greetings, self-introductions, roll calls, or administrative "
-            "announcements (e.g. 'Hello students', 'Mere pyare bacchon', 'My name is...', 'Exams are near...'). "
-            "SKIP any teacher recap, review, or end-of-class summary sections where the teacher lists or restates "
-            "what was already covered (e.g. 'We have discussed three methods...', 'Today we learned...', "
-            "'In this chapter we covered...'). "
-            "Focus ONLY on academic and educational content: concepts, theory, formulas, examples. "
-            "Preserve definitions, intuition, examples, formulas, derivations, steps, caveats, comparisons, "
-            "and teacher reasoning. Do not compress aggressively. Cover every important idea in this chunk."
-        ),
-        user_prompt=(
-            f"Lecture topic: {topic_id or 'General'}\n"
-            f"Source language: {language}\n"
-            f"Transcript chunk: {chunk_index} of {total_chunks}\n\n"
-            "Write detailed Markdown notes for this chunk only.\n"
-            "Requirements:\n"
-            "- Explain concepts in a textbook-like way, not just bullets.\n"
-            "- Include short definitions for important terms.\n"
-            "- Include formulas or equations in plain text when relevant.\n"
-            "- For worked examples and step-by-step calculations/derivations, ALWAYS put each new step on its own separate line (using a numbered list, bullet list, or separate line per step). Never combine multiple calculation steps into a single paragraph.\n"
-            "- Add subheadings where useful.\n"
-            "- If the teacher contrasts two ideas, keep that comparison.\n"
-            "- DO NOT generate any Summary, Conclusion, Key Takeaways, Introduction, or Overview section that just lists or recaps what was already covered.\n"
-            "- If the teacher is recapping/summarizing at the end of class (e.g. 'We have discussed...', 'Today we learned...'), SKIP that part entirely.\n"
-            "- Do not add unrelated content not supported by the transcript.\n\n"
-            f"{chunk_text}"
-        ),
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
         model="openai/gpt-oss-20b",
         temperature=0.4,
-        max_tokens=max_tokens,
+        max_tokens=safe_max_tokens,
         json_mode=False,
         institute_id=institute_id,
     )
@@ -1687,6 +1784,35 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
 
 
 
+
+
+def _is_request_too_large_error(msg: str) -> bool:
+    # 413 "request too large" / "reduce your message size" is a structural error,
+    # not a transient one — retrying an identically-sized request fails every
+    # time (unlike a normal 429, its message also contains "rate_limit_exceeded",
+    # which would otherwise false-match the transient-retry check below).
+    return any(token in msg for token in ("413", "request too large", "reduce your message size"))
+
+
+def _generate_chunk_notes_with_retry(chunk_text: str, topic_id: str, language: str, institute_id: str, chunk_index: int, total_chunks: int, max_tokens: int) -> str:
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            return _generate_chunk_notes(chunk_text, topic_id, language, institute_id, chunk_index, total_chunks, max_tokens=max_tokens)
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            if (
+                attempt < 2
+                and not _is_request_too_large_error(msg)
+                and any(token in msg for token in ("503", "unavailable", "high demand", "rate", "429", "timeout", "temporarily", "connection"))
+            ):
+                wait = _gemini_retry_delay_seconds(exc, 2.0 * (attempt + 1))
+                logger.warning("Notes chunk %d/%d transient failure; retrying in %.1fs (%s)", chunk_index, total_chunks, wait, exc)
+                time.sleep(wait)
+                continue
+            break
+    raise RuntimeError(f"Notes chunk {chunk_index}/{total_chunks} failed after retries: {last_exc}") from last_exc
 
 
 def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, institute_id: str) -> str:
@@ -1697,33 +1823,64 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
     ).strip()
     if not combined_sections:
         return ""
+    if len(combined_sections) > _MERGE_MAX_INPUT_CHARS:
+        logger.warning(
+            "Chunk notes merge input truncated %d -> %d chars",
+            len(combined_sections), _MERGE_MAX_INPUT_CHARS,
+        )
+        combined_sections = combined_sections[:_MERGE_MAX_INPUT_CHARS]
 
+    # Scale the output budget with how much is being merged. A fixed 2500-token
+    # cap truncated the merge mid-document for any lecture with more than a
+    # couple of chunks (the merge model has to reproduce ~all of the chunk
+    # content, not summarize it) — the same "fixed cap truncates rich content"
+    # bug already fixed once for per-chunk generation (see NOTES_SECTION_MAX_TOKENS
+    # above) and for the whole-notes polish pass (NOTES_POLISH_MAX_TOKENS).
+    desired_merge_tokens = min(8192, max(NOTES_MERGE_MAX_TOKENS, len(combined_sections) // 3))
 
+    system_prompt = (
+        "You are an expert academic editor creating final textbook-like lecture notes in English. "
+        "Merge multiple chunk-level note sections into one comprehensive, coherent Markdown document. "
+        "Remove any remaining teacher greetings, introductions, or non-academic content if present. "
+        "Preserve coverage, remove duplication, improve structure, and keep the final notes rich and detailed. "
+        "Do not shorten aggressively or flatten explanations into overly brief bullets."
+    )
+    user_prompt = (
+        f"Lecture topic: {topic_id or 'General'}\n"
+        f"Source language: {language}\n\n"
+        "Merge these section notes into one coherent Markdown note set.\n"
+        "Requirements:\n"
+        "- Do NOT add a document title — the lecture title is already shown separately above these notes. "
+        "Start directly with `##` for the first section covered, use `##` for each major section and `###` "
+        "for sub-sections. Every section MUST use real Markdown heading syntax (# characters), never bold "
+        "text or plain title-case lines standing in for a heading, and never a `#` (single-hash) heading.\n"
+        "- A heading line must contain ONLY the heading title — never append body content or a numbered/"
+        "enumerated list onto the same line as a heading (e.g. do not write '## Properties ... (1). First "
+        "point ... (2). Second point' on one line). Put a blank line after every heading, then list each "
+        "point on its own separate line below it.\n"
+        "- When a formula defines multiple symbols, keep the formula on its own line, then put EACH symbol's "
+        "definition on its own bullet below it — never chain definitions together on one line with a dash "
+        "(e.g. do not write 'π : osmotic pressure - C : concentration - R : gas constant' on one line).\n"
+        "- For subscripts and superscripts (e.g. K_f, H_2O, x^2), write them as plain-text notation like `K_f` "
+        "or `x^2` — NEVER use HTML tags like `<sub>f</sub>` or `<sup>2</sup>`; convert any you see in the "
+        "input sections into plain-text notation instead of reproducing them.\n"
+        "- Keep all major concepts, examples, formulas, and explanations.\n"
+        "- Prefer explanatory paragraphs plus bullets where helpful.\n"
+        "- Preserve continuity between chunks so the final notes read like one lecture, not stitched fragments.\n"
+        "- Include key distinctions, common mistakes, and exam-relevant insights when present.\n"
+        "- End with a concise Summary section.\n\n"
+        f"{combined_sections}"
+    )
+    # Clamp against Groq's hard per-request token budget (see GROQ_REQUEST_TOKEN_BUDGET
+    # above) — the "desired" size above is an ambition, this is the actual safe ceiling.
+    merge_max_tokens = _safe_max_tokens(system_prompt + user_prompt, desired_merge_tokens)
 
     llm_result = get_llm().complete(
-        system_prompt=(
-            "You are an expert academic editor creating final textbook-like lecture notes in English. "
-            "Merge multiple chunk-level note sections into one comprehensive, coherent Markdown document. "
-            "Remove any remaining teacher greetings, introductions, or non-academic content if present. "
-            "Preserve coverage, remove duplication, improve structure, and keep the final notes rich and detailed. "
-            "Do not shorten aggressively or flatten explanations into overly brief bullets."
-        ),
-        user_prompt=(
-            f"Lecture topic: {topic_id or 'General'}\n"
-            f"Source language: {language}\n\n"
-            "Merge these section notes into one coherent Markdown note set.\n"
-            "Requirements:\n"
-            "- Start with a strong title and then organize into logical sections.\n"
-            "- Keep all major concepts, examples, formulas, and explanations.\n"
-            "- Prefer explanatory paragraphs plus bullets where helpful.\n"
-            "- Preserve continuity between chunks so the final notes read like one lecture, not stitched fragments.\n"
-            "- Include key distinctions, common mistakes, and exam-relevant insights when present.\n"
-            "- End with a concise Summary section.\n\n"
-            f"{combined_sections}"
-        ),
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
         model="openai/gpt-oss-120b",
         temperature=0.3,
-        max_tokens=NOTES_MERGE_MAX_TOKENS,
+        max_tokens=merge_max_tokens,
         json_mode=False,
         institute_id=institute_id,
     )
@@ -1731,6 +1888,72 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
 
 
 
+
+
+def _group_by_budget(items: list[str], max_chars: int) -> list[list[str]]:
+    """Greedily group adjacent items so no group's combined length exceeds
+    max_chars. Order-preserving, so a lecture's chronology survives merging."""
+    groups: list[list[str]] = []
+    current: list[str] = []
+    current_len = 0
+    for item in items:
+        item_len = len(item)
+        if current and current_len + item_len > max_chars:
+            groups.append(current)
+            current = []
+            current_len = 0
+        current.append(item)
+        current_len += item_len
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _merge_notes_hierarchical(
+    notes_list: list[str], topic_id: str, language: str, institute_id: str, max_chars: int = _MERGE_GROUP_MAX_CHARS,
+) -> tuple[str, bool]:
+    """
+    Merge many chunk-notes into one coherent document without ever putting more
+    than `max_chars` of content into a single merge request. Parallel chunked
+    generation exists specifically to keep individual LLM requests under Groq's
+    hard per-request token cap (see GROQ_REQUEST_TOKEN_BUDGET) -- merging every
+    chunk's notes in one shot for formatting consistency would reintroduce that
+    exact problem for any lecture with more than a couple of chunks. Instead,
+    merge in safely-sized adjacent groups and repeat over the (shrinking) result
+    until one document remains, or a round makes no further progress (e.g. every
+    remaining piece is individually already at/over budget -- those pass through
+    unmerged rather than being dropped).
+    """
+    current = [n for n in notes_list if n and n.strip()]
+    if len(current) <= 1:
+        return (current[0] if current else ""), False
+
+    merge_applied = False
+    while len(current) > 1:
+        groups = _group_by_budget(current, max_chars)
+        next_round: list[str] = []
+        for group in groups:
+            if len(group) == 1:
+                next_round.append(group[0])
+                continue
+            try:
+                merged = _merge_chunk_notes(group, topic_id, language, institute_id).strip()
+            except Exception as exc:
+                logger.warning("Group notes merge failed (%s) — concatenating group instead", exc)
+                merged = ""
+            if merged:
+                next_round.append(merged)
+                merge_applied = True
+            else:
+                next_round.append("\n\n".join(group).strip())
+        if len(next_round) >= len(current):
+            # No group had more than one item this round — no further progress
+            # is possible.
+            current = next_round
+            break
+        current = next_round
+
+    return "\n\n".join(current).strip(), merge_applied
 
 
 def _hard_split_text(text: str, max_chars: int) -> list[str]:
@@ -2109,6 +2332,156 @@ def _generate_gemini_odia_comprehensive_notes(transcript: str, topic_id: str) ->
     }
 
 
+_ORPHAN_BOLD_OPEN_RE = re.compile(r"^([-*+]\s+)?\*\*([^\n*]{1,60})$")
+
+
+def _rejoin_split_bold_spans(text: str) -> str:
+    """
+    A bold label ('**Darwin's Observations**: ...') sometimes gets cut across
+    a paragraph break during generation -- one block ends with an unclosed
+    '**Darwin's' and the next begins with 'Observations**: ...'. CommonMark
+    strong-emphasis markers don't span a paragraph boundary, so NEITHER '**'
+    finds its pair and both render as literal, visible asterisks. Detect a
+    block that is JUST an orphaned "**text" bold-open with nothing else,
+    immediately followed by a block that closes it with a short lead-in
+    before its own "**", and rejoin them into one continuous phrase.
+    """
+    blocks = text.split("\n\n")
+    out: list[str] = []
+    i = 0
+    n = len(blocks)
+    while i < n:
+        stripped = blocks[i].strip()
+        open_match = _ORPHAN_BOLD_OPEN_RE.match(stripped)
+        if open_match and i + 1 < n:
+            next_stripped = blocks[i + 1].strip()
+            close_idx = next_stripped.find("**")
+            if close_idx > 0:
+                before = next_stripped[:close_idx].strip()
+                after = next_stripped[close_idx + 2:]
+                if before and len(before) <= 40:
+                    bullet_prefix = open_match.group(1) or ""
+                    label = f"{open_match.group(2).strip()} {before}".strip()
+                    out.append(f"{bullet_prefix}**{label}**{after}")
+                    i += 2
+                    continue
+        out.append(blocks[i])
+        i += 1
+    return "\n\n".join(out)
+
+
+_HTML_SUB_RE = re.compile(r"<sub>([^<]*)</sub>", re.IGNORECASE)
+_HTML_SUP_RE = re.compile(r"<sup>([^<]*)</sup>", re.IGNORECASE)
+
+
+def _convert_html_sub_sup(text: str) -> str:
+    """
+    The LLM sometimes writes literal HTML <sub>/<sup> tags for subscripts and
+    superscripts (e.g. 'K<sub>f</sub>') instead of plain-text notation. Notes
+    are consumed by more than one renderer (in-app Markdown view, PDF export)
+    and raw HTML isn't reliably interpreted by either, so it shows up as
+    literal visible tag text. Convert to plain-text subscript/superscript
+    notation (K_f, x^2) that every consumer already knows how to render.
+    """
+    def _sub(m: "re.Match") -> str:
+        inner = m.group(1).strip()
+        return f"_{{{inner}}}" if len(inner) > 1 else f"_{inner}"
+
+    def _sup(m: "re.Match") -> str:
+        inner = m.group(1).strip()
+        return f"^{{{inner}}}" if len(inner) > 1 else f"^{inner}"
+
+    return _HTML_SUP_RE.sub(_sup, _HTML_SUB_RE.sub(_sub, text))
+
+
+_HEADING_LINE_RE = re.compile(r"^(#{1,4})[ \t]+(.*)$")
+_CRAMMED_POINT_MARKER_RE = re.compile(r"\.\.\.\s*\((\d+)\)\.?\s*")
+
+
+def _fix_crammed_enumerations(text: str) -> str:
+    """
+    The LLM sometimes writes an entire enumerated list (properties, steps in a
+    worked example, stages of a process) on ONE physical line, using literal
+    "... (N)." markers instead of real line breaks -- both on heading lines
+    (e.g. "## 2. Properties ... (1). First point ... (2). Second point",
+    which renders the whole run-on line at heading size/weight) and in
+    ordinary body paragraphs (e.g. a 7-step worked-example calculation
+    crammed into one sentence). Split any line containing such markers into a
+    clean lead-in (kept as a heading if the line was one, otherwise as a plain
+    intro line) followed by a proper numbered list. A heading is fixed even
+    with a single marker (a heading should never carry inline content at
+    all); a plain paragraph needs 2+ markers, since a single "(1)" in body
+    text is more likely a legitimate reference than a crammed list.
+    """
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        heading_match = _HEADING_LINE_RE.match(line)
+        is_heading = heading_match is not None
+        rest = heading_match.group(2) if heading_match else line
+
+        if "..." not in rest:
+            out_lines.append(line)
+            continue
+        parts = _CRAMMED_POINT_MARKER_RE.split(rest)
+        num_markers = (len(parts) - 1) // 2
+        if num_markers < (1 if is_heading else 2):
+            out_lines.append(line)
+            continue
+        prefix = parts[0].strip().rstrip(".").strip()
+        points = [parts[i + 1].strip() for i in range(1, len(parts), 2) if parts[i + 1].strip()]
+        if not points or (is_heading and not prefix):
+            out_lines.append(line)
+            continue
+        list_lines = "\n".join(f"{idx + 1}. {point}" for idx, point in enumerate(points))
+        if is_heading:
+            out_lines.append(f"{heading_match.group(1)} {prefix}\n\n{list_lines}")
+        else:
+            out_lines.append(f"{prefix}\n\n{list_lines}" if prefix else list_lines)
+    return "\n".join(out_lines)
+
+
+_DASH_DEFINITION_SPLIT_RE = re.compile(r"[ \t]-[ \t](?=[^\s:()\-][^:\n()]{0,25}:[ \t])")
+_SYMBOL_DEF_LINE_RE = re.compile(r"^([^\s:()][^:\n()]{0,20})\s*:\s*(.+)$")
+
+
+def _reformat_symbol_definition_blocks(text: str) -> str:
+    """
+    A formula's variable definitions ('pi : osmotic pressure (Pa)', 'C :
+    molar concentration...') sometimes arrive dash-joined on one line
+    ('pi : ... - i : ... - C : ...') and sometimes as merely-adjacent,
+    unbulleted lines that a Markdown renderer collapses into one run-on
+    paragraph. Split any dash-joined "SYMBOL : definition" segments apart,
+    then turn any resulting run of 2+ consecutive "SYMBOL : definition"
+    lines within a paragraph into a proper bullet list so each definition
+    is guaranteed its own line.
+    """
+    def _fix_block(block: str) -> str:
+        lines = block.split("\n")
+        expanded: list[str] = []
+        for line in lines:
+            if _DASH_DEFINITION_SPLIT_RE.search(line):
+                expanded.extend(s.strip() for s in _DASH_DEFINITION_SPLIT_RE.split(line) if s.strip())
+            else:
+                expanded.append(line)
+
+        result: list[str] = []
+        i = 0
+        n = len(expanded)
+        while i < n:
+            if _SYMBOL_DEF_LINE_RE.match(expanded[i].strip()):
+                run = []
+                while i < n and _SYMBOL_DEF_LINE_RE.match(expanded[i].strip()):
+                    run.append(expanded[i].strip())
+                    i += 1
+                result.extend(f"- {r}" for r in run) if len(run) >= 2 else result.extend(run)
+            else:
+                result.append(expanded[i])
+                i += 1
+        return "\n".join(result)
+
+    return "\n\n".join(_fix_block(block) for block in text.split("\n\n"))
+
+
 def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str, institute_id: str) -> tuple[str, dict]:
     import time as _time
 
@@ -2137,14 +2510,16 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
 
 
 
-    # Adaptive section token budget — satisfies both constraints simultaneously:
-    #   TPM:   N × section_tokens + 300 prompt + 1800 merge ≤ 6000  → section_tokens ≤ 3900 // N
-    #   Chars: N × section_tokens × 4 ≤ _MERGE_MAX_INPUT_CHARS      → section_tokens ≤ _MERGE_MAX_INPUT_CHARS // (N × 4)
+    # Per-chunk output budget. Chunks are generated in independent parallel
+    # requests and then stitched (no LLM merge sums them), so the old
+    # "N × section_tokens ≤ 6000 TPM" clamp no longer applies — it was capping
+    # each chunk at 1400 and truncating detailed sections. Give each chunk the
+    # full budget so a rich section is written in full.
     n = len(chunks)
-    section_tokens = max(800, min(1400, NOTES_SECTION_MAX_TOKENS))
+    section_tokens = max(1500, min(4000, NOTES_SECTION_MAX_TOKENS))
 
     if n == 1:
-        notes = _generate_chunk_notes(chunks[0], topic_id, language, institute_id, 1, 1, max_tokens=section_tokens).strip()
+        notes = _generate_chunk_notes_with_retry(chunks[0], topic_id, language, institute_id, 1, 1, max_tokens=section_tokens).strip()
         return notes, {"chunk_count": 1, "merge_applied": False, "section_tokens": section_tokens}
 
     logger.info(
@@ -2152,34 +2527,78 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
         n, section_tokens, topic_id, language,
     )
 
-    partial_notes: list[str] = []
+    # Generate the per-chunk notes IN PARALLEL. These calls are independent, so
+    # running them one-after-another (plus a 1s sleep between each) made an
+    # N-chunk lecture take N sequential model calls — the main slowness. A small
+    # worker pool overlaps the waiting while staying under Groq's shared rate
+    # limit (LLMClient rotates keys + retries on 429). Results are placed back
+    # in chunk order. Each chunk call also gets its own bounded retry
+    # (_generate_chunk_notes_with_retry) for transient failures that survive
+    # the client's internal 429 handling — previously a single timeout/network
+    # blip on one chunk silently dropped that whole section of the lecture.
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _notes_done
+    partial_notes: list[str] = [""] * n
     failed_chunks = 0
     _t0_generate = _time.perf_counter()
-    _MAX_GEN_TIME = 600
+    _workers = min(n, int(os.getenv("NOTES_CHUNK_WORKERS", "4")))
 
-    for i, chunk in enumerate(chunks):
-        if _time.perf_counter() - _t0_generate > _MAX_GEN_TIME:
-            logger.warning("Chunk generation timed out after %.1f seconds. Using %d/%d partial chunks.", _time.perf_counter() - _t0_generate, len(partial_notes), n)
-            break
+    with ThreadPoolExecutor(max_workers=_workers) as _pool:
+        _futures = {
+            _pool.submit(
+                _generate_chunk_notes_with_retry,
+                chunk, topic_id, language, institute_id, i + 1, n, section_tokens,
+            ): i
+            for i, chunk in enumerate(chunks)
+        }
+        for _fut in _notes_done(_futures):
+            i = _futures[_fut]
+            try:
+                partial_notes[i] = _fut.result().strip()
+            except Exception as exc:
+                logger.warning("Chunk %d/%d notes failed (%s) — skipping", i + 1, n, exc)
+                partial_notes[i] = ""
+                failed_chunks += 1
 
-        try:
-            notes = _generate_chunk_notes(
-                chunk, topic_id, language, institute_id, i + 1, n, max_tokens=section_tokens,
-            ).strip()
-            partial_notes.append(notes)
-        except Exception as exc:
-            logger.warning("Chunk %d/%d notes failed (%s) — skipping", i + 1, n, exc)
-            failed_chunks += 1
-            partial_notes.append("")
-        if i < n - 1:
-            _time.sleep(1.0)
+    logger.info(
+        "Chunk notes generated | chunks=%d | workers=%d | failed=%d | %.1fs",
+        n, _workers, failed_chunks, _time.perf_counter() - _t0_generate,
+    )
 
     non_empty = [p for p in partial_notes if p.strip()]
     if not non_empty:
         return "", {"chunk_count": n, "failed_chunks": failed_chunks, "error": "all_chunks_failed"}
 
-    # Stitch all detailed chunk notes together
-    stitched_notes = "\n\n".join(non_empty).strip()
+    # Merge the independently-generated chunk notes into one coherent document
+    # instead of raw string concatenation. Each chunk is written by its own LLM
+    # call with no shared context, so plain "\n\n".join produced visibly uneven
+    # formatting/voice across chunk boundaries ("stitched fragments"). Chunked
+    # generation exists specifically to keep individual requests under Groq's
+    # hard per-request token cap, so merging is done in safely-sized groups
+    # (_merge_notes_hierarchical), never as one request over the whole lecture —
+    # that would reintroduce the exact "request too large" problem chunking was
+    # meant to avoid. If merging fails outright, fall back to plain
+    # concatenation rather than losing the notes entirely.
+    merge_applied = False
+    stitched_notes = ""
+    try:
+        merged, merge_applied = _merge_notes_hierarchical(non_empty, topic_id, language, institute_id)
+        stitched_notes = merged.strip()
+    except Exception as exc:
+        logger.warning("Chunk notes merge failed (%s) — falling back to concatenation", exc)
+
+    if not stitched_notes:
+        stitched_notes = "\n\n".join(non_empty).strip()
+
+    # Structural safety nets — the prompts above ask the model not to do any
+    # of this, but these guarantee it regardless of whether the model complies:
+    # convert stray HTML <sub>/<sup> tags to plain-text notation, then split
+    # any heading or paragraph that has an enumerated list or dash-joined
+    # variable definitions crammed onto one line, and rejoin a bold label
+    # ("**Darwin's Observations**: ...") that got cut across a paragraph break.
+    stitched_notes = _convert_html_sub_sup(stitched_notes)
+    stitched_notes = _rejoin_split_bold_spans(stitched_notes)
+    stitched_notes = _fix_crammed_enumerations(stitched_notes)
+    stitched_notes = _reformat_symbol_definition_blocks(stitched_notes)
 
     # Standardize heading levels: ensure top-level section headings are ## and sub-headings are ###
     # This prevents uneven heading fonts (e.g. random # vs ## vs ###) across chunk boundaries.
@@ -2249,10 +2668,18 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
     clean_body = eq_line_re.sub(_surround_eq, clean_body)
     # Collapse triple+ blank lines back to double
     clean_body = re.sub(r"\n{3,}", "\n\n", clean_body).strip()
-    return clean_body, {"chunk_count": n, "failed_chunks": failed_chunks, "merge_applied": False, "section_tokens": section_tokens}
+    return clean_body, {"chunk_count": n, "failed_chunks": failed_chunks, "merge_applied": merge_applied, "section_tokens": section_tokens}
 
 
 
+
+
+def _downgrade_h1_headings(text: str) -> str:
+    """Force any literal H1 (single `#`) heading down to H2 -- the lecture's
+    own title is rendered separately by the frontend, above the notes body, so
+    an H1 surviving inside the notes renders at a size nothing else in the
+    document uses, reading as an unrelated second document title."""
+    return re.sub(r"(?m)^#(?!#)[ \t]*", "## ", text)
 
 
 def _looks_like_unstructured_notes(notes: str) -> bool:
@@ -2281,32 +2708,52 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
 
 
 
+    system_prompt = (
+        "You are an expert academic editor. Rewrite the provided lecture notes into clean, well-structured "
+        "Markdown without changing the academic meaning. Enforce proper section headings, subheadings, and "
+        "lists where appropriate."
+    )
+    user_prompt = (
+        f"Lecture topic: {topic_id or 'General'}\n"
+        f"Source language: {language}\n\n"
+        "Rewrite these notes into clean Markdown. Requirements:\n"
+        "- Do NOT add a document title — the lecture title is already shown separately above these notes. "
+        "Start directly with `##` for the first section.\n"
+        "- Use `##` for main sections and `###` for sub-sections — never a `#` (single-hash) heading.\n"
+        "- Break long run-on paragraphs into readable sections\n"
+        "- Preserve content, formulas, and examples\n"
+        "- Do not add unrelated information\n\n"
+        f"{cleaned}"
+    )
+    # This call reproduces the WHOLE notes document as a single prompt, so for a
+    # long lecture it can itself exceed Groq's hard per-request token budget
+    # (prompt + completion) before we even ask for output — a 413 there is not
+    # recoverable by retrying. If the document is already too large to safely
+    # round-trip in one request, skip polishing rather than attempt a call that's
+    # guaranteed to fail; the merge/chunk pipeline already enforces markdown
+    # headings, so unpolished notes are still usable.
+    estimated_prompt_tokens = int(len(system_prompt) / _CONSERVATIVE_CHARS_PER_TOKEN) + int(len(user_prompt) / _CONSERVATIVE_CHARS_PER_TOKEN)
+    if estimated_prompt_tokens + 500 > GROQ_REQUEST_TOKEN_BUDGET:
+        logger.info(
+            "Skipping notes polish — document too large for a safe single request (~%d est. tokens)",
+            estimated_prompt_tokens,
+        )
+        return cleaned, False
+
     try:
         llm_result = get_llm().complete(
-            system_prompt=(
-                "You are an expert academic editor. Rewrite the provided lecture notes into clean, well-structured "
-                "Markdown without changing the academic meaning. Enforce a proper title, section headings, subheadings, "
-                "lists where appropriate, and a final Summary section."
-            ),
-            user_prompt=(
-                f"Lecture topic: {topic_id or 'General'}\n"
-                f"Source language: {language}\n\n"
-                "Rewrite these notes into clean Markdown. Requirements:\n"
-                "- Start with `# Title`\n"
-                "- Use `##` for main sections\n"
-                "- Break long run-on paragraphs into readable sections\n"
-                "- Preserve content, formulas, and examples\n"
-                "- Do not add unrelated information\n\n"
-                f"{cleaned}"
-            ),
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             model="openai/gpt-oss-20b",
             temperature=0.2,
-            max_tokens=2048,  # was 4096; merged notes ≈ 1800 input tokens → 1800+2048=3848 fits under 6000 TPM
+            # Rewrites the WHOLE notes, so a small cap truncated long notes. Give
+            # it room to reproduce them in full, clamped to the safe request budget.
+            max_tokens=_safe_max_tokens(system_prompt + user_prompt, int(os.getenv("NOTES_POLISH_MAX_TOKENS", "4096"))),
             json_mode=False,
             institute_id=institute_id,
         )
         polished = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
-        polished = polished.strip()
+        polished = _convert_html_sub_sup(_downgrade_h1_headings(polished.strip()))
         return polished or cleaned, True
     except Exception as exc:
         logger.warning("Notes markdown polish failed (%s)", exc)

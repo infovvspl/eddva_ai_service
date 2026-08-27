@@ -12,6 +12,7 @@ browsers cannot send Authorization headers on bare <img src> requests.
 import base64
 import json
 import logging
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
@@ -750,13 +751,35 @@ _MAX_SLIDES = 25
 # Output budget, constrained by Groq's per-key tokens-per-minute ceiling.
 #
 # Groq rejects a request outright (413) when prompt + max_tokens exceeds the
-# key's TPM limit — 12000 on the on-demand tier — regardless of how much quota
-# is actually free. This prompt runs ~2300 tokens, so anything above ~9500 here
-# fails on every on-demand key. A measured 16-slide deck emits ~3700 completion
-# tokens, so 25 slides needs roughly 6000; 8500 leaves real headroom against
-# truncation while staying safely inside the limit.
-# Do not raise this without checking the TPM ceiling on the keys in .env.
-_MAX_TOKENS = 8500
+# key's TPM limit — regardless of how much quota is actually free. The on-demand
+# keys in .env are 8000 TPM (an earlier comment here assumed 12000, which is why
+# max_tokens=8500 produced "Request too large: Limit 8000, Requested 11113" and
+# 500'd every ungrounded deck whenever the Gemini grounded path fell back). The
+# real ceiling is enforced dynamically at the call site (see _groq_max_tokens):
+# prompt + max_tokens must stay under GROQ_TPM_CEILING. This is only the ceiling
+# on the OUTPUT half; a measured 16-slide deck emits ~3700 completion tokens.
+_MAX_TOKENS = 6000
+
+# The per-request TPM cap on the on-demand Groq keys. prompt + max_tokens must be
+# below this or Groq 413s before generating a single token. Env-overridable so a
+# Dev-tier upgrade (higher TPM) can lift it without a release.
+_GROQ_TPM_CEILING = int(os.getenv("GROQ_TPM_CEILING", "8000"))
+
+
+def _groq_max_tokens(*prompts: str, want: int = _MAX_TOKENS) -> int:
+    """Largest output budget that still fits under the Groq per-request TPM cap.
+
+    Groq counts prompt + max_tokens against the ceiling, so a fixed max_tokens
+    413s as soon as the prompt grows (the coverage-planned PPT prompt is large).
+    Estimate the prompt at ~4 chars/token, leave headroom, and never ask for more
+    than fits — capped so a slide deck cannot be starved below a usable length.
+    """
+    # Estimate at ~3.5 chars/token (conservative — dense JSON/LaTeX prompts run
+    # fewer chars per token than prose, so a 4-char estimate can undercount and
+    # tip back over the ceiling). Better to shave a little output than to 413.
+    est_prompt = int(sum(len(p) for p in prompts) / 3.5)
+    room = _GROQ_TPM_CEILING - est_prompt - 500  # 500-token safety margin
+    return max(1200, min(want, room))
 
 # Serper allows ~1 req/s sustained; a small pool keeps 25 slides well under the
 # NestJS 240s timeout without bursting hard enough to get rate-limited.
@@ -772,28 +795,70 @@ _IMAGE_WORKERS = 5
 _COVERAGE_DEADLINE_S = 25
 
 
+def _classify_gemini_failure(exc: Exception) -> str:
+    """Turn a grounded-call exception into a precise, teacher-legible reason.
+
+    All three collapse to "General knowledge" on the badge, but the reason is the
+    difference between "top up the Gemini quota" and "the keys are wrong" — so it
+    must survive to the log and the response instead of being flattened away.
+    """
+    from ai_services.core import gemini_client as _gc
+
+    if _gc._looks_rate_limited(exc):
+        return "gemini_exhausted"      # 429 / quota — the common one, and fixable
+    if _gc._looks_overloaded(exc):
+        return "gemini_overloaded"     # 503 high demand — transient, just retry
+    if _gc._looks_key_rejected(exc):
+        return "gemini_key_rejected"   # bad/disabled key
+    if _gc._looks_model_unavailable(exc):
+        return "gemini_model_unavailable"
+    return "gemini_error"              # malformed JSON, empty response, transport
+
+
 def _generate_grounded(
     *, passages, ctx, topic, slide_count, language, institute_id, vertical,
 ):
-    """Write the deck from the school's own chapter. Returns a Response, or None
-    to let the caller fall back to general-knowledge generation.
+    """Write the deck from the school's own chapter.
 
-    Returning None rather than raising matters: a school that has not uploaded
-    this chapter, or a temporarily unavailable Gemini, should still get slides —
-    just labelled as general knowledge rather than sourced from the book.
+    Returns (Response, None) on success, or (None, reason) to let the caller fall
+    back to general-knowledge generation. The reason is threaded through to the
+    teacher's badge so an indexed chapter that lands on "General knowledge" is
+    self-explaining (Gemini quota vs bad key vs no usable passages) rather than a
+    silent mystery.
     """
     from ai_services.core import gemini_client as _gc
     from ai_services.core import grounding as _gr
 
     if not _gc.is_available():
-        return None
+        # No key present or the SDK is not installed on this host. This is the
+        # blanket failure that turns EVERY grounded deck into general knowledge.
+        logger.warning(
+            "Grounded PPT skipped: Gemini unavailable (no key or google-genai "
+            "missing) — deck for %r will be general knowledge despite %d passages",
+            ctx.get("chapterName") or topic, len(passages),
+        )
+        return None, "gemini_unavailable"
 
+    # Slides need far fewer passages than detailed notes, and the grounded Gemini
+    # call scales with prompt size — so cap the source context for PPT well below
+    # the notes default (30k). This keeps the deck grounded in the book while
+    # cutting the wait substantially. Env-tunable.
+    _ppt_budget = int(os.getenv("PPT_GROUNDING_TOKEN_BUDGET", "12000"))
     selection = _gr.select_source(
         passages, ctx.get("topicName") or topic, ctx.get("chapterName") or "",
+        token_budget=_ppt_budget,
     )
     if not selection["passages"]:
-        return None
+        logger.warning(
+            "Grounded PPT skipped: %d passages supplied for %r but none had usable "
+            "text after ranking — check the chapter's OCR quality",
+            len(passages), ctx.get("chapterName") or topic,
+        )
+        return None, "no_relevant_passages"
 
+    # Output budget scales with the deck: ~320 tokens/slide is ample for slide
+    # bullets, and a smaller ceiling means Gemini finishes sooner. Capped at 8000.
+    _out_tokens = max(2500, min(8000, slide_count * 320))
     try:
         result = _gc.complete_json(
             system_prompt=_gr.GROUNDED_SYSTEM_PROMPT,
@@ -801,19 +866,25 @@ def _generate_grounded(
                 slide_count=slide_count, language=language, topic=topic,
                 ctx=ctx, source_block=_gr.format_source_block(selection["passages"]),
             ),
-            max_output_tokens=8000,
+            max_output_tokens=_out_tokens,
         )
     except Exception as exc:
-        logger.warning("Grounded generation failed (%s)", exc)
+        reason = _classify_gemini_failure(exc)
+        logger.warning(
+            "Grounded PPT fell back (%s) for %r: %s",
+            reason, ctx.get("chapterName") or topic, exc,
+        )
         _log(institute_id, vertical, "gemini", success=False, error=exc)
-        return None
+        return None, reason
 
     _log(institute_id, vertical, result.get("model", "gemini"), result=result)
 
     data = result["content"]
     slides = data.get("slides") or []
     if not slides:
-        return None
+        logger.warning("Grounded PPT fell back: Gemini returned no slides for %r",
+                       ctx.get("chapterName") or topic)
+        return None, "gemini_error"
 
     with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
         images = list(pool.map(
@@ -833,7 +904,7 @@ def _generate_grounded(
         "pages": selection["pages"],
         "truncated": selection["truncated"],
     }
-    return Response({"success": True, "data": data})
+    return Response({"success": True, "data": data}), None
 
 
 @api_view(["POST"])
@@ -872,14 +943,22 @@ def generate_presentation(request):
     # several thousand tokens and Groq rejects any request whose prompt plus
     # max_tokens exceeds the key's 12k TPM ceiling.
     passages = request.data.get("sourcePassages") or []
+    # When passages were supplied but grounding fell back, this holds the precise
+    # reason so the teacher's badge can explain an indexed chapter that still shows
+    # "General knowledge" (Gemini quota vs bad key vs unusable OCR) instead of a
+    # generic, unactionable message.
+    grounded_fallback_reason = None
     if passages:
-        grounded = _generate_grounded(
+        grounded, grounded_fallback_reason = _generate_grounded(
             passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
             language=language, institute_id=institute_id, vertical=vertical,
         )
         if grounded is not None:
             return grounded
-        logger.warning("Grounded generation unavailable — falling back to general knowledge")
+        logger.warning(
+            "Grounded generation unavailable (%s) — falling back to general knowledge",
+            grounded_fallback_reason,
+        )
 
     # Decide coverage before writing any slides — see _decompose_ppt_coverage.
     # Run it under a wall-clock deadline: if the LLM is unhealthy this step would
@@ -925,13 +1004,23 @@ def generate_presentation(request):
     # The loop also could not help with malformed JSON — that is handled below,
     # outside the call — so its temperature fallback never actually applied.
     llm = get_llm()
+    # Fit the output budget under the Groq per-request TPM ceiling. Without this,
+    # a large coverage-planned prompt plus a fixed max_tokens exceeds the 8000 cap
+    # and Groq 413s before producing anything — which is exactly how an ungrounded
+    # fallback (Gemini overloaded) turned into a 500 for the teacher.
+    _gen_max_tokens = _groq_max_tokens(system_prompt, user_prompt)
+    if _gen_max_tokens < _MAX_TOKENS:
+        logger.info(
+            "PPT ungrounded: capping max_tokens to %d (prompt ~%d tok) to fit Groq TPM %d",
+            _gen_max_tokens, (len(system_prompt) + len(user_prompt)) // 4, _GROQ_TPM_CEILING,
+        )
     try:
         llm_result = llm.complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             model=_MODEL,
             temperature=0.6,
-            max_tokens=_MAX_TOKENS,
+            max_tokens=_gen_max_tokens,
             json_mode=True,
             institute_id=institute_id,
         )
@@ -961,6 +1050,16 @@ def generate_presentation(request):
         ))
 
     data["slides"] = [{**slide, **image} for slide, image in zip(slides, images)]
+    # State the source explicitly on the general-knowledge path too. When passages
+    # were supplied but grounding fell back, carry the precise reason; when none
+    # were supplied the chapter simply is not indexed. Either way the badge stops
+    # guessing. (If the caller sent no passages, NestJS labels it 'not_indexed'.)
+    if passages:
+        data["source"] = {
+            "grounded": False,
+            "reason": grounded_fallback_reason or "unavailable",
+            "passagesAvailable": len(passages),
+        }
     return Response({"success": True, "data": data})
 
 

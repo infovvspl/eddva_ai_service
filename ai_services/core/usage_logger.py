@@ -15,7 +15,7 @@ MODEL_COSTS = {
     'llama-3.3-70b-versatile':        {'input': 0.59,  'output': 0.79},
     'qwen/qwen3-32b':                  {'input': 0.29,  'output': 0.59},
     'openai/gpt-oss-120b':             {'input': 0.15,  'output': 0.60},
-    'openai/gpt-oss-20b':              {'input': 0.10,  'output': 0.50},
+    'openai/gpt-oss-20b':              {'input': 0.075, 'output': 0.30},
     'meta-llama/llama-4-scout-17b-16e-instruct':     {'input': 0.11,  'output': 0.34},
     'meta-llama/llama-4-maverick-17b-128e-instruct': {'input': 0.20,  'output': 0.60},
     'llama-3.2-11b-vision-preview':    {'input': 0.18,  'output': 0.18},

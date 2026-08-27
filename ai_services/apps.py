@@ -53,7 +53,43 @@ class AiServicesConfig(AppConfig):
             except Exception as exc:
                 logger.error("Groq health check crashed: %s", exc)
 
-        t = threading.Thread(target=_run_health_check, name="groq-health-check", daemon=True)
+            # Verify Gemini actually WORKS (not just that a key string exists).
+            # Grounded PPT/notes/OCR run on Gemini; a configured-but-invalid or
+            # out-of-quota key would otherwise only surface as a teacher's
+            # generation silently falling back to general knowledge.
+            try:
+                from ai_services.core.gemini_client import check_gemini_health
+                status = check_gemini_health()
+                if status == "ok":
+                    logger.info("Gemini health: OK — grounded generation available")
+                elif status == "no_keys":
+                    logger.error(
+                        "Gemini health: NO KEYS — grounded PPT/notes/OCR will fall back to "
+                        "general knowledge. Set GEMINI_API_KEY (or GEMINI_API_KEYS)."
+                    )
+                elif status == "key_rejected":
+                    logger.error(
+                        "Gemini health: KEY REJECTED (invalid/restricted) — grounded generation "
+                        "will fall back to general knowledge. Rotate GEMINI_API_KEY."
+                    )
+                elif status == "rate_limited":
+                    logger.warning(
+                        "Gemini health: RATE-LIMITED / OUT OF QUOTA right now — grounded generation "
+                        "may fall back to general knowledge until quota resets."
+                    )
+                elif status == "model_unavailable":
+                    logger.error(
+                        "Gemini health: model unavailable for this project (e.g. gemini-2.5-flash "
+                        "withdrawn) — grounded generation will fall back to general knowledge."
+                    )
+                else:
+                    logger.warning(
+                        "Gemini health: unverified (%s) — grounded generation may not work.", status
+                    )
+            except Exception as exc:
+                logger.error("Gemini health check crashed: %s", exc)
+
+        t = threading.Thread(target=_run_health_check, name="ai-key-health-check", daemon=True)
         t.start()
 
         # ── Redis Validation ──────────────────────────────────────────────────

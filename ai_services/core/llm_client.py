@@ -319,6 +319,14 @@ class LLMClient:
                 )
             )
 
+        def _is_request_too_large_error(msg: str) -> bool:
+            # 413 "Request too large ... reduce your message size" is a hard
+            # per-request token cap tied to the model/tier, not a per-key quota --
+            # every key hits the identical limit against the identical request, so
+            # rotating keys or waiting for the next round can never succeed.
+            m = (msg or "").lower()
+            return any(token in m for token in ("413", "request too large", "reduce your message size"))
+
         def _active_keys() -> list[str]:
             with _KEY_STATE_LOCK:
                 keys = [k for k in GROQ_API_KEYS if k and k not in _DISABLED_GROQ_KEYS]
@@ -407,6 +415,16 @@ class LLMClient:
                             actual_key_num, n, last_error,
                         )
                         continue
+                    if _is_request_too_large_error(last_error):
+                        # Fail fast instead of burning the remaining keys and up to
+                        # 2 more 5s-spaced rounds (~30+ calls) on a request that is
+                        # guaranteed to be rejected identically every time -- the
+                        # caller needs to reduce max_tokens/prompt size, not retry.
+                        logger.error(
+                            "LLM key %d/%d request too large for model %s -- not retrying (%s)",
+                            actual_key_num, n, effective_model, last_error,
+                        )
+                        raise RuntimeError(f"LLM request too large for model {effective_model}: {last_error}") from exc
                     logger.error(
                         "LLM key %d/%d error (%s) -- rotating to next key",
                         actual_key_num, n, last_error,
