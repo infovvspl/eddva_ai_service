@@ -78,6 +78,18 @@ def _looks_rate_limited(exc: Exception) -> bool:
     return any(t in s for t in ("429", "resource_exhausted", "rate limit", "quota"))
 
 
+def _looks_overloaded(exc: Exception) -> bool:
+    """The model is momentarily overloaded (503 UNAVAILABLE / "high demand").
+
+    This is transient and server-side, not a property of the key — so it must be
+    retried on another key with backoff rather than raised. Treating it as fatal
+    was dropping every grounded deck to Groq the instant Gemini got busy, and the
+    Groq fallback then 413'd on its own TPM cap, surfacing as a 500 to the teacher.
+    """
+    s = str(exc).lower()
+    return any(t in s for t in ("503", "unavailable", "overloaded", "high demand"))
+
+
 def _looks_key_rejected(exc: Exception) -> bool:
     s = str(exc).lower()
     return any(t in s for t in ("api key not valid", "api_key_invalid", "permission_denied"))
@@ -222,6 +234,15 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
             if _looks_rate_limited(exc):
                 logger.warning(
                     "Gemini key #%d rate-limited on %s; trying the next key", key_no, what
+                )
+                time.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
+                continue
+            if _looks_overloaded(exc):
+                # 503 "high demand" is transient and not the key's fault. Back off
+                # and try another key rather than dropping the whole grounded deck.
+                logger.warning(
+                    "Gemini key #%d got 503/overloaded on %s; backing off and trying the next key",
+                    key_no, what,
                 )
                 time.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
                 continue
