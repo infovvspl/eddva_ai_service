@@ -599,43 +599,61 @@ def _caption_is_relevant(caption: str, strong: "set[str]", broad: "set[str]") ->
 
 
 def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None" = None) -> dict:
-    """Search Serper and return the best ON-TOPIC image URL for the slide.
+    """Search Serper and return the first downloadable, ON-TOPIC image as base64.
 
-    Images are NOT downloaded here: the client loads them (the preview proxies
-    the URL via /ppt/proxy-image, and export/save materialise base64 once).
-    Downloading every slide's image to base64 during generation was the largest,
-    most variable part of the request time. Results are still ranked by source so
-    a teaching figure beats a stock photo, and only a caption that shares the
-    slide's subject words is accepted; otherwise the best-ranked URL is used so
-    the slide is never blank.
+    Results are ranked by source before anything is downloaded, so a teaching
+    figure is taken ahead of a stock photo. We then only accept a result whose
+    caption actually shares the slide's subject words (`_caption_is_relevant`),
+    so a slightly-off search can't put an unrelated picture on the slide. If no
+    query yields a relevant image, the best downloadable one is used as a
+    fallback rather than leaving the slide blank.
     """
     queries = _search_queries(search_term, slide_title, ctx)
     strong = _keywords(search_term)
     broad = strong | _keywords(slide_title)
-    fallback_url = None  # best-ranked URL even if its caption is off-topic
+    first_url = None
+    fallback: "dict | None" = None  # best downloadable image even if off-caption
 
-    for query in queries:
+    for attempt, query in enumerate(queries, 1):
         try:
             results = search_google_images(query, limit=10)
             if not results:
                 continue
             # sorted() is stable, so Serper's own ranking survives within a tier.
             ordered = sorted(results, key=_source_rank)
-            if fallback_url is None:
-                fallback_url = ordered[0].get("imageUrl")
+            if first_url is None:
+                first_url = ordered[0].get("imageUrl")
+
             for item in ordered:
                 url = item.get("imageUrl")
                 if not url:
                     continue
-                if _caption_is_relevant(item.get("title") or "", strong, broad):
-                    return {"imageUrl": url, "imageBase64": None}
+                relevant = _caption_is_relevant(item.get("title") or "", strong, broad)
+                # Skip off-topic results once we already hold a fallback — no need
+                # to download more of them.
+                if not relevant and fallback is not None:
+                    continue
+                b64 = _download_image_as_base64(url)
+                if not b64:
+                    continue
+                if relevant:
+                    if attempt > 1:
+                        logger.info("Slide image found on attempt %d (query %r)", attempt, query)
+                    return {"imageUrl": url, "imageBase64": b64}
+                if fallback is None:
+                    fallback = {"imageUrl": url, "imageBase64": b64}
         except Exception as exc:
             logger.warning("Image search failed for %r: %s", query, exc)
 
-    # No caption-relevant hit — hand back the best-ranked URL so the slide is
-    # never blank; the client loads it. Nothing is downloaded here.
-    if fallback_url:
-        return {"imageUrl": fallback_url, "imageBase64": None}
+    # No caption-relevant image anywhere — use the best downloadable one so the
+    # slide isn't blank, then the raw best URL as a last resort (client proxies it).
+    if fallback is not None:
+        logger.info("No caption-relevant image for %r; using best available", search_term)
+        return fallback
+    if first_url:
+        logger.info("No downloadable image for %r; returning URL only", search_term)
+        return {"imageUrl": first_url, "imageBase64": None}
+
     logger.warning("No image at all for slide %r (tried %d queries)", slide_title, len(queries))
     return {"imageUrl": None, "imageBase64": None}
 
@@ -754,35 +772,69 @@ _IMAGE_WORKERS = 5
 # and anything the planner burns is taken from the actual slide generation.
 _COVERAGE_DEADLINE_S = 25
 
-# The coverage-planning call is an extra LLM round-trip before any slide is
-# written. Skipping it removes that whole call from the critical path (the main
-# generation prompt still plans the deck inline), which is a meaningful speedup.
-# Env-reversible: set PPT_SKIP_COVERAGE=false to restore the planning step.
-_SKIP_COVERAGE = os.getenv("PPT_SKIP_COVERAGE", "true").strip().lower() in ("1", "true", "yes")
+
+def _classify_gemini_failure(exc: Exception) -> str:
+    """Turn a grounded-call exception into a precise, teacher-legible reason.
+
+    All three collapse to "General knowledge" on the badge, but the reason is the
+    difference between "top up the Gemini quota" and "the keys are wrong" — so it
+    must survive to the log and the response instead of being flattened away.
+    """
+    from ai_services.core import gemini_client as _gc
+
+    if _gc._looks_rate_limited(exc):
+        return "gemini_exhausted"      # 429 / quota — the common one, and fixable
+    if _gc._looks_key_rejected(exc):
+        return "gemini_key_rejected"   # bad/disabled key
+    if _gc._looks_model_unavailable(exc):
+        return "gemini_model_unavailable"
+    return "gemini_error"              # malformed JSON, empty response, transport
 
 
 def _generate_grounded(
     *, passages, ctx, topic, slide_count, language, institute_id, vertical,
 ):
-    """Write the deck from the school's own chapter. Returns a Response, or None
-    to let the caller fall back to general-knowledge generation.
+    """Write the deck from the school's own chapter.
 
-    Returning None rather than raising matters: a school that has not uploaded
-    this chapter, or a temporarily unavailable Gemini, should still get slides —
-    just labelled as general knowledge rather than sourced from the book.
+    Returns (Response, None) on success, or (None, reason) to let the caller fall
+    back to general-knowledge generation. The reason is threaded through to the
+    teacher's badge so an indexed chapter that lands on "General knowledge" is
+    self-explaining (Gemini quota vs bad key vs no usable passages) rather than a
+    silent mystery.
     """
     from ai_services.core import gemini_client as _gc
     from ai_services.core import grounding as _gr
 
     if not _gc.is_available():
-        return None
+        # No key present or the SDK is not installed on this host. This is the
+        # blanket failure that turns EVERY grounded deck into general knowledge.
+        logger.warning(
+            "Grounded PPT skipped: Gemini unavailable (no key or google-genai "
+            "missing) — deck for %r will be general knowledge despite %d passages",
+            ctx.get("chapterName") or topic, len(passages),
+        )
+        return None, "gemini_unavailable"
 
+    # Slides need far fewer passages than detailed notes, and the grounded Gemini
+    # call scales with prompt size — so cap the source context for PPT well below
+    # the notes default (30k). This keeps the deck grounded in the book while
+    # cutting the wait substantially. Env-tunable.
+    _ppt_budget = int(os.getenv("PPT_GROUNDING_TOKEN_BUDGET", "12000"))
     selection = _gr.select_source(
         passages, ctx.get("topicName") or topic, ctx.get("chapterName") or "",
+        token_budget=_ppt_budget,
     )
     if not selection["passages"]:
-        return None
+        logger.warning(
+            "Grounded PPT skipped: %d passages supplied for %r but none had usable "
+            "text after ranking — check the chapter's OCR quality",
+            len(passages), ctx.get("chapterName") or topic,
+        )
+        return None, "no_relevant_passages"
 
+    # Output budget scales with the deck: ~320 tokens/slide is ample for slide
+    # bullets, and a smaller ceiling means Gemini finishes sooner. Capped at 8000.
+    _out_tokens = max(2500, min(8000, slide_count * 320))
     try:
         result = _gc.complete_json(
             system_prompt=_gr.GROUNDED_SYSTEM_PROMPT,
@@ -790,38 +842,34 @@ def _generate_grounded(
                 slide_count=slide_count, language=language, topic=topic,
                 ctx=ctx, source_block=_gr.format_source_block(selection["passages"]),
             ),
-            max_output_tokens=8000,
+            max_output_tokens=_out_tokens,
         )
     except Exception as exc:
-        logger.warning("Grounded generation failed (%s)", exc)
+        reason = _classify_gemini_failure(exc)
+        logger.warning(
+            "Grounded PPT fell back (%s) for %r: %s",
+            reason, ctx.get("chapterName") or topic, exc,
+        )
         _log(institute_id, vertical, "gemini", success=False, error=exc)
-        return None
+        return None, reason
 
     _log(institute_id, vertical, result.get("model", "gemini"), result=result)
 
-    data = result.get("content")
-    if not isinstance(data, dict):
-        # A JSON array or scalar would crash the .get() below; treat it as a
-        # grounding miss and let the caller fall back rather than 500.
-        logger.warning("Grounded generation returned non-object JSON — falling back")
-        return None
+    data = result["content"]
     slides = data.get("slides") or []
     if not slides:
-        return None
+        logger.warning("Grounded PPT fell back: Gemini returned no slides for %r",
+                       ctx.get("chapterName") or topic)
+        return None, "gemini_error"
 
-    # Images are a nice-to-have; a search/fetch failure must not sink a deck that
-    # already has its (grounded) text.
-    try:
-        with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
-            images = list(pool.map(
-                lambda s: _fetch_image_for_slide(
-                    s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
-                ),
-                slides,
-            ))
-        data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
-    except Exception as exc:
-        logger.warning("Grounded slide-image fetch failed (%s) — returning slides without images", exc)
+    with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
+        images = list(pool.map(
+            lambda s: _fetch_image_for_slide(
+                s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
+            ),
+            slides,
+        ))
+    data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
 
     # The caller shows this to the teacher, so a grounded deck is never mistaken
     # for one written from general knowledge.
@@ -832,7 +880,7 @@ def _generate_grounded(
         "pages": selection["pages"],
         "truncated": selection["truncated"],
     }
-    return Response({"success": True, "data": data})
+    return Response({"success": True, "data": data}), None
 
 
 @api_view(["POST"])
@@ -871,38 +919,39 @@ def generate_presentation(request):
     # several thousand tokens and Groq rejects any request whose prompt plus
     # max_tokens exceeds the key's 12k TPM ceiling.
     passages = request.data.get("sourcePassages") or []
+    # When passages were supplied but grounding fell back, this holds the precise
+    # reason so the teacher's badge can explain an indexed chapter that still shows
+    # "General knowledge" (Gemini quota vs bad key vs unusable OCR) instead of a
+    # generic, unactionable message.
+    grounded_fallback_reason = None
     if passages:
-        try:
-            grounded = _generate_grounded(
-                passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
-                language=language, institute_id=institute_id, vertical=vertical,
-            )
-        except Exception as exc:
-            # Grounding is best-effort — never let a Gemini/parsing hiccup 500 the
-            # whole request; fall back to general-knowledge generation instead.
-            logger.warning("Grounded generation errored (%s) — falling back to general knowledge", exc)
-            grounded = None
+        grounded, grounded_fallback_reason = _generate_grounded(
+            passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
+            language=language, institute_id=institute_id, vertical=vertical,
+        )
         if grounded is not None:
             return grounded
-        logger.warning("Grounded generation unavailable — falling back to general knowledge")
+        logger.warning(
+            "Grounded generation unavailable (%s) — falling back to general knowledge",
+            grounded_fallback_reason,
+        )
 
     # Decide coverage before writing any slides — see _decompose_ppt_coverage.
     # Run it under a wall-clock deadline: if the LLM is unhealthy this step would
     # otherwise consume the whole request budget retrying, and it is optional.
     sub_areas = None
-    if not _SKIP_COVERAGE:
-        try:
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                sub_areas = pool.submit(
-                    _decompose_ppt_coverage, ctx, slide_count, institute_id
-                ).result(timeout=_COVERAGE_DEADLINE_S)
-        except FuturesTimeout:
-            logger.warning(
-                "PPT coverage planning exceeded %ss — generating without a slide plan",
-                _COVERAGE_DEADLINE_S,
-            )
-        except Exception as exc:  # never let the optional pre-step break generation
-            logger.warning("PPT coverage planning failed (%s) — generating without a slide plan", exc)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            sub_areas = pool.submit(
+                _decompose_ppt_coverage, ctx, slide_count, institute_id
+            ).result(timeout=_COVERAGE_DEADLINE_S)
+    except FuturesTimeout:
+        logger.warning(
+            "PPT coverage planning exceeded %ss — generating without a slide plan",
+            _COVERAGE_DEADLINE_S,
+        )
+    except Exception as exc:  # never let the optional pre-step break generation
+        logger.warning("PPT coverage planning failed (%s) — generating without a slide plan", exc)
 
     if sub_areas:
         # Keep the deck exactly as long as the plan (+ title + summary). A scope with
@@ -956,21 +1005,27 @@ def generate_presentation(request):
         return Response({"error": err}, status=status.HTTP_502_BAD_GATEWAY)
 
     slides = [_repair_slide_latex(s) for s in (data.get("slides") or [])]
-    # Fetched concurrently. Images are a nice-to-have — a Serper/network failure
-    # must not sink a deck whose text is already written, so it degrades to
-    # slides without images rather than raising (which would 500 the request).
-    try:
-        with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
-            images = list(pool.map(
-                lambda s: _fetch_image_for_slide(
-                    s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
-                ),
-                slides,
-            ))
-        data["slides"] = [{**slide, **image} for slide, image in zip(slides, images)]
-    except Exception as exc:
-        logger.warning("Slide-image fetch failed (%s) — returning slides without images", exc)
-        data["slides"] = slides
+    # Fetched concurrently: sequentially this cost 1s of sleep plus a download per
+    # slide, which at 25 slides ran up against the caller's request timeout.
+    with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
+        images = list(pool.map(
+            lambda s: _fetch_image_for_slide(
+                s.get("imageSearchTerm", ""), s.get("title", ""), ctx,
+            ),
+            slides,
+        ))
+
+    data["slides"] = [{**slide, **image} for slide, image in zip(slides, images)]
+    # State the source explicitly on the general-knowledge path too. When passages
+    # were supplied but grounding fell back, carry the precise reason; when none
+    # were supplied the chapter simply is not indexed. Either way the badge stops
+    # guessing. (If the caller sent no passages, NestJS labels it 'not_indexed'.)
+    if passages:
+        data["source"] = {
+            "grounded": False,
+            "reason": grounded_fallback_reason or "unavailable",
+            "passagesAvailable": len(passages),
+        }
     return Response({"success": True, "data": data})
 
 

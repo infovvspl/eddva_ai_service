@@ -220,8 +220,8 @@ jobs:
               --log $HOME/logs/ai-dev.log \
               -- ai_study_project.wsgi:application \
                  --bind 0.0.0.0:8001 \
-                 --workers 2 \
-                 --timeout 120
+                 --workers 3 \
+                 --timeout 300
             pm2 save
 
             echo "AI Service deployed on port 8001 at $(date)"
