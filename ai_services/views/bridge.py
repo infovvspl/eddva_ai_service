@@ -1767,6 +1767,10 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
         "- If the teacher contrasts two ideas, keep that comparison.\n"
         "- DO NOT generate any Summary, Conclusion, Key Takeaways, Introduction, or Overview section that just lists or recaps what was already covered.\n"
         "- If the teacher is recapping/summarizing at the end of class (e.g. 'We have discussed...', 'Today we learned...'), SKIP that part entirely.\n"
+        "- Do NOT add a standalone bold sentence as a closing remark or 'key insight' after a topic, formula, "
+        "or worked example (e.g. '**This shows that...**' or '**The result illustrates...**' on its own line). "
+        "Use bold only for brief inline emphasis of specific terms within a normal sentence, never as a "
+        "freestanding concluding paragraph — this is one chunk of a larger lecture, not its ending.\n"
         "- Do not add unrelated content not supported by the transcript.\n\n"
         f"{chunk_text}"
     )
@@ -1868,7 +1872,13 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
         "- Prefer explanatory paragraphs plus bullets where helpful.\n"
         "- Preserve continuity between chunks so the final notes read like one lecture, not stitched fragments.\n"
         "- Include key distinctions, common mistakes, and exam-relevant insights when present.\n"
-        "- End with a concise Summary section.\n\n"
+        "- Do NOT end with a Summary, Conclusion, Key Takeaways, or any other closing recap section or "
+        "sentence — these notes are merged in groups, and this may be only one part of a longer lecture "
+        "that continues after this merge, so a 'final' summary here would land in the middle of the document.\n"
+        "- Do NOT add a standalone bold sentence as a closing remark or 'key insight' after a topic, formula, "
+        "or worked example (e.g. '**This shows that...**' or '**The result illustrates...**' on its own line). "
+        "Use bold only for brief inline emphasis of specific terms within a normal sentence, never as a "
+        "freestanding concluding paragraph.\n\n"
         f"{combined_sections}"
     )
     # Clamp against Groq's hard per-request token budget (see GROQ_REQUEST_TOKEN_BUDGET
@@ -2370,6 +2380,39 @@ def _rejoin_split_bold_spans(text: str) -> str:
     return "\n\n".join(out)
 
 
+_LIST_OR_HEADING_RE = re.compile(r"^(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\|)")
+_FULL_BOLD_BLOCK_RE = re.compile(r"^\*\*(.+)\*\*$", re.DOTALL)
+
+
+def _debold_standalone_conclusion_paragraphs(text: str) -> str:
+    """
+    Despite prompt instructions against it, the model sometimes still ends a
+    topic, formula, or worked example with a whole paragraph wrapped in
+    **bold** (e.g. '**This shows that multiplication of powers with a common
+    exponent is commutative.**') -- a leftover "key insight" habit. It isn't
+    a heading and carries no structural meaning, so it just reads as an
+    unexplained emphasis dropped mid-document. Strip the bold markers so it
+    renders as an ordinary paragraph; the content is kept, only the stray
+    whole-sentence emphasis is removed. Only a bare paragraph block that is
+    bold from its very first to very last character qualifies -- headings,
+    list items, table rows, and blockquotes are left untouched, as is any
+    inline bold that doesn't span the entire block.
+    """
+    blocks = text.split("\n\n")
+    out: list[str] = []
+    for block in blocks:
+        stripped = block.strip()
+        if not stripped or _LIST_OR_HEADING_RE.match(stripped):
+            out.append(block)
+            continue
+        match = _FULL_BOLD_BLOCK_RE.match(stripped)
+        if match and "\n" not in match.group(1) and "**" not in match.group(1):
+            out.append(match.group(1).strip())
+        else:
+            out.append(block)
+    return "\n\n".join(out)
+
+
 _HTML_SUB_RE = re.compile(r"<sub>([^<]*)</sub>", re.IGNORECASE)
 _HTML_SUP_RE = re.compile(r"<sup>([^<]*)</sup>", re.IGNORECASE)
 
@@ -2597,6 +2640,7 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
     # ("**Darwin's Observations**: ...") that got cut across a paragraph break.
     stitched_notes = _convert_html_sub_sup(stitched_notes)
     stitched_notes = _rejoin_split_bold_spans(stitched_notes)
+    stitched_notes = _debold_standalone_conclusion_paragraphs(stitched_notes)
     stitched_notes = _fix_crammed_enumerations(stitched_notes)
     stitched_notes = _reformat_symbol_definition_blocks(stitched_notes)
 
@@ -2754,6 +2798,7 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
         )
         polished = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
         polished = _convert_html_sub_sup(_downgrade_h1_headings(polished.strip()))
+        polished = _debold_standalone_conclusion_paragraphs(polished)
         return polished or cleaned, True
     except Exception as exc:
         logger.warning("Notes markdown polish failed (%s)", exc)
