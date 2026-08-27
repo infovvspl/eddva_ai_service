@@ -773,21 +773,47 @@ _IMAGE_WORKERS = 5
 _COVERAGE_DEADLINE_S = 25
 
 
+def _classify_gemini_failure(exc: Exception) -> str:
+    """Turn a grounded-call exception into a precise, teacher-legible reason.
+
+    All three collapse to "General knowledge" on the badge, but the reason is the
+    difference between "top up the Gemini quota" and "the keys are wrong" — so it
+    must survive to the log and the response instead of being flattened away.
+    """
+    from ai_services.core import gemini_client as _gc
+
+    if _gc._looks_rate_limited(exc):
+        return "gemini_exhausted"      # 429 / quota — the common one, and fixable
+    if _gc._looks_key_rejected(exc):
+        return "gemini_key_rejected"   # bad/disabled key
+    if _gc._looks_model_unavailable(exc):
+        return "gemini_model_unavailable"
+    return "gemini_error"              # malformed JSON, empty response, transport
+
+
 def _generate_grounded(
     *, passages, ctx, topic, slide_count, language, institute_id, vertical,
 ):
-    """Write the deck from the school's own chapter. Returns a Response, or None
-    to let the caller fall back to general-knowledge generation.
+    """Write the deck from the school's own chapter.
 
-    Returning None rather than raising matters: a school that has not uploaded
-    this chapter, or a temporarily unavailable Gemini, should still get slides —
-    just labelled as general knowledge rather than sourced from the book.
+    Returns (Response, None) on success, or (None, reason) to let the caller fall
+    back to general-knowledge generation. The reason is threaded through to the
+    teacher's badge so an indexed chapter that lands on "General knowledge" is
+    self-explaining (Gemini quota vs bad key vs no usable passages) rather than a
+    silent mystery.
     """
     from ai_services.core import gemini_client as _gc
     from ai_services.core import grounding as _gr
 
     if not _gc.is_available():
-        return None
+        # No key present or the SDK is not installed on this host. This is the
+        # blanket failure that turns EVERY grounded deck into general knowledge.
+        logger.warning(
+            "Grounded PPT skipped: Gemini unavailable (no key or google-genai "
+            "missing) — deck for %r will be general knowledge despite %d passages",
+            ctx.get("chapterName") or topic, len(passages),
+        )
+        return None, "gemini_unavailable"
 
     # Slides need far fewer passages than detailed notes, and the grounded Gemini
     # call scales with prompt size — so cap the source context for PPT well below
@@ -799,7 +825,12 @@ def _generate_grounded(
         token_budget=_ppt_budget,
     )
     if not selection["passages"]:
-        return None
+        logger.warning(
+            "Grounded PPT skipped: %d passages supplied for %r but none had usable "
+            "text after ranking — check the chapter's OCR quality",
+            len(passages), ctx.get("chapterName") or topic,
+        )
+        return None, "no_relevant_passages"
 
     # Output budget scales with the deck: ~320 tokens/slide is ample for slide
     # bullets, and a smaller ceiling means Gemini finishes sooner. Capped at 8000.
@@ -814,16 +845,22 @@ def _generate_grounded(
             max_output_tokens=_out_tokens,
         )
     except Exception as exc:
-        logger.warning("Grounded generation failed (%s)", exc)
+        reason = _classify_gemini_failure(exc)
+        logger.warning(
+            "Grounded PPT fell back (%s) for %r: %s",
+            reason, ctx.get("chapterName") or topic, exc,
+        )
         _log(institute_id, vertical, "gemini", success=False, error=exc)
-        return None
+        return None, reason
 
     _log(institute_id, vertical, result.get("model", "gemini"), result=result)
 
     data = result["content"]
     slides = data.get("slides") or []
     if not slides:
-        return None
+        logger.warning("Grounded PPT fell back: Gemini returned no slides for %r",
+                       ctx.get("chapterName") or topic)
+        return None, "gemini_error"
 
     with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
         images = list(pool.map(
@@ -843,7 +880,7 @@ def _generate_grounded(
         "pages": selection["pages"],
         "truncated": selection["truncated"],
     }
-    return Response({"success": True, "data": data})
+    return Response({"success": True, "data": data}), None
 
 
 @api_view(["POST"])
@@ -882,14 +919,22 @@ def generate_presentation(request):
     # several thousand tokens and Groq rejects any request whose prompt plus
     # max_tokens exceeds the key's 12k TPM ceiling.
     passages = request.data.get("sourcePassages") or []
+    # When passages were supplied but grounding fell back, this holds the precise
+    # reason so the teacher's badge can explain an indexed chapter that still shows
+    # "General knowledge" (Gemini quota vs bad key vs unusable OCR) instead of a
+    # generic, unactionable message.
+    grounded_fallback_reason = None
     if passages:
-        grounded = _generate_grounded(
+        grounded, grounded_fallback_reason = _generate_grounded(
             passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
             language=language, institute_id=institute_id, vertical=vertical,
         )
         if grounded is not None:
             return grounded
-        logger.warning("Grounded generation unavailable — falling back to general knowledge")
+        logger.warning(
+            "Grounded generation unavailable (%s) — falling back to general knowledge",
+            grounded_fallback_reason,
+        )
 
     # Decide coverage before writing any slides — see _decompose_ppt_coverage.
     # Run it under a wall-clock deadline: if the LLM is unhealthy this step would
@@ -971,6 +1016,16 @@ def generate_presentation(request):
         ))
 
     data["slides"] = [{**slide, **image} for slide, image in zip(slides, images)]
+    # State the source explicitly on the general-knowledge path too. When passages
+    # were supplied but grounding fell back, carry the precise reason; when none
+    # were supplied the chapter simply is not indexed. Either way the badge stops
+    # guessing. (If the caller sent no passages, NestJS labels it 'not_indexed'.)
+    if passages:
+        data["source"] = {
+            "grounded": False,
+            "reason": grounded_fallback_reason or "unavailable",
+            "passagesAvailable": len(passages),
+        }
     return Response({"success": True, "data": data})
 
 
