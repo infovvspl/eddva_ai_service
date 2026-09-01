@@ -4216,7 +4216,10 @@ def start_tutor_session(request):
             user_prompt=user_prompt,
             model=get_model_for_task("tutor_session", vertical),
             temperature=0.3,
-            max_tokens=8192,
+            # 8192 alone already exceeds the org's ~8000 TPM cap before the prompt
+            # is even counted, guaranteeing a 413 on any non-trivial context. Clamp
+            # to the shared safe request budget instead (same pattern as notes polish).
+            max_tokens=_safe_max_tokens(system_prompt + user_prompt, 8192),
             json_mode=False,
             institute_id=institute_id,
         )
@@ -5394,9 +5397,19 @@ _CONTENT_TYPE_PROMPTS = {
         "Use bullet points and short paragraphs. Cover every exam-important concept."
     ),
     "mindmap": (
-        "Generate a hierarchical mind-map outline in Markdown. "
-        "Use # for the main topic, ## for main branches, ### for sub-branches, and - for leaf nodes. "
-        "Cover all sub-topics and their key points."
+        "Generate a hierarchical mind-map outline in Markdown, covering ONLY the most important, "
+        "exam-relevant concepts for this topic -- not everything that could technically be said about it. "
+        "Be selective: leave out minor details, tangents, and restatements. Every single node must be "
+        "something a student genuinely needs to know -- if a node would just be filler or padding, cut it.\n\n"
+        "Structure: use # for the main topic, then ## / ### / #### Markdown headings for branches and "
+        "sub-branches, and - for leaf points. The number of branches, the number of sub-branches under "
+        "each, and how many heading levels deep the tree goes must all be dynamic, driven purely by how "
+        "this specific topic actually breaks down -- never a fixed shape. A narrow or simple topic may "
+        "genuinely need only 2-3 branches with no further sub-branches at all; a broad topic may need "
+        "more branches, and some (not necessarily all) of those branches may need one or two further "
+        "levels of sub-branches. Only add another heading level under a branch when that branch truly "
+        "has further internal structure worth splitting out -- never add an extra level just to look "
+        "thorough, and never force two distinct ideas into one branch just to keep the tree shallow."
     ),
     "flashcard": (
         "Generate 12-15 flashcard pairs for this topic in Markdown. "
