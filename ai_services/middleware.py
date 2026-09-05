@@ -299,7 +299,33 @@ class TenantAuthMiddleware:
         request.board = _resolve_board(request, institute)
         request.board_profile = get_board(request.board)
 
-        response = self.get_response(request)
+        # P1-6 attribution: identity/correlation from the ai-bridge (never trusted
+        # from an end client — the bridge derives these from the authenticated JWT).
+        # Stamped on the request AND a thread-local so usage/provider-event loggers
+        # deep in the call stack can attribute cost without new signatures.
+        request.request_id = request.headers.get("X-Request-Id") or None
+        request.user_id_ext = request.headers.get("X-User-Id") or None
+        request.user_role = request.headers.get("X-User-Role") or None
+        try:
+            from ai_services.core import request_context
+            request_context.set_context(
+                request_id=request.request_id,
+                user_id=request.user_id_ext,
+                user_role=request.user_role,
+                institute_id=request.institute_id,
+                vertical=request.vertical,
+            )
+        except Exception:
+            pass  # attribution must never break a request
+
+        try:
+            response = self.get_response(request)
+        finally:
+            try:
+                from ai_services.core import request_context
+                request_context.clear()
+            except Exception:
+                pass
 
         # Debugging headers (safe — these are internal slugs, not secrets)
         response["X-Institute"] = institute.slug

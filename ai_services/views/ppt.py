@@ -25,7 +25,7 @@ from rest_framework import status
 from ai_services.core.boards import board_instruction
 from ai_services.core.serpapi_images import search_google_images
 from ai_services.core.usage_logger import log_usage
-from .base import get_llm
+from .base import get_llm, metered
 
 logger = logging.getLogger("ai_services.ppt")
 
@@ -908,6 +908,7 @@ def _generate_grounded(
 
 
 @api_view(["POST"])
+@metered("ppt_generate")
 def generate_presentation(request):
     """
     POST /ppt/generate
@@ -1064,6 +1065,7 @@ def generate_presentation(request):
 
 
 @api_view(["POST"])
+@metered("ppt_generate")
 def regenerate_slide(request):
     """
     POST /ppt/regenerate-slide

@@ -405,6 +405,19 @@ class LLMClient:
                         "LLM key %d/%d rate-limited -- rotating to next key",
                         actual_key_num, n,
                     )
+                    # P0-5: record the 429 that rotation is about to absorb, so a
+                    # request that ultimately succeeds still leaves evidence of the
+                    # rate-limit pressure it hit.
+                    try:
+                        from ai_services.core import provider_events as _pev
+                        _pev.emit(
+                            event_type="429", provider="groq", model=effective_model,
+                            status_code=429, attempt_number=actual_key_num,
+                            retry_after_ms=int(_parse_retry_after(last_error, default=0.0) * 1000) or None,
+                            key_hash=_pev.key_fingerprint(api_key),
+                        )
+                    except Exception:
+                        pass
                 except Exception as exc:
                     last_error = str(exc)
                     if _is_permanently_bad_key_error(last_error):
@@ -429,6 +442,18 @@ class LLMClient:
                         "LLM key %d/%d error (%s) -- rotating to next key",
                         actual_key_num, n, last_error,
                     )
+                    # P0-5: a non-429 provider error we're rotating past.
+                    try:
+                        from ai_services.core import provider_events as _pev
+                        _sc = getattr(exc, "status_code", None)
+                        _pev.emit(
+                            event_type="5xx" if (_sc and _sc >= 500) else "provider_error",
+                            provider="groq", model=effective_model, status_code=_sc,
+                            attempt_number=actual_key_num,
+                            key_hash=_pev.key_fingerprint(api_key),
+                        )
+                    except Exception:
+                        pass
 
             # All keys failed this round — short wait then try again.
             # Cap at 5s to avoid blocking a gunicorn worker for too long.

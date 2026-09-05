@@ -12,7 +12,7 @@ from ai_services.core.model_tier import get_model_for_task
 from ai_services.core.prompt_templates import get_template
 from ai_services.core.batch_processor import BatchProcessor
 from ai_services.core.cache import question_bank
-from .base import ai_call, get_llm, _log_usage_nestjs, _log_usage_to_db
+from .base import ai_call, get_llm, _log_usage_nestjs, _log_usage_to_db, metered
 
 # ── Text cleaning ─────────────────────────────────────────────────────────────
 
@@ -282,6 +282,7 @@ def _gemini_test_generate(system_prompt: str, user_prompt: str, max_tokens: int)
 
 
 @api_view(["POST"])
+@metered("test_generate")
 def generate_practice_test(request):
     """
     Generate a practice test (MCQ, Integer, or MSQ) based on a topic and difficulty.

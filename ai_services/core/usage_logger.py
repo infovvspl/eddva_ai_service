@@ -52,6 +52,8 @@ def log_ai_usage_sync(
     success: bool = True,
     error_message: str = None,
     user_id: str = None,
+    user_role: str = None,
+    request_id: str = None,
 ):
     cost = calculate_cost(model_used, tokens_input, tokens_output)
     payload = {
@@ -67,6 +69,8 @@ def log_ai_usage_sync(
         "success": success,
         "errorMessage": error_message,
         "userId": user_id,
+        "userRole": user_role,
+        "requestId": request_id,
     }
     # Read at call time so gunicorn worker always picks up the deployed .env values
     nestjs_url = os.getenv('NESTJS_INTERNAL_URL', '') or _NESTJS_BASE_URL
@@ -102,8 +106,23 @@ def log_usage(
     success: bool = True,
     error_message: str = None,
     user_id: str = None,
+    user_role: str = None,
+    request_id: str = None,
 ):
     """Fire-and-forget — never blocks the AI response."""
+    # P1-6: fall back to the request-scoped attribution stamped by the middleware,
+    # so callers that don't pass these explicitly still get cost-per-user/role and
+    # request correlation. Never overrides a value a caller passed on purpose.
+    try:
+        from ai_services.core import request_context
+        if user_id is None:
+            user_id = request_context.get("user_id")
+        if user_role is None:
+            user_role = request_context.get("user_role")
+        if request_id is None:
+            request_id = request_context.get("request_id")
+    except Exception:
+        pass
     # Count the spend against the tenant's daily budget.
     #
     # This is the ONE place tokens are booked. Every generating endpoint already
@@ -138,6 +157,8 @@ def log_usage(
             success=success,
             error_message=error_message,
             user_id=user_id,
+            user_role=user_role,
+            request_id=request_id,
         ),
         daemon=True,
     )
