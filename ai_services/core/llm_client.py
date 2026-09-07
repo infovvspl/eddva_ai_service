@@ -327,6 +327,30 @@ class LLMClient:
             m = (msg or "").lower()
             return any(token in m for token in ("413", "request too large", "reduce your message size"))
 
+        def _is_deterministic_request_error(msg: str) -> bool:
+            # Groq 400 json_validate_failed: the model ran out of completion budget
+            # (or otherwise failed) before emitting a document that satisfies the
+            # requested response_format. Like 413, this is REQUEST-shaped, not
+            # KEY-shaped -- the same prompt/max_tokens/json_mode combination is
+            # rejected identically by every key, so rotating through the pool and
+            # sleeping between rounds burns up to 60 provider calls and a minute of
+            # wall clock to arrive at the same failure. Fail fast and let the caller
+            # fall back or fix the request.
+            #
+            # Deliberately matched on the specific Groq error forms rather than on
+            # "any HTTP 400": some 400s are genuinely worth rotating past, and this
+            # module has no reliable structured error-code channel to distinguish
+            # them.
+            m = (msg or "").lower()
+            return any(
+                token in m
+                for token in (
+                    "json_validate_failed",
+                    "failed_generation",
+                    "max completion tokens reached before generating a valid document",
+                )
+            )
+
         def _active_keys() -> list[str]:
             with _KEY_STATE_LOCK:
                 keys = [k for k in GROQ_API_KEYS if k and k not in _DISABLED_GROQ_KEYS]
@@ -438,6 +462,35 @@ class LLMClient:
                             actual_key_num, n, effective_model, last_error,
                         )
                         raise RuntimeError(f"LLM request too large for model {effective_model}: {last_error}") from exc
+                    if _is_deterministic_request_error(last_error):
+                        # Same reasoning as 413: identical request -> identical
+                        # rejection on every key. One attempt is all the information
+                        # there is to gain.
+                        try:
+                            from ai_services.core import request_context as _rc
+                            _req_id = _rc.get("request_id") or "-"
+                        except Exception:
+                            _req_id = "-"
+                        logger.error(
+                            "LLM deterministic request failure -- NOT rotating | "
+                            "request_id=%s provider=groq model=%s classification=json_validate_failed "
+                            "attempt=%d/%d err=%s",
+                            _req_id, effective_model, actual_key_num, n, last_error[:300],
+                        )
+                        try:
+                            from ai_services.core import provider_events as _pev
+                            _pev.emit(
+                                event_type="provider_error", provider="groq",
+                                model=effective_model, status_code=400,
+                                attempt_number=actual_key_num,
+                                key_hash=_pev.key_fingerprint(api_key),
+                            )
+                        except Exception:
+                            pass
+                        raise RuntimeError(
+                            f"LLM deterministic request failure for model {effective_model} "
+                            f"(json_validate_failed): {last_error}"
+                        ) from exc
                     logger.error(
                         "LLM key %d/%d error (%s) -- rotating to next key",
                         actual_key_num, n, last_error,
