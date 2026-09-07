@@ -2953,14 +2953,28 @@ def _detect_subject_and_type_for_doubt(question: str, has_image: bool, institute
 
     # Fallback: LLM classifier for image-only or zero-keyword questions
     subject, qtype = "physics", "numerical"
+    _detect_started = time.time()
     try:
+        # gpt-oss-20b is a REASONING model: it spends completion tokens on internal
+        # reasoning before the answer. With max_tokens=60 and json_mode=True it
+        # routinely exhausted the budget mid-document, so Groq rejected the call with
+        # 400 json_validate_failed ("max completion tokens reached before generating
+        # a valid document") -- deterministically, on every key.
+        #
+        # Two minimal corrections, no provider/model change:
+        #   * a realistic budget (60 -> 300) so the reasoning preamble plus the
+        #     two-field answer fit; 300 output tokens here is ~$0.00009 per call, and
+        #     this path only runs when keyword detection was inconclusive.
+        #   * json_mode=False, removing server-side format validation as a failure
+        #     mode. The parser below already extracts the object from a text
+        #     response, so nothing downstream changes.
         detect_result = get_llm().complete(
             system_prompt=_DOUBT_DETECTOR_SYSTEM,
             user_prompt=f"Classify this question:\n\n{question[:800]}",
             model="openai/gpt-oss-20b",
             temperature=0.0,
-            max_tokens=60,
-            json_mode=True,
+            max_tokens=300,
+            json_mode=False,
             institute_id=institute_id,
         )
         detect_data = detect_result.get("content", {})
@@ -2980,7 +2994,14 @@ def _detect_subject_and_type_for_doubt(question: str, has_image: bool, institute
             subject = s if s in valid_subjects else "physics"
             qtype = t if t in valid_types else "numerical"
     except Exception as exc:
-        logger.warning("Doubt LLM detector failed (%s); defaulting to physics/numerical", exc)
+        # Optional enrichment: failure here is not an error for the request, it just
+        # means we classify by keyword instead. Elapsed time is logged because this
+        # call used to rotate the entire key pool before giving up -- silently
+        # expensive for a long time.
+        logger.warning(
+            "Doubt LLM detector failed after %.2fs (%s); defaulting to physics/numerical",
+            time.time() - _detect_started, exc,
+        )
 
 
 
