@@ -51,9 +51,23 @@ def _terms(text: str) -> set:
     }
 
 
+def citation_label(p: dict) -> str:
+    """The inline marker a passage is cited by, e.g. "p.12" or "Lecture: Ch 4 intro".
+
+    Passages default to "ebook" when untagged, so callers that never learned
+    about lecture grounding (ppt.py, older cached requests) keep citing pages
+    exactly as before.
+    """
+    if p.get("source") == "lecture":
+        title = (p.get("source_title") or "the lecture").strip()
+        return f"Lecture: {title}"
+    page = p.get("page_no")
+    return f"p.{page}" if page else "p.?"
+
+
 def rank_passages(passages: list, topic: str, chapter: str = "") -> list:
-    """Order passages by relevance to the topic, keeping the book's own order as
-    the tie-breaker so a selection still reads in teaching sequence."""
+    """Order passages by relevance to the topic, keeping the source's own order
+    as the tie-breaker so a selection still reads in teaching sequence."""
     want = _terms(topic) | _terms(chapter)
     if not want:
         return list(passages)
@@ -66,9 +80,9 @@ def rank_passages(passages: list, topic: str, chapter: str = "") -> list:
         overlap = len(want & have)
         # Normalise so a long passage does not win on length alone.
         score = overlap / (len(want) ** 0.5 or 1)
-        scored.append((score, p.get("page_no", 0), p))
-    scored.sort(key=lambda t: (-t[0], t[1]))
-    return [p for _, _, p in scored]
+        scored.append((score, p.get("page_no", 0) or 0, p.get("chunk_index", 0) or 0, p))
+    scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+    return [p for _, _, _, p in scored]
 
 
 def select_source(
@@ -83,7 +97,7 @@ def select_source(
     sees the book exactly as written. Ranking only matters for long chapters.
     """
     if not passages:
-        return {"passages": [], "tokens": 0, "truncated": False, "pages": []}
+        return {"passages": [], "tokens": 0, "truncated": False, "pages": [], "citations": []}
 
     ranked = rank_passages(passages, topic, chapter)
     chosen, used = [], 0
@@ -94,41 +108,80 @@ def select_source(
         chosen.append(p)
         used += t
 
-    chosen.sort(key=lambda p: (p.get("page_no", 0), p.get("chunk_index", 0)))
+    # Group by source so a mixed selection still reads as "the book, then the
+    # lecture" rather than interleaved out of teaching order; page/chunk order
+    # is preserved within each group.
+    chosen.sort(key=lambda p: (
+        p.get("source", "ebook"), p.get("page_no", 0) or 0, p.get("chunk_index", 0) or 0,
+    ))
     return {
         "passages": chosen,
         "tokens": used,
         "truncated": len(chosen) < len(passages),
         "pages": sorted({p.get("page_no") for p in chosen if p.get("page_no")}),
+        "citations": sorted({citation_label(p) for p in chosen}),
     }
 
 
 def format_source_block(passages: list) -> str:
-    """Render passages with page markers the model is told to cite."""
+    """Render passages with the citation marker the model is told to cite."""
     return "\n\n".join(
-        f"[p.{p.get('page_no', '?')}] {p.get('content', '').strip()}"
+        f"[{citation_label(p)}] {p.get('content', '').strip()}"
         for p in passages
     )
 
 
-GROUNDED_SYSTEM_PROMPT = """\
-You are preparing classroom slides STRICTLY from the textbook extract supplied below.
+def build_grounded_system_prompt(has_ebook: bool = True, has_lecture: bool = False) -> str:
+    """The grounded-deck system prompt, worded for whichever source(s) are supplied.
+
+    Callers that never pass has_lecture (the default) get exactly the original
+    textbook-only wording, so this is a drop-in replacement for the old
+    GROUNDED_SYSTEM_PROMPT constant.
+    """
+    if has_ebook and has_lecture:
+        source_desc = "the textbook extract AND the lecture transcript excerpts"
+        citation_note = (
+            "5. Every bullet drawn from the textbook must carry the page it came from in \"pages\"\n"
+            "   (e.g. [3]). A bullet drawn from the lecture transcript instead can leave \"pages\": []\n"
+            "   — the transcript has no page numbers — but every fact must still be traceable to one\n"
+            "   source or the other.\n"
+            "6. Prefer the textbook's own wording for definitions and terminology; treat the lecture\n"
+            "   transcript as the teacher's own spoken explanations and examples — useful context, but\n"
+            "   a rough transcript, so write it up cleanly without changing what was actually said.\n"
+        )
+    elif has_lecture:
+        source_desc = "the lecture transcript excerpts"
+        citation_note = (
+            "5. The transcript has no page numbers, so leave \"pages\": [] on every slide — the rule\n"
+            "   is that every fact must come from the transcript below, not that it be individually\n"
+            "   cited.\n"
+            "6. The transcript is raw speech-to-text: expect filler words, run-on sentences and\n"
+            "   occasional recognition errors. Write clean, well-formed slide content from it without\n"
+            "   changing what the teacher actually said or inventing detail it does not support.\n"
+        )
+    else:
+        source_desc = "the textbook extract"
+        citation_note = (
+            "5. Every bullet must carry the page it came from in \"pages\" (e.g. [3]). A bullet you\n"
+            "   cannot cite is a bullet you must delete.\n"
+            "6. Do NOT rephrase a definition into something more general or more advanced. Keep the\n"
+            "   book's own terminology and notation.\n"
+        )
+
+    return f"""\
+You are preparing classroom slides STRICTLY from {source_desc} supplied below.
 
 ═══ THE SOURCE IS THE ONLY PERMITTED AUTHORITY ═══
 1. Every fact, definition, formula, number, name and example must come from the
    SOURCE TEXT. If it is not in the source, it does not go on a slide.
 2. Do NOT add material from your own knowledge, even when you are certain it is
-   correct and relevant. A true statement that is not in this book is still wrong
-   here, because the teacher must be able to point to it in their copy.
-3. Do NOT rephrase a definition into something more general or more advanced.
-   Keep the book's own terminology and notation.
-4. If the source does not contain enough material for the requested number of
+   correct and relevant. A true statement that is not in the source is still wrong
+   here, because the teacher must be able to point to it.
+3. If the source does not contain enough material for the requested number of
    slides, produce FEWER slides. Never pad.
-5. Every bullet must carry the page it came from in "pages" (e.g. [3]). A bullet
-   you cannot cite is a bullet you must delete.
-6. Worked examples, exercises and numbers must be reproduced faithfully — do not
+4. Worked examples, exercises and numbers must be reproduced faithfully — do not
    invent alternative numbers or "similar" examples.
-
+{citation_note}
 ═══ WHAT GOOD LOOKS LIKE ═══
   ✗ WRONG (correct in general, absent from the source):
       "Euclid's division algorithm is a special case of the division algorithm
@@ -142,19 +195,24 @@ You are preparing classroom slides STRICTLY from the textbook extract supplied b
 Slide 1 is type "title": a short title and a one-sentence subtitle; bullets [].
 Middle slides are type "content": a 3-6 word title and 3-5 bullets, each one
 complete sentence drawn from the source.
-The final slide is type "summary": key takeaways, each still cited.
+The final slide is type "summary": key takeaways, each still cited where possible.
 
 ═══ OUTPUT ═══
 Return ONLY valid JSON, no markdown fence:
-{
-  "title": "Presentation title taken from the chapter",
+{{
+  "title": "Presentation title taken from the source",
   "slides": [
-    {"slideNumber": 1, "type": "title", "title": "...", "subtitle": "...",
-     "bullets": [], "pages": [], "speakerNotes": "...", "imageSearchTerm": "..."},
-    {"slideNumber": 2, "type": "content", "title": "...", "subtitle": "",
-     "bullets": ["..."], "pages": [2], "speakerNotes": "...", "imageSearchTerm": "..."}
+    {{"slideNumber": 1, "type": "title", "title": "...", "subtitle": "...",
+     "bullets": [], "pages": [], "speakerNotes": "...", "imageSearchTerm": "..."}},
+    {{"slideNumber": 2, "type": "content", "title": "...", "subtitle": "",
+     "bullets": ["..."], "pages": [2], "speakerNotes": "...", "imageSearchTerm": "..."}}
   ]
-}"""
+}}"""
+
+
+# Kept for any caller that still imports the constant directly — identical to
+# build_grounded_system_prompt() with its defaults (ebook-only).
+GROUNDED_SYSTEM_PROMPT = build_grounded_system_prompt()
 
 
 def build_grounded_user_prompt(
@@ -164,6 +222,8 @@ def build_grounded_user_prompt(
     topic: str,
     ctx: dict,
     source_block: str,
+    has_ebook: bool = True,
+    has_lecture: bool = False,
 ) -> str:
     scope = " | ".join(
         v for v in (
@@ -171,12 +231,18 @@ def build_grounded_user_prompt(
             ctx.get("chapterName"), ctx.get("topicName"),
         ) if v
     )
+    source_label = (
+        "the textbook extract AND the lecture transcript excerpts — your only permitted facts"
+        if has_ebook and has_lecture
+        else "the lecture transcript excerpts — your only permitted facts" if has_lecture
+        else "the textbook extract — your only permitted facts"
+    )
     return (
         f"Curriculum scope: {scope or topic}\n"
         f"Requested: up to {slide_count} slides, in {language}.\n"
         f"Focus: \"{topic}\".\n\n"
         "Use fewer slides if the source does not support that many.\n\n"
-        "═══ SOURCE TEXT (the textbook extract — your only permitted facts) ═══\n"
+        f"═══ SOURCE TEXT ({source_label}) ═══\n"
         f"{source_block}\n"
         "═══ END OF SOURCE TEXT ═══"
     )

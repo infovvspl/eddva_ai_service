@@ -856,15 +856,22 @@ def _generate_grounded(
         )
         return None, "no_relevant_passages"
 
+    # Each passage is tagged "ebook" (default) or "lecture" by the caller (see
+    # SchoolTextbookService.getGroundingPassages) — this decides which system
+    # prompt wording applies, exactly as generate_topic_content does in bridge.py.
+    has_ebook_source = any(p.get("source", "ebook") == "ebook" for p in selection["passages"])
+    has_lecture_source = any(p.get("source") == "lecture" for p in selection["passages"])
+
     # Output budget scales with the deck: ~320 tokens/slide is ample for slide
     # bullets, and a smaller ceiling means Gemini finishes sooner. Capped at 8000.
     _out_tokens = max(2500, min(8000, slide_count * 320))
     try:
         result = _gc.complete_json(
-            system_prompt=_gr.GROUNDED_SYSTEM_PROMPT,
+            system_prompt=_gr.build_grounded_system_prompt(has_ebook_source, has_lecture_source),
             user_prompt=_gr.build_grounded_user_prompt(
                 slide_count=slide_count, language=language, topic=topic,
                 ctx=ctx, source_block=_gr.format_source_block(selection["passages"]),
+                has_ebook=has_ebook_source, has_lecture=has_lecture_source,
             ),
             max_output_tokens=_out_tokens,
         )
@@ -902,6 +909,8 @@ def _generate_grounded(
         "passagesUsed": len(selection["passages"]),
         "passagesAvailable": len(passages),
         "pages": selection["pages"],
+        "citations": selection["citations"],
+        "hasEbook": has_ebook_source, "hasLecture": has_lecture_source,
         "truncated": selection["truncated"],
     }
     return Response({"success": True, "data": data}), None

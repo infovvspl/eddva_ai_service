@@ -6639,20 +6639,23 @@ def generate_topic_content(request):
     ]
     user_prompt = "\n".join(user_prompt_parts) + "\n"
 
-    # ── Textbook grounding ───────────────────────────────────────────────────
-    # When the caller supplies passages from the school's own chapter, every
+    # ── Source grounding (textbook and/or lecture transcript) ────────────────
+    # The caller (NestJS) decides which source(s) a teacher is allowed and has
+    # asked to ground on, and tags each passage accordingly ("ebook" default,
+    # or "lecture" for an indexed recorded-lecture transcript excerpt). Every
     # content type generated here — notes, DPP, PYQ, flashcards, mind maps and
-    # the question sets behind assessments — is written from the book instead of
-    # the model's general knowledge, and cites the pages it used.
+    # the question sets behind assessments — is written from whatever is
+    # supplied instead of the model's general knowledge, citing each passage.
     source_passages = data.get("sourcePassages") or []
     # Kept so the Groq fallback can be given the original, un-grounded prompt.
-    # Grounding adds roughly 9,000 tokens of textbook to the request, which
+    # Grounding adds roughly 9,000+ tokens of source text to the request, which
     # Gemini has room for and Groq does not — its on-demand tier rejects any
     # single request over 12,000 TPM outright, on every key, since that is a
     # size limit rather than a quota.
     ungrounded_system_prompt = system_prompt
     grounded = False
     grounded_pages = []
+    grounded_citations = []
     grounded_block = ""
     # Reported alongside the content so a teacher can tell a full chapter from a
     # trimmed one. ppt.py has always returned this; the content path computed it
@@ -6661,6 +6664,8 @@ def generate_topic_content(request):
     grounded_truncated = False
     grounded_used = 0
     grounded_available = len(source_passages)
+    has_ebook_source = any(p.get("source", "ebook") == "ebook" for p in source_passages)
+    has_lecture_source = any(p.get("source") == "lecture" for p in source_passages)
     if source_passages:
         try:
             from ai_services.core import grounding as _gr
@@ -6682,26 +6687,68 @@ def generate_topic_content(request):
             if selection["passages"]:
                 grounded = True
                 grounded_pages = selection["pages"]
-                system_prompt = (
-                    "═══ THE TEXTBOOK EXTRACT BELOW IS YOUR ONLY PERMITTED SOURCE ═══\n"
-                    "1. Every fact, definition, formula, number, name and worked example must come\n"
-                    "   from the SOURCE TEXT. If it is not there, it does not go in the output.\n"
-                    "2. Do NOT add material from your own knowledge, even when you are certain it is\n"
-                    "   correct. A true statement absent from this book is still wrong here, because\n"
-                    "   the teacher must be able to point to it in their copy.\n"
-                    "3. Keep the book's own terminology, notation and worked examples. Do not\n"
-                    "   substitute a more general or more advanced treatment.\n"
-                    "4. If the source does not cover enough for the requested length or question\n"
-                    "   count, produce LESS. Never pad from outside the book.\n"
-                    "5. Cite the page inline as [p.N] wherever you state something specific.\n\n"
-                    + system_prompt
-                )
+                grounded_citations = selection["citations"]
+
+                if has_ebook_source and has_lecture_source:
+                    source_label = "the textbook extract AND the lecture transcript excerpts below"
+                    source_rules = (
+                        "═══ THE SOURCES BELOW ARE YOUR ONLY PERMITTED MATERIAL ═══\n"
+                        "1. Every fact, definition, formula, number, name and worked example must come\n"
+                        "   from the SOURCE TEXT below. If it is not there, it does not go in the output.\n"
+                        "2. Two kinds of source are supplied: textbook extracts, cited [p.N], and lecture\n"
+                        "   transcript excerpts, cited [Lecture: <title>]. Prefer the textbook's own wording\n"
+                        "   for definitions and terminology; treat transcript excerpts as the teacher's own\n"
+                        "   spoken explanations, examples and emphasis — useful context, but a rough\n"
+                        "   transcript, so write it up cleanly without changing what was actually said.\n"
+                        "3. Do NOT add material from your own knowledge, even when you are certain it is\n"
+                        "   correct. A true statement absent from these sources is still wrong here, because\n"
+                        "   the teacher must be able to point to it in their book or recording.\n"
+                        "4. If the sources do not cover enough for the requested length or question\n"
+                        "   count, produce LESS. Never pad from outside the supplied sources.\n"
+                        "5. Cite inline after each specific claim, using the label shown before its\n"
+                        "   passage: [p.N] for the textbook, [Lecture: <title>] for the transcript.\n\n"
+                    )
+                elif has_lecture_source:
+                    source_label = "the lecture transcript excerpts below"
+                    source_rules = (
+                        "═══ THE LECTURE TRANSCRIPT BELOW IS YOUR ONLY PERMITTED SOURCE ═══\n"
+                        "1. Every fact, definition, example and explanation must come from the recorded\n"
+                        "   lecture's transcript excerpts below. If it is not there, it does not go in\n"
+                        "   the output.\n"
+                        "2. The transcript is raw speech-to-text: expect filler words, run-on sentences\n"
+                        "   and occasional recognition errors. Write clean, well-formed content from it\n"
+                        "   without changing what the teacher actually said or inventing detail the\n"
+                        "   transcript does not support.\n"
+                        "3. Do NOT add material from your own knowledge, even when you are certain it is\n"
+                        "   correct — the teacher must be able to point to it in the recording.\n"
+                        "4. If the transcript does not cover enough for the requested length or question\n"
+                        "   count, produce LESS. Never pad from outside the transcript.\n"
+                        "5. Cite the source inline as [Lecture: <title>] wherever you state something\n"
+                        "   specific.\n\n"
+                    )
+                else:
+                    source_label = "the school's own chapter"
+                    source_rules = (
+                        "═══ THE TEXTBOOK EXTRACT BELOW IS YOUR ONLY PERMITTED SOURCE ═══\n"
+                        "1. Every fact, definition, formula, number, name and worked example must come\n"
+                        "   from the SOURCE TEXT. If it is not there, it does not go in the output.\n"
+                        "2. Do NOT add material from your own knowledge, even when you are certain it is\n"
+                        "   correct. A true statement absent from this book is still wrong here, because\n"
+                        "   the teacher must be able to point to it in their copy.\n"
+                        "3. Keep the book's own terminology, notation and worked examples. Do not\n"
+                        "   substitute a more general or more advanced treatment.\n"
+                        "4. If the source does not cover enough for the requested length or question\n"
+                        "   count, produce LESS. Never pad from outside the book.\n"
+                        "5. Cite the page inline as [p.N] wherever you state something specific.\n\n"
+                    )
+
+                system_prompt = source_rules + system_prompt
                 grounded_block = (
-                    "\n═══ SOURCE TEXT — the school's own chapter, your only permitted facts ═══\n"
+                    f"\n═══ SOURCE TEXT — {source_label}, your only permitted facts ═══\n"
                     + _gr.format_source_block(selection["passages"])
                     + "\n═══ END OF SOURCE TEXT ═══\n"
                     "Write the requested content from the passages above and nothing else. "
-                    "Cite the page inline as [p.N] after each specific claim.\n"
+                    "Cite each specific claim using the label shown before its source passage.\n"
                 )
         except Exception as exc:
             # Grounding is an enhancement; falling back to general knowledge is
@@ -6929,6 +6976,8 @@ def generate_topic_content(request):
                     "topicName": topic_name,
                     "source": {
                         "grounded": True, "pages": grounded_pages,
+                        "citations": grounded_citations,
+                        "hasEbook": has_ebook_source, "hasLecture": has_lecture_source,
                         "passagesUsed": grounded_used,
                         "passagesAvailable": grounded_available,
                         "truncated": grounded_truncated,
@@ -7064,6 +7113,8 @@ def generate_topic_content(request):
         # from content written from general knowledge.
         "source": {
             "grounded": grounded, "pages": grounded_pages,
+            "citations": grounded_citations,
+            "hasEbook": has_ebook_source, "hasLecture": has_lecture_source,
             "passagesUsed": grounded_used,
             "passagesAvailable": grounded_available,
             "truncated": grounded_truncated,
