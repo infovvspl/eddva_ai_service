@@ -57,6 +57,11 @@ FEATURE_TIER_MAP = {
 
     # ── QA / evaluation ───────────────────────────────────────────────
     "evaluate_batch":     ModelTier.POWER,   # accuracy fact-checking needs the strongest model
+
+    # -- Teacher coaching ----------------------------------------------
+    # Structured rubric scoring over a lecture transcript: judgement work,
+    # not long-form generation, so BALANCED rather than POWER.
+    "teacher_recording_analysis": ModelTier.BALANCED,
 }
 
 

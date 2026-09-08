@@ -4758,6 +4758,65 @@ def analyze_notes(request):
 
 
 
+# -- Teacher Recording Analysis ----------------------------------------------
+# Replaces a direct Groq call that lived in the NestJS school-teacher service.
+# That call named llama-3.3-70b-versatile, which Groq decommissioned on
+# 2026-08-16; routing through ai_call() means the model is resolved centrally
+# (currently openai/gpt-oss-120b) instead of being pinned at the call site.
+#
+# Django stays stateless about class_recordings: it scores a transcript and
+# returns the analysis. Persistence and the processing/done/failed status
+# machine remain the caller's responsibility.
+
+# The caller already caps the transcript, but an endpoint should not depend on
+# its client for bounds. Matches the existing NestJS cap, so this truncation is
+# a floor rather than a behaviour change.
+#
+# DO NOT RAISE THIS WITHOUT RECOMPUTING THE GROQ BUDGET. It reads as arbitrary
+# (it was introduced with no recorded rationale) but it is load-bearing: Groq's
+# on-demand tier hard-413s when prompt + max_tokens exceeds the per-request
+# ceiling, and that rejection is not transient — an identically-sized retry
+# fails every time (see GROQ_REQUEST_TOKEN_BUDGET above). ai_call() applies no
+# such clamp, so on this path the cap is the ONLY thing preventing that 413.
+# Against the ~1030-char system prompt and max_tokens=1024, the worst-case
+# (Devanagari, ~2 chars/token) budget is ~11.9k chars; 8000 sits safely under.
+#
+# Known cost, tracked separately: in DEV 39 of 89 eligible transcripts exceed
+# this, so ~59% of a capped recording is analysed on average and as little as
+# ~20% in the worst case. Fixing that means chunking, not a bigger number.
+_TEACHER_TRANSCRIPT_MAX_CHARS = 8000
+
+
+@api_view(["POST"])
+@metered("teacher_recording_analysis")
+def analyze_teacher_recording(request):
+    """POST /teacher/analyze-recording -> the nine-field teaching analysis."""
+    data = request.data or {}
+    transcript = data.get("transcript")
+
+    # Reject rather than invent: an empty transcript would still produce a
+    # confident-looking rubric, which is worse than a 400.
+    if not isinstance(transcript, str) or not transcript.strip():
+        return Response({"error": "Missing or invalid transcript"}, status=400)
+
+    title = str(data.get("title") or "").strip() or "(untitled recording)"
+
+    template = get_template("teacher_recording_analysis")
+    user_prompt = template.user_template.format(
+        title=title,
+        transcript=transcript[:_TEACHER_TRANSCRIPT_MAX_CHARS],
+    )
+
+    # temperature/max_tokens reproduce the previous direct call exactly.
+    return ai_call(
+        request,
+        "teacher_recording_analysis",
+        user_prompt,
+        temperature=0.3,
+        max_tokens=1024,
+    )
+
+
 @api_view(["POST"])
 def analyze_resume(request):
     data = request.data

@@ -1011,6 +1011,32 @@ Return ONLY a JSON object with the "items" key.
 """
 
 
+# -- Teacher Recording Analysis ----------------------------------------------
+# Centralises the rubric that previously lived as an inline prompt in the NestJS
+# school-teacher service, which called Groq directly. The nine output fields and
+# the 1-10 scale are reproduced exactly: the admin UI reads overallScore,
+# summary, strengths and suggestions and renders the five rubric dimensions, so
+# a change here is a breaking change for that screen.
+#
+# The JSON contract sits in the SYSTEM prompt deliberately. user_template is run
+# through str.format(), where a literal { or } would raise before a request ever
+# reached the model.
+TEACHER_RECORDING_ANALYSIS_SYSTEM = """You are an expert education coach. Analyze the classroom teaching transcript supplied by the user and return structured JSON feedback.
+
+Return ONLY a valid JSON object with this exact structure (no markdown, no extra text):
+{
+  "overallScore": <integer 1-10>,
+  "summary": "<2-3 sentence holistic assessment>",
+  "clarity": { "score": <1-10>, "feedback": "<specific observation about explanation clarity and structure>" },
+  "pacing": { "score": <1-10>, "feedback": "<observation about lesson pacing, time allocation>" },
+  "contentCoverage": { "score": <1-10>, "feedback": "<observation about topic depth, examples, accuracy>" },
+  "studentEngagement": { "score": <1-10>, "feedback": "<observation about questions asked, interaction, energy>" },
+  "languageQuality": { "score": <1-10>, "feedback": "<observation about vocabulary, analogies, simplicity>" },
+  "suggestions": ["<concrete improvement 1>", "<concrete improvement 2>", "<concrete improvement 3>"],
+  "strengths": ["<identified strength 1>", "<identified strength 2>"]
+}"""
+
+
 TEMPLATES: Dict[str, PromptTemplate] = {
     "ai_memorization_retention": PromptTemplate(
         system=MEMORIZATION_SYSTEM,
@@ -1071,6 +1097,13 @@ TEMPLATES: Dict[str, PromptTemplate] = {
         system=FEEDBACK_GENERATE_SYSTEM,
         user_template=(
             "Student ID: {student_id}\n" "Context: {context}\n" "Data: {data_json}"
+        ),
+    ),
+    "teacher_recording_analysis": PromptTemplate(
+        system=TEACHER_RECORDING_ANALYSIS_SYSTEM,
+        user_template=(
+            "Recording: {title}\n"
+            "Transcript:\n{transcript}"
         ),
     ),
     "notes_analyze": PromptTemplate(
