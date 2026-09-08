@@ -1767,6 +1767,10 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
         "- If the teacher contrasts two ideas, keep that comparison.\n"
         "- DO NOT generate any Summary, Conclusion, Key Takeaways, Introduction, or Overview section that just lists or recaps what was already covered.\n"
         "- If the teacher is recapping/summarizing at the end of class (e.g. 'We have discussed...', 'Today we learned...'), SKIP that part entirely.\n"
+        "- Do NOT add a standalone bold sentence as a closing remark or 'key insight' after a topic, formula, "
+        "or worked example (e.g. '**This shows that...**' or '**The result illustrates...**' on its own line). "
+        "Use bold only for brief inline emphasis of specific terms within a normal sentence, never as a "
+        "freestanding concluding paragraph — this is one chunk of a larger lecture, not its ending.\n"
         "- Do not add unrelated content not supported by the transcript.\n\n"
         f"{chunk_text}"
     )
@@ -1868,7 +1872,13 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
         "- Prefer explanatory paragraphs plus bullets where helpful.\n"
         "- Preserve continuity between chunks so the final notes read like one lecture, not stitched fragments.\n"
         "- Include key distinctions, common mistakes, and exam-relevant insights when present.\n"
-        "- End with a concise Summary section.\n\n"
+        "- Do NOT end with a Summary, Conclusion, Key Takeaways, or any other closing recap section or "
+        "sentence — these notes are merged in groups, and this may be only one part of a longer lecture "
+        "that continues after this merge, so a 'final' summary here would land in the middle of the document.\n"
+        "- Do NOT add a standalone bold sentence as a closing remark or 'key insight' after a topic, formula, "
+        "or worked example (e.g. '**This shows that...**' or '**The result illustrates...**' on its own line). "
+        "Use bold only for brief inline emphasis of specific terms within a normal sentence, never as a "
+        "freestanding concluding paragraph.\n\n"
         f"{combined_sections}"
     )
     # Clamp against Groq's hard per-request token budget (see GROQ_REQUEST_TOKEN_BUDGET
@@ -2370,6 +2380,39 @@ def _rejoin_split_bold_spans(text: str) -> str:
     return "\n\n".join(out)
 
 
+_LIST_OR_HEADING_RE = re.compile(r"^(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\|)")
+_FULL_BOLD_BLOCK_RE = re.compile(r"^\*\*(.+)\*\*$", re.DOTALL)
+
+
+def _debold_standalone_conclusion_paragraphs(text: str) -> str:
+    """
+    Despite prompt instructions against it, the model sometimes still ends a
+    topic, formula, or worked example with a whole paragraph wrapped in
+    **bold** (e.g. '**This shows that multiplication of powers with a common
+    exponent is commutative.**') -- a leftover "key insight" habit. It isn't
+    a heading and carries no structural meaning, so it just reads as an
+    unexplained emphasis dropped mid-document. Strip the bold markers so it
+    renders as an ordinary paragraph; the content is kept, only the stray
+    whole-sentence emphasis is removed. Only a bare paragraph block that is
+    bold from its very first to very last character qualifies -- headings,
+    list items, table rows, and blockquotes are left untouched, as is any
+    inline bold that doesn't span the entire block.
+    """
+    blocks = text.split("\n\n")
+    out: list[str] = []
+    for block in blocks:
+        stripped = block.strip()
+        if not stripped or _LIST_OR_HEADING_RE.match(stripped):
+            out.append(block)
+            continue
+        match = _FULL_BOLD_BLOCK_RE.match(stripped)
+        if match and "\n" not in match.group(1) and "**" not in match.group(1):
+            out.append(match.group(1).strip())
+        else:
+            out.append(block)
+    return "\n\n".join(out)
+
+
 _HTML_SUB_RE = re.compile(r"<sub>([^<]*)</sub>", re.IGNORECASE)
 _HTML_SUP_RE = re.compile(r"<sup>([^<]*)</sup>", re.IGNORECASE)
 
@@ -2597,6 +2640,7 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
     # ("**Darwin's Observations**: ...") that got cut across a paragraph break.
     stitched_notes = _convert_html_sub_sup(stitched_notes)
     stitched_notes = _rejoin_split_bold_spans(stitched_notes)
+    stitched_notes = _debold_standalone_conclusion_paragraphs(stitched_notes)
     stitched_notes = _fix_crammed_enumerations(stitched_notes)
     stitched_notes = _reformat_symbol_definition_blocks(stitched_notes)
 
@@ -2754,6 +2798,7 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
         )
         polished = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
         polished = _convert_html_sub_sup(_downgrade_h1_headings(polished.strip()))
+        polished = _debold_standalone_conclusion_paragraphs(polished)
         return polished or cleaned, True
     except Exception as exc:
         logger.warning("Notes markdown polish failed (%s)", exc)
@@ -2908,14 +2953,28 @@ def _detect_subject_and_type_for_doubt(question: str, has_image: bool, institute
 
     # Fallback: LLM classifier for image-only or zero-keyword questions
     subject, qtype = "physics", "numerical"
+    _detect_started = time.time()
     try:
+        # gpt-oss-20b is a REASONING model: it spends completion tokens on internal
+        # reasoning before the answer. With max_tokens=60 and json_mode=True it
+        # routinely exhausted the budget mid-document, so Groq rejected the call with
+        # 400 json_validate_failed ("max completion tokens reached before generating
+        # a valid document") -- deterministically, on every key.
+        #
+        # Two minimal corrections, no provider/model change:
+        #   * a realistic budget (60 -> 300) so the reasoning preamble plus the
+        #     two-field answer fit; 300 output tokens here is ~$0.00009 per call, and
+        #     this path only runs when keyword detection was inconclusive.
+        #   * json_mode=False, removing server-side format validation as a failure
+        #     mode. The parser below already extracts the object from a text
+        #     response, so nothing downstream changes.
         detect_result = get_llm().complete(
             system_prompt=_DOUBT_DETECTOR_SYSTEM,
             user_prompt=f"Classify this question:\n\n{question[:800]}",
             model="openai/gpt-oss-20b",
             temperature=0.0,
-            max_tokens=60,
-            json_mode=True,
+            max_tokens=300,
+            json_mode=False,
             institute_id=institute_id,
         )
         detect_data = detect_result.get("content", {})
@@ -2935,7 +2994,14 @@ def _detect_subject_and_type_for_doubt(question: str, has_image: bool, institute
             subject = s if s in valid_subjects else "physics"
             qtype = t if t in valid_types else "numerical"
     except Exception as exc:
-        logger.warning("Doubt LLM detector failed (%s); defaulting to physics/numerical", exc)
+        # Optional enrichment: failure here is not an error for the request, it just
+        # means we classify by keyword instead. Elapsed time is logged because this
+        # call used to rotate the entire key pool before giving up -- silently
+        # expensive for a long time.
+        logger.warning(
+            "Doubt LLM detector failed after %.2fs (%s); defaulting to physics/numerical",
+            time.time() - _detect_started, exc,
+        )
 
 
 
@@ -4171,7 +4237,10 @@ def start_tutor_session(request):
             user_prompt=user_prompt,
             model=get_model_for_task("tutor_session", vertical),
             temperature=0.3,
-            max_tokens=8192,
+            # 8192 alone already exceeds the org's ~8000 TPM cap before the prompt
+            # is even counted, guaranteeing a 413 on any non-trivial context. Clamp
+            # to the shared safe request budget instead (same pattern as notes polish).
+            max_tokens=_safe_max_tokens(system_prompt + user_prompt, 8192),
             json_mode=False,
             institute_id=institute_id,
         )
@@ -5349,9 +5418,19 @@ _CONTENT_TYPE_PROMPTS = {
         "Use bullet points and short paragraphs. Cover every exam-important concept."
     ),
     "mindmap": (
-        "Generate a hierarchical mind-map outline in Markdown. "
-        "Use # for the main topic, ## for main branches, ### for sub-branches, and - for leaf nodes. "
-        "Cover all sub-topics and their key points."
+        "Generate a hierarchical mind-map outline in Markdown, covering ONLY the most important, "
+        "exam-relevant concepts for this topic -- not everything that could technically be said about it. "
+        "Be selective: leave out minor details, tangents, and restatements. Every single node must be "
+        "something a student genuinely needs to know -- if a node would just be filler or padding, cut it.\n\n"
+        "Structure: use # for the main topic, then ## / ### / #### Markdown headings for branches and "
+        "sub-branches, and - for leaf points. The number of branches, the number of sub-branches under "
+        "each, and how many heading levels deep the tree goes must all be dynamic, driven purely by how "
+        "this specific topic actually breaks down -- never a fixed shape. A narrow or simple topic may "
+        "genuinely need only 2-3 branches with no further sub-branches at all; a broad topic may need "
+        "more branches, and some (not necessarily all) of those branches may need one or two further "
+        "levels of sub-branches. Only add another heading level under a branch when that branch truly "
+        "has further internal structure worth splitting out -- never add an extra level just to look "
+        "thorough, and never force two distinct ideas into one branch just to keep the tree shallow."
     ),
     "flashcard": (
         "Generate 12-15 flashcard pairs for this topic in Markdown. "
@@ -6581,20 +6660,23 @@ def generate_topic_content(request):
     ]
     user_prompt = "\n".join(user_prompt_parts) + "\n"
 
-    # ── Textbook grounding ───────────────────────────────────────────────────
-    # When the caller supplies passages from the school's own chapter, every
+    # ── Source grounding (textbook and/or lecture transcript) ────────────────
+    # The caller (NestJS) decides which source(s) a teacher is allowed and has
+    # asked to ground on, and tags each passage accordingly ("ebook" default,
+    # or "lecture" for an indexed recorded-lecture transcript excerpt). Every
     # content type generated here — notes, DPP, PYQ, flashcards, mind maps and
-    # the question sets behind assessments — is written from the book instead of
-    # the model's general knowledge, and cites the pages it used.
+    # the question sets behind assessments — is written from whatever is
+    # supplied instead of the model's general knowledge, citing each passage.
     source_passages = data.get("sourcePassages") or []
     # Kept so the Groq fallback can be given the original, un-grounded prompt.
-    # Grounding adds roughly 9,000 tokens of textbook to the request, which
+    # Grounding adds roughly 9,000+ tokens of source text to the request, which
     # Gemini has room for and Groq does not — its on-demand tier rejects any
     # single request over 12,000 TPM outright, on every key, since that is a
     # size limit rather than a quota.
     ungrounded_system_prompt = system_prompt
     grounded = False
     grounded_pages = []
+    grounded_citations = []
     grounded_block = ""
     # Reported alongside the content so a teacher can tell a full chapter from a
     # trimmed one. ppt.py has always returned this; the content path computed it
@@ -6603,6 +6685,8 @@ def generate_topic_content(request):
     grounded_truncated = False
     grounded_used = 0
     grounded_available = len(source_passages)
+    has_ebook_source = any(p.get("source", "ebook") == "ebook" for p in source_passages)
+    has_lecture_source = any(p.get("source") == "lecture" for p in source_passages)
     if source_passages:
         try:
             from ai_services.core import grounding as _gr
@@ -6624,26 +6708,68 @@ def generate_topic_content(request):
             if selection["passages"]:
                 grounded = True
                 grounded_pages = selection["pages"]
-                system_prompt = (
-                    "═══ THE TEXTBOOK EXTRACT BELOW IS YOUR ONLY PERMITTED SOURCE ═══\n"
-                    "1. Every fact, definition, formula, number, name and worked example must come\n"
-                    "   from the SOURCE TEXT. If it is not there, it does not go in the output.\n"
-                    "2. Do NOT add material from your own knowledge, even when you are certain it is\n"
-                    "   correct. A true statement absent from this book is still wrong here, because\n"
-                    "   the teacher must be able to point to it in their copy.\n"
-                    "3. Keep the book's own terminology, notation and worked examples. Do not\n"
-                    "   substitute a more general or more advanced treatment.\n"
-                    "4. If the source does not cover enough for the requested length or question\n"
-                    "   count, produce LESS. Never pad from outside the book.\n"
-                    "5. Cite the page inline as [p.N] wherever you state something specific.\n\n"
-                    + system_prompt
-                )
+                grounded_citations = selection["citations"]
+
+                if has_ebook_source and has_lecture_source:
+                    source_label = "the textbook extract AND the lecture transcript excerpts below"
+                    source_rules = (
+                        "═══ THE SOURCES BELOW ARE YOUR ONLY PERMITTED MATERIAL ═══\n"
+                        "1. Every fact, definition, formula, number, name and worked example must come\n"
+                        "   from the SOURCE TEXT below. If it is not there, it does not go in the output.\n"
+                        "2. Two kinds of source are supplied: textbook extracts, cited [p.N], and lecture\n"
+                        "   transcript excerpts, cited [Lecture: <title>]. Prefer the textbook's own wording\n"
+                        "   for definitions and terminology; treat transcript excerpts as the teacher's own\n"
+                        "   spoken explanations, examples and emphasis — useful context, but a rough\n"
+                        "   transcript, so write it up cleanly without changing what was actually said.\n"
+                        "3. Do NOT add material from your own knowledge, even when you are certain it is\n"
+                        "   correct. A true statement absent from these sources is still wrong here, because\n"
+                        "   the teacher must be able to point to it in their book or recording.\n"
+                        "4. If the sources do not cover enough for the requested length or question\n"
+                        "   count, produce LESS. Never pad from outside the supplied sources.\n"
+                        "5. Cite inline after each specific claim, using the label shown before its\n"
+                        "   passage: [p.N] for the textbook, [Lecture: <title>] for the transcript.\n\n"
+                    )
+                elif has_lecture_source:
+                    source_label = "the lecture transcript excerpts below"
+                    source_rules = (
+                        "═══ THE LECTURE TRANSCRIPT BELOW IS YOUR ONLY PERMITTED SOURCE ═══\n"
+                        "1. Every fact, definition, example and explanation must come from the recorded\n"
+                        "   lecture's transcript excerpts below. If it is not there, it does not go in\n"
+                        "   the output.\n"
+                        "2. The transcript is raw speech-to-text: expect filler words, run-on sentences\n"
+                        "   and occasional recognition errors. Write clean, well-formed content from it\n"
+                        "   without changing what the teacher actually said or inventing detail the\n"
+                        "   transcript does not support.\n"
+                        "3. Do NOT add material from your own knowledge, even when you are certain it is\n"
+                        "   correct — the teacher must be able to point to it in the recording.\n"
+                        "4. If the transcript does not cover enough for the requested length or question\n"
+                        "   count, produce LESS. Never pad from outside the transcript.\n"
+                        "5. Cite the source inline as [Lecture: <title>] wherever you state something\n"
+                        "   specific.\n\n"
+                    )
+                else:
+                    source_label = "the school's own chapter"
+                    source_rules = (
+                        "═══ THE TEXTBOOK EXTRACT BELOW IS YOUR ONLY PERMITTED SOURCE ═══\n"
+                        "1. Every fact, definition, formula, number, name and worked example must come\n"
+                        "   from the SOURCE TEXT. If it is not there, it does not go in the output.\n"
+                        "2. Do NOT add material from your own knowledge, even when you are certain it is\n"
+                        "   correct. A true statement absent from this book is still wrong here, because\n"
+                        "   the teacher must be able to point to it in their copy.\n"
+                        "3. Keep the book's own terminology, notation and worked examples. Do not\n"
+                        "   substitute a more general or more advanced treatment.\n"
+                        "4. If the source does not cover enough for the requested length or question\n"
+                        "   count, produce LESS. Never pad from outside the book.\n"
+                        "5. Cite the page inline as [p.N] wherever you state something specific.\n\n"
+                    )
+
+                system_prompt = source_rules + system_prompt
                 grounded_block = (
-                    "\n═══ SOURCE TEXT — the school's own chapter, your only permitted facts ═══\n"
+                    f"\n═══ SOURCE TEXT — {source_label}, your only permitted facts ═══\n"
                     + _gr.format_source_block(selection["passages"])
                     + "\n═══ END OF SOURCE TEXT ═══\n"
                     "Write the requested content from the passages above and nothing else. "
-                    "Cite the page inline as [p.N] after each specific claim.\n"
+                    "Cite each specific claim using the label shown before its source passage.\n"
                 )
         except Exception as exc:
             # Grounding is an enhancement; falling back to general knowledge is
@@ -6871,6 +6997,8 @@ def generate_topic_content(request):
                     "topicName": topic_name,
                     "source": {
                         "grounded": True, "pages": grounded_pages,
+                        "citations": grounded_citations,
+                        "hasEbook": has_ebook_source, "hasLecture": has_lecture_source,
                         "passagesUsed": grounded_used,
                         "passagesAvailable": grounded_available,
                         "truncated": grounded_truncated,
@@ -7006,6 +7134,8 @@ def generate_topic_content(request):
         # from content written from general knowledge.
         "source": {
             "grounded": grounded, "pages": grounded_pages,
+            "citations": grounded_citations,
+            "hasEbook": has_ebook_source, "hasLecture": has_lecture_source,
             "passagesUsed": grounded_used,
             "passagesAvailable": grounded_available,
             "truncated": grounded_truncated,

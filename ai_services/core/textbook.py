@@ -10,8 +10,17 @@ teacher.
 This module is deliberately stateless: it extracts and returns passages. The
 school database is owned by the NestJS backend, which persists what it gets back
 — mirroring how the rest of this service is called.
+
+The one exception is progress reporting (see set_ingest_progress/get_ingest_progress
+below): a scanned chapter's vision pass is a single blocking request that can run
+for minutes, so the only way to show live progress is to publish it somewhere
+readable *during* that request. Redis already backs cross-worker state elsewhere
+in this service (ai_services.core.cache), so ingestion progress is a short-lived
+key there — not persisted business data, just a few minutes' TTL scoped to one
+run, and it costs nothing when Redis is unavailable (see below).
 """
 import io
+import json
 import logging
 import os
 import re
@@ -19,6 +28,62 @@ import re
 import requests as _requests
 
 logger = logging.getLogger("ai_services.textbook")
+
+# How long a published progress entry survives. Comfortably longer than any
+# single chapter's OCR pass, and matches the backend's own stale-run window
+# (_RUN_STALE_MS in school-textbook.service.ts) so a leftover key never outlives
+# what the backend itself still considers a live run.
+_PROGRESS_TTL_SECONDS = 900
+
+
+def _progress_redis_key(progress_key: str) -> str:
+    return f"textbook_progress:{progress_key}"
+
+
+def set_ingest_progress(progress_key: "str | None", pages_done: int, pages_total: int, stage: str = "ocr") -> None:
+    """Publish how far a single chapter's OCR pass has gotten.
+
+    Best-effort and silent on any failure: progress is a UI nicety, and must
+    never be the reason an actual indexing run fails or slows down.
+    """
+    if not progress_key:
+        return
+    from ai_services.core.cache import get_redis
+    client = get_redis()
+    if not client:
+        return
+    try:
+        client.setex(
+            _progress_redis_key(progress_key), _PROGRESS_TTL_SECONDS,
+            json.dumps({"pagesDone": pages_done, "pagesTotal": pages_total, "stage": stage}),
+        )
+    except Exception as exc:
+        logger.warning("Could not publish ingest progress for %s: %s", progress_key, exc)
+
+
+def get_ingest_progress(progress_key: str) -> "dict | None":
+    """Read back the progress published by set_ingest_progress, if any."""
+    if not progress_key:
+        return None
+    from ai_services.core.cache import get_redis
+    client = get_redis()
+    if not client:
+        return None
+    try:
+        raw = client.get(_progress_redis_key(progress_key))
+        return json.loads(raw) if raw else None
+    except Exception as exc:
+        logger.warning("Could not read ingest progress for %s: %s", progress_key, exc)
+        return None
+
+
+def _pdf_page_count(data: bytes) -> "int | None":
+    """Total page count, or None if pypdf isn't available to ask it."""
+    try:
+        from pypdf import PdfReader
+        return len(PdfReader(io.BytesIO(data)).pages)
+    except Exception:
+        return None
 
 # Roughly 4 characters per token for English prose. Passages are sized so a
 # handful fit in a prompt alongside the instructions without crowding them out.
@@ -272,7 +337,7 @@ def _ocr_batch(data: bytes, first_page_no: int) -> "list[dict]":
     return pages
 
 
-def ocr_pdf_pages(data: bytes) -> "list[dict]":
+def ocr_pdf_pages(data: bytes, progress_key: "str | None" = None) -> "list[dict]":
     """Transcribe a scanned PDF page by page using Gemini's native PDF vision.
 
     School textbooks very often arrive as photographs or scans shared over
@@ -286,6 +351,11 @@ def ocr_pdf_pages(data: bytes) -> "list[dict]":
     readable text" — sending a teacher to re-scan a book that was never the
     problem. Page numbers stay absolute across batches so citations still match
     the printed chapter.
+
+    This is the only slow part of ingestion (a page batch is a full vision
+    call), so progress is published here — after every batch, and once
+    upfront with the page count before the first one starts — rather than
+    only being knowable once the whole transcript is back.
     """
     from ai_services.core import gemini_client as _gc
 
@@ -293,6 +363,13 @@ def ocr_pdf_pages(data: bytes) -> "list[dict]":
         raise RuntimeError("Gemini is required to read a scanned PDF but is unavailable")
 
     batches = split_pdf_batches(data, _OCR_PAGES_PER_BATCH)
+    # A second, cheap pypdf pass just for the page count — split_pdf_batches
+    # already knows it internally but doesn't return it. Falls back to an
+    # (over-)estimate from the batch count if pypdf is unavailable, so a
+    # progress bar still moves, just without reaching exactly 100% until done.
+    total_pages = _pdf_page_count(data) or (len(batches) * _OCR_PAGES_PER_BATCH)
+    set_ingest_progress(progress_key, 0, total_pages, "ocr")
+
     pages: "list[dict]" = []
     for first_page_no, chunk in batches:
         batch_pages = _ocr_batch(chunk, first_page_no)
@@ -302,10 +379,11 @@ def ocr_pdf_pages(data: bytes) -> "list[dict]":
             first_page_no, first_page_no + len(batch_pages) - 1,
             sum(p["chars"] for p in batch_pages),
         )
+        set_ingest_progress(progress_key, len(pages), total_pages, "ocr")
     return pages
 
 
-def ingest_pdf(source: "str | bytes", allow_ocr: bool = True) -> dict:
+def ingest_pdf(source: "str | bytes", allow_ocr: bool = True, progress_key: "str | None" = None) -> dict:
     """Extract + chunk a chapter PDF. Returns passages plus a quality report.
 
     The report exists so a human can tell a clean digital textbook from a scan
@@ -326,7 +404,7 @@ def ingest_pdf(source: "str | bytes", allow_ocr: bool = True) -> dict:
     # No text layer worth having — fall back to reading the pages as images.
     if allow_ocr and sum(p["chars"] for p in pages) < 200:
         try:
-            ocr_pages = ocr_pdf_pages(data)
+            ocr_pages = ocr_pdf_pages(data, progress_key=progress_key)
             if sum(p["chars"] for p in ocr_pages) >= 200:
                 pages, method = ocr_pages, "ocr"
                 chunks = chunk_pages(pages)

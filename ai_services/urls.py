@@ -82,6 +82,7 @@ urlpatterns = [
 
     # Textbook ingestion (chapter PDF -> page-tagged passages for grounded generation)
     path("textbook/ingest", textbook.ingest_textbook),
+    path("textbook/ingest-progress", textbook.ingest_progress),
 
     # Batch Question Evaluator (QA for AI-generated questions)
     path("evaluate/batch", evaluate.evaluate_batch),

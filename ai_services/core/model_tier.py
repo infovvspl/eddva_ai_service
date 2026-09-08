@@ -51,6 +51,7 @@ FEATURE_TIER_MAP = {
     "notes_generate":     ModelTier.BALANCED,
     "study_plan":         ModelTier.BALANCED,
     "career_roadmap":     ModelTier.BALANCED,
+    "career_guidance":    ModelTier.POWER,      # full academic + psychometric analysis
     "feedback_analyze":   ModelTier.POWER,
     "test_generate":      ModelTier.POWER,
 

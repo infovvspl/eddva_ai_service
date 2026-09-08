@@ -901,7 +901,15 @@ Return ONLY valid JSON in this exact structure:
       "fitScore": number (0-100),
       "reasoning": "string (2-3 sentences why this fits THIS student specifically)",
       "focusAreas": ["string", "string", "string"],
-      "actionPlan": ["string", "string", "string", "string"]
+      "actionPlan": ["string", "string", "string", "string"],
+      "exams": ["string", "..."] (major Indian entrance exams/qualifications for this career; [] if none apply),
+      "topColleges": ["string", "..."] (3-5 reputed Indian institutions offering this path),
+      "salaryRange": "string (e.g. '₹4–12 LPA', realistic for India)",
+      "duration": "string (typical time from Class 12 to entering this career, e.g. '4 Years')",
+      "educationPath": ["string", "..."] (3-5 ordered steps from the student's current grade to this career),
+      "keySkills": ["string", "..."] (4-6 skills this career demands),
+      "jobRoles": ["string", "..."] (3-5 concrete job titles in this field),
+      "prosCons": {{"pros": ["string", "string"], "cons": ["string", "string"]}}
     }}
   ],
   "overallAnalysis": "string (3-4 sentences about student's overall profile)",
@@ -914,6 +922,10 @@ topCareers: exactly 3 careers
 fitScore: realistic (not all 90+)
 reasoning: must mention specific subjects or marks
 actionPlan: specific steps for CURRENT grade
+exams/topColleges/salaryRange/duration/educationPath/keySkills/jobRoles/prosCons: fill these in
+  for EVERY career, including well-known ones — this is stored as a permanent catalog entry for
+  other students who match the same career later, not just shown to this student. Be specific and
+  realistic for the Indian education system; never leave these empty or generic.
 streamRecommendation: Science/Commerce/Arts/Any along with the recommended subject combination (e.g., PCM, PCB, Commerce with Math, etc.) — only for Class 9-10
 immediateActions: what to do in next 3 months
 encouragement: personal, warm, specific to this student

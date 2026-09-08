@@ -10,6 +10,23 @@ logger = logging.getLogger(__name__)
 _NESTJS_BASE_URL = os.getenv('NESTJS_INTERNAL_URL', '')
 _INTERNAL_API_KEY = os.getenv('INTERNAL_API_KEY', '')
 
+
+def _first_present(*values):
+    """First value that is actually present, else None.
+
+    Treats None, '' and whitespace-only as absent. Callers in views/bridge.py
+    derive user_id from the request body with an `or ''` tail, so an empty string
+    is the normal "not supplied" case and must not be mistaken for a real value —
+    downstream it would only be normalised to NULL anyway.
+    """
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
 MODEL_COSTS = {
     'llama-3.1-8b-instant':           {'input': 0.05,  'output': 0.08},
     'llama-3.3-70b-versatile':        {'input': 0.59,  'output': 0.79},
@@ -52,6 +69,8 @@ def log_ai_usage_sync(
     success: bool = True,
     error_message: str = None,
     user_id: str = None,
+    user_role: str = None,
+    request_id: str = None,
 ):
     cost = calculate_cost(model_used, tokens_input, tokens_output)
     payload = {
@@ -67,6 +86,8 @@ def log_ai_usage_sync(
         "success": success,
         "errorMessage": error_message,
         "userId": user_id,
+        "userRole": user_role,
+        "requestId": request_id,
     }
     # Read at call time so gunicorn worker always picks up the deployed .env values
     nestjs_url = os.getenv('NESTJS_INTERNAL_URL', '') or _NESTJS_BASE_URL
@@ -102,8 +123,38 @@ def log_usage(
     success: bool = True,
     error_message: str = None,
     user_id: str = None,
+    user_role: str = None,
+    request_id: str = None,
 ):
     """Fire-and-forget — never blocks the AI response."""
+    # P1-6: the authenticated request context is the SOURCE OF TRUTH for attribution.
+    #
+    # TenantAuthMiddleware stamps it from the ai-bridge's X-User-Id / X-User-Role /
+    # X-Request-Id headers, which the bridge derives from the verified JWT. What a
+    # caller passes as user_id comes from the request *body*
+    # (`data.get('userId') ... or ''`), which is empty for worker/background calls
+    # and client-supplied — therefore spoofable — when present. So the context wins
+    # whenever it has a value, and the caller's value is used only as a fallback,
+    # which preserves behaviour for callers running without an authenticated context.
+    #
+    # Empty strings count as absent. Previously `user_id=''` was not None, so the
+    # fallback was skipped entirely and the empty string became NULL downstream —
+    # every lecture/STT event lost its user attribution that way.
+    try:
+        from ai_services.core import request_context
+        user_id = _first_present(request_context.get("user_id"), user_id)
+        user_role = _first_present(request_context.get("user_role"), user_role)
+        request_id = _first_present(request_context.get("request_id"), request_id)
+    except Exception:
+        # Attribution must never break generation; fall through with what we have.
+        pass
+
+    # Never ship an empty string to the usage webhook — normalise to None so the
+    # payload says "unknown" rather than "". Also covers the path where the import
+    # above failed.
+    user_id = _first_present(user_id)
+    user_role = _first_present(user_role)
+    request_id = _first_present(request_id)
     # Count the spend against the tenant's daily budget.
     #
     # This is the ONE place tokens are booked. Every generating endpoint already
@@ -138,6 +189,8 @@ def log_usage(
             success=success,
             error_message=error_message,
             user_id=user_id,
+            user_role=user_role,
+            request_id=request_id,
         ),
         daemon=True,
     )
