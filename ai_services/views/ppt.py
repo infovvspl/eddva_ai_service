@@ -613,6 +613,7 @@ def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None
     broad = strong | _keywords(slide_title)
     first_url = None
     fallback: "dict | None" = None  # best downloadable image even if off-caption
+    downloads = 0  # bounded by _MAX_IMAGE_DOWNLOADS_PER_SLIDE across ALL queries
 
     for attempt, query in enumerate(queries, 1):
         try:
@@ -633,6 +634,11 @@ def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None
                 # to download more of them.
                 if not relevant and fallback is not None:
                     continue
+                if downloads >= _MAX_IMAGE_DOWNLOADS_PER_SLIDE:
+                    # Spent this slide's download budget. Stop hunting and use
+                    # whatever we already hold rather than stalling the pool.
+                    break
+                downloads += 1
                 b64 = _download_image_as_base64(url)
                 if not b64:
                     continue
@@ -644,6 +650,13 @@ def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None
                     fallback = {"imageUrl": url, "imageBase64": b64}
         except Exception as exc:
             logger.warning("Image search failed for %r: %s", query, exc)
+
+        if downloads >= _MAX_IMAGE_DOWNLOADS_PER_SLIDE:
+            logger.info(
+                "Slide %r hit the %d-download budget; using best available",
+                slide_title, _MAX_IMAGE_DOWNLOADS_PER_SLIDE,
+            )
+            break
 
     # No caption-relevant image anywhere — use the best downloadable one so the
     # slide isn't blank, then the raw best URL as a last resort (client proxies it).
@@ -784,6 +797,20 @@ def _groq_max_tokens(*prompts: str, want: int = _MAX_TOKENS) -> int:
 # Serper allows ~1 req/s sustained; a small pool keeps 25 slides well under the
 # NestJS 240s timeout without bursting hard enough to get rate-limited.
 _IMAGE_WORKERS = 5
+
+# Hard cap on image DOWNLOADS per slide.
+#
+# _fetch_image_for_slide tries up to 4 search queries and, for each, would
+# download every result until one is caption-relevant: 4 x 10 downloads at an
+# 8s timeout is ~5 minutes for a single unlucky slide, and with a 5-worker pool
+# one such slide stalls its whole wave. That is the difference between the p50
+# deck (~3s) and the p99 deck (~76s+) — the Gemini call is a single request.
+#
+# Downloads go to arbitrary image hosts, not Serper, so bounding them does not
+# touch the ~1 req/s search budget _IMAGE_WORKERS is sized for. Behaviour is
+# unchanged otherwise: the first caption-relevant image still wins, and the
+# best-effort fallback still fills the slide.
+_MAX_IMAGE_DOWNLOADS_PER_SLIDE = 4
 
 # Wall-clock budget for the optional coverage-planning call.
 #
