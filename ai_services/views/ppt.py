@@ -871,10 +871,15 @@ def _generate_grounded(
     # the notes default (30k). This keeps the deck grounded in the book while
     # cutting the wait substantially. Env-tunable.
     _ppt_budget = int(os.getenv("PPT_GROUNDING_TOKEN_BUDGET", "12000"))
+    # Phase timing (see the "PPT timing" log line below). ai_usage_events records
+    # only the Gemini call's own latency, which hid where a 100s+ deck actually
+    # spends its time — retrieval, generation, or images.
+    _t_select_start = time.perf_counter()
     selection = _gr.select_source(
         passages, ctx.get("topicName") or topic, ctx.get("chapterName") or "",
         token_budget=_ppt_budget,
     )
+    _select_s = time.perf_counter() - _t_select_start
     if not selection["passages"]:
         logger.warning(
             "Grounded PPT skipped: %d passages supplied for %r but none had usable "
@@ -892,17 +897,28 @@ def _generate_grounded(
     # Output budget scales with the deck: ~320 tokens/slide is ample for slide
     # bullets, and a smaller ceiling means Gemini finishes sooner. Capped at 8000.
     _out_tokens = max(2500, min(8000, slide_count * 320))
+    # Bound to locals so prompt size can be measured; values are unchanged.
+    _system_prompt = _gr.build_grounded_system_prompt(has_ebook_source, has_lecture_source)
+    _user_prompt = _gr.build_grounded_user_prompt(
+        slide_count=slide_count, language=language, topic=topic,
+        ctx=ctx, source_block=_gr.format_source_block(selection["passages"]),
+        has_ebook=has_ebook_source, has_lecture=has_lecture_source,
+    )
+    _prompt_chars = len(_system_prompt) + len(_user_prompt)
+    _t_llm_start = time.perf_counter()
     try:
         result = _gc.complete_json(
-            system_prompt=_gr.build_grounded_system_prompt(has_ebook_source, has_lecture_source),
-            user_prompt=_gr.build_grounded_user_prompt(
-                slide_count=slide_count, language=language, topic=topic,
-                ctx=ctx, source_block=_gr.format_source_block(selection["passages"]),
-                has_ebook=has_ebook_source, has_lecture=has_lecture_source,
-            ),
+            system_prompt=_system_prompt,
+            user_prompt=_user_prompt,
             max_output_tokens=_out_tokens,
         )
     except Exception as exc:
+        logger.warning(
+            "PPT timing (failed) | select=%.1fs llm=%.1fs prompt=%dch passages=%d/%d "
+            "slides=%d out_budget=%d",
+            _select_s, time.perf_counter() - _t_llm_start, _prompt_chars,
+            len(selection["passages"]), len(passages), slide_count, _out_tokens,
+        )
         reason = _classify_gemini_failure(exc)
         logger.warning(
             "Grounded PPT fell back (%s) for %r: %s",
@@ -920,6 +936,9 @@ def _generate_grounded(
                        ctx.get("chapterName") or topic)
         return None, "gemini_error"
 
+    _llm_s = float(result.get("latency_ms", 0)) / 1000.0
+
+    _t_img_start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
         images = list(pool.map(
             lambda s: _fetch_image_for_slide(
@@ -927,7 +946,35 @@ def _generate_grounded(
             ),
             slides,
         ))
+    _images_s = time.perf_counter() - _t_img_start
     data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
+
+    # One line that answers "where did the 100 seconds go?". ai_usage_events
+    # stores only _llm_s, so retrieval and image time were previously invisible.
+    _usage = result.get("usage") or {}
+    logger.info(
+        "PPT timing | total=%.1fs select=%.1fs llm=%.1fs images=%.1fs | "
+        "prompt=%dch passages=%d/%d slides=%d out_budget=%d out_tokens=%s model=%s",
+        _select_s + _llm_s + _images_s, _select_s, _llm_s, _images_s,
+        _prompt_chars, len(selection["passages"]), len(passages), len(slides),
+        _out_tokens, _usage.get("completion_tokens", "?"), result.get("model", "?"),
+    )
+
+    # Also returned so the breakdown is visible in the response without needing
+    # server log access. Additive; existing clients ignore it.
+    data["_timing"] = {
+        "selectSeconds": round(_select_s, 1),
+        "llmSeconds": round(_llm_s, 1),
+        "imagesSeconds": round(_images_s, 1),
+        "totalSeconds": round(_select_s + _llm_s + _images_s, 1),
+        "promptChars": _prompt_chars,
+        "passagesUsed": len(selection["passages"]),
+        "passagesAvailable": len(passages),
+        "slides": len(slides),
+        "outputTokenBudget": _out_tokens,
+        "outputTokens": _usage.get("completion_tokens"),
+        "model": result.get("model"),
+    }
 
     # The caller shows this to the teacher, so a grounded deck is never mistaken
     # for one written from general knowledge.
