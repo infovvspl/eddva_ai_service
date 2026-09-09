@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 
 from ai_services.core.gemini_keys import (
@@ -191,6 +192,37 @@ def gemini_generate(api_key: str, *, model: str, contents, config):
     raise RuntimeError(f"Gemini: exhausted model/config retries for {model}")
 
 
+class _RotationStats(threading.local):
+    """Per-thread record of the last successful Gemini attempt.
+
+    Thread-local because gunicorn sync workers handle one request at a time but
+    image/coverage helpers use thread pools — a shared global would let one
+    thread's stats leak into another's response.
+    """
+    last = None
+
+
+_ROTATION_STATS = _RotationStats()
+
+
+def _emit_gemini_event(event_type, status_code, api_key, attempt_number, model):
+    """Record one failed Gemini key attempt, mirroring the Groq rotation.
+
+    Gemini failures were previously log-only, so key exhaustion and 503 storms
+    were invisible in ai_provider_events and could only be found by reading the
+    server log. Best-effort: telemetry must never break a generation.
+    """
+    try:
+        from ai_services.core import provider_events as _pev
+        _pev.emit(
+            event_type=event_type, provider="gemini", model=model,
+            status_code=status_code, attempt_number=attempt_number,
+            key_hash=_pev.key_fingerprint(api_key),
+        )
+    except Exception:
+        pass
+
+
 def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what: str = "request"):
     """Run one generate_content call, moving to another key rather than failing.
 
@@ -216,7 +248,18 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
         try:
             # gemini_generate settles the model and config this key can use; only
             # errors that are properties of the *key* reach here.
-            return gemini_generate(key, model=model, contents=contents, config=config)
+            _call_started = time.time()
+            _resp = gemini_generate(key, model=model, contents=contents, config=config)
+            # Stash the SUCCESSFUL attempt's own duration and how many keys were
+            # burned to get here. Without this, complete_json's latency lumps
+            # rotation and generation together, so "Gemini is slow" and "the first
+            # three keys were overloaded" are indistinguishable.
+            _ROTATION_STATS.last = {
+                "call_ms": int((time.time() - _call_started) * 1000),
+                "keys_tried": attempt + 1,
+                "key_no": key_no,
+            }
+            return _resp
         except Exception as exc:
             last_exc = exc
             if _looks_model_unavailable(exc):
@@ -226,15 +269,18 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
                     "Gemini key #%d has no usable model for %s; trying the next key",
                     key_no, what,
                 )
+                _emit_gemini_event("provider_error", None, key, attempt + 1, model)
                 continue
             if _looks_key_rejected(exc):
                 mark_gemini_key_disabled(key)
                 logger.warning("Gemini key #%d rejected, disabling it: %s", key_no, exc)
+                _emit_gemini_event("provider_error", 401, key, attempt + 1, model)
                 continue
             if _looks_rate_limited(exc):
                 logger.warning(
                     "Gemini key #%d rate-limited on %s; trying the next key", key_no, what
                 )
+                _emit_gemini_event("429", 429, key, attempt + 1, model)
                 time.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
                 continue
             if _looks_overloaded(exc):
@@ -244,6 +290,7 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
                     "Gemini key #%d got 503/overloaded on %s; backing off and trying the next key",
                     key_no, what,
                 )
+                _emit_gemini_event("5xx", 503, key, attempt + 1, model)
                 time.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
                 continue
             # Anything else is a real failure — a bad prompt or an unreadable
@@ -320,6 +367,20 @@ def complete_text(
         what="text completion",
     )
     latency_ms = int((time.time() - started) * 1000)
+    # Split the wall clock: how long the winning call itself took, versus how
+    # much was spent burning through overloaded/rate-limited keys before it.
+    # Conflating these made a 92s deck look like slow generation when most of it
+    # was rotation (or vice versa) — the two have completely different fixes.
+    _stats = getattr(_ROTATION_STATS, "last", None) or {}
+    call_ms = _stats.get("call_ms")
+    rotation_ms = (latency_ms - call_ms) if call_ms is not None else None
+    if call_ms is not None and rotation_ms is not None and rotation_ms > 1000:
+        logger.info(
+            "Gemini rotation | total=%.1fs call=%.1fs rotation=%.1fs keys_tried=%s won_on_key=#%s",
+            latency_ms / 1000.0, call_ms / 1000.0, rotation_ms / 1000.0,
+            _stats.get("keys_tried"), _stats.get("key_no"),
+        )
+    _ROTATION_STATS.last = None
     text = (getattr(result, "text", None) or "").strip()
     if not text:
         raise RuntimeError("Gemini returned an empty response")
@@ -333,6 +394,11 @@ def complete_text(
         # would bill the wrong rate.
         "model": getattr(result, "model_version", None) or model,
         "latency_ms": latency_ms,
+        # latency_ms stays the total (existing callers depend on it); these two
+        # say where it went.
+        "call_ms": call_ms,
+        "rotation_ms": rotation_ms,
+        "keys_tried": _stats.get("keys_tried"),
         "tokens_input": getattr(usage, "prompt_token_count", 0) or 0,
         "tokens_output": getattr(usage, "candidates_token_count", 0) or 0,
     }

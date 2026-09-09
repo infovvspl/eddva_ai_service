@@ -842,6 +842,11 @@ def _classify_gemini_failure(exc: Exception) -> str:
     return "gemini_error"              # malformed JSON, empty response, transport
 
 
+def _fmt_ms(ms):
+    """Milliseconds -> seconds with one decimal, or None when unavailable."""
+    return None if ms is None else round(ms / 1000.0, 1)
+
+
 def _generate_grounded(
     *, passages, ctx, topic, slide_count, language, institute_id, vertical,
 ):
@@ -954,10 +959,13 @@ def _generate_grounded(
     _usage = result.get("usage") or {}
     logger.info(
         "PPT timing | total=%.1fs select=%.1fs llm=%.1fs images=%.1fs | "
-        "prompt=%dch passages=%d/%d slides=%d out_budget=%d out_tokens=%s model=%s",
+        "prompt=%dch passages=%d/%d slides=%d out_budget=%d out_tokens=%s model=%s "
+        "| llm_call=%ss llm_rotation=%ss keys_tried=%s",
         _select_s + _llm_s + _images_s, _select_s, _llm_s, _images_s,
         _prompt_chars, len(selection["passages"]), len(passages), len(slides),
         _out_tokens, _usage.get("completion_tokens", "?"), result.get("model", "?"),
+        _fmt_ms(result.get("call_ms")), _fmt_ms(result.get("rotation_ms")),
+        result.get("keys_tried", "?"),
     )
 
     # Also returned so the breakdown is visible in the response without needing
@@ -974,6 +982,10 @@ def _generate_grounded(
         "outputTokenBudget": _out_tokens,
         "outputTokens": _usage.get("completion_tokens"),
         "model": result.get("model"),
+        # Of llmSeconds, how much was the winning call vs burning dead keys.
+        "llmCallSeconds": _fmt_ms(result.get("call_ms")),
+        "llmRotationSeconds": _fmt_ms(result.get("rotation_ms")),
+        "keysTried": result.get("keys_tried"),
     }
 
     # The caller shows this to the teacher, so a grounded deck is never mistaken
