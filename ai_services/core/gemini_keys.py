@@ -1,10 +1,61 @@
 import os
 import threading
+import time
 
 
 _LOCK = threading.Lock()
 _NEXT_INDEX = 0
 _DISABLED_KEYS: set[str] = set()
+
+# ── Short-lived cooldown for transiently failing keys ─────────────────────────
+# A key that just returned 429 (its quota is spent) or 503 (its project has no
+# capacity right now) will almost certainly do so again seconds later. Without
+# memory, every request rediscovers the same dead keys serially — and a 503 is
+# not cheap: Google attempts the generation before giving up, so it costs about
+# as long as a successful call (measured: 14-27s per key, turning a ~13s deck
+# into 57s).
+#
+# These are NOT _DISABLED_KEYS: that set is permanent and reserved for keys the
+# API rejected outright. Quota and capacity both come back, so the key is only
+# stepped over until its cooldown expires.
+_COOLING_KEYS: "dict[str, float]" = {}
+
+# 429 is quota — typically a per-minute window, so skip it for a minute.
+# 503 is upstream capacity and usually recovers sooner.
+_COOLDOWN_S = {"429": 60.0, "503": 30.0}
+
+
+def mark_gemini_key_cooling(api_key: str, kind: str) -> None:
+    """Step over this key for a short while after a 429/503.
+
+    Best-effort and self-healing: the entry simply expires, so a key that
+    recovers is picked up again without any intervention.
+    """
+    seconds = _COOLDOWN_S.get(kind)
+    if not seconds:
+        return
+    with _LOCK:
+        _COOLING_KEYS[api_key] = time.time() + seconds
+
+
+def _live_keys(keys: "list[str]") -> "list[str]":
+    """Keys worth trying now: not permanently disabled, not cooling.
+
+    Fails OPEN. If every key is cooling, the cooldowns are ignored rather than
+    returning nothing — a slow attempt beats refusing to generate at all.
+    """
+    now = time.time()
+    with _LOCK:
+        disabled = set(_DISABLED_KEYS)
+        for k, until in list(_COOLING_KEYS.items()):
+            if until <= now:
+                del _COOLING_KEYS[k]
+        cooling = set(_COOLING_KEYS)
+
+    usable = [k for k in keys if k not in disabled and k not in cooling]
+    if usable:
+        return usable
+    return [k for k in keys if k not in disabled]
 
 # ── Per-key model availability ────────────────────────────────────────────────
 # Google withdraws a model "for new users" rather than for everyone: a key whose
@@ -75,17 +126,20 @@ def get_rotated_gemini_keys() -> list[tuple[int, str]]:
     if not keys:
         return []
 
-    with _LOCK:
-        start = _NEXT_INDEX % len(keys)
-        _NEXT_INDEX = (_NEXT_INDEX + 1) % len(keys)
-        disabled = set(_DISABLED_KEYS)
+    # Try keys that are not known-bad first; a key cooling off after a 429/503
+    # is stepped over rather than re-probed on every request.
+    usable = _live_keys(keys)
+    if not usable:
+        return []
 
-    rotated = keys[start:] + keys[:start]
-    indexed = []
-    for key in rotated:
-        if key not in disabled:
-            indexed.append((keys.index(key) + 1, key))
-    return indexed
+    with _LOCK:
+        start = _NEXT_INDEX % len(usable)
+        _NEXT_INDEX = (_NEXT_INDEX + 1) % len(usable)
+
+    rotated = usable[start:] + usable[:start]
+    # Key numbers stay 1-based over the FULL configured list so log lines and
+    # provider events keep naming the same key across requests.
+    return [(keys.index(key) + 1, key) for key in rotated]
 
 
 def resolve_gemini_model(api_key: str, model: str) -> str:

@@ -24,6 +24,7 @@ from ai_services.core.gemini_keys import (
     get_rotated_gemini_keys,
     is_gemini_invalid_argument_error,
     is_gemini_model_unavailable_error,
+    mark_gemini_key_cooling,
     mark_gemini_key_disabled,
     mark_gemini_model_unavailable,
     mark_zero_thinking_rejected,
@@ -305,6 +306,9 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
                 logger.warning(
                     "Gemini key #%d rate-limited on %s; trying the next key", key_no, what
                 )
+                # Its quota is spent; skip it on the next request rather than
+                # paying the same failure again.
+                mark_gemini_key_cooling(key, "429")
                 _emit_gemini_event("429", 429, key, attempt + 1, model)
                 time.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
                 continue
@@ -315,6 +319,10 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
                     "Gemini key #%d got 503/overloaded on %s; backing off and trying the next key",
                     key_no, what,
                 )
+                # A 503 costs ~14-27s because Google attempts the generation
+                # before giving up, so re-probing this key next request is the
+                # single most expensive thing the rotation can do.
+                mark_gemini_key_cooling(key, "503")
                 _emit_gemini_event("5xx", 503, key, attempt + 1, model)
                 time.sleep(_RETRY_BACKOFF_S[min(attempt, len(_RETRY_BACKOFF_S) - 1)])
                 continue
