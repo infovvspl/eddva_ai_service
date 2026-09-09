@@ -25,6 +25,7 @@ from ai_services.core.gemini_keys import (
     is_gemini_invalid_argument_error,
     is_gemini_model_unavailable_error,
     mark_gemini_key_cooling,
+    mark_gemini_key_healthy,
     mark_gemini_key_disabled,
     mark_gemini_model_unavailable,
     mark_zero_thinking_rejected,
@@ -285,6 +286,9 @@ def generate_with_rotation(*, contents, config, model: str = DEFAULT_MODEL, what
                 "keys_tried": attempt + 1,
                 "key_no": key_no,
             }
+            # A success clears the streak, so one bad afternoon does not leave a
+            # recovered key serving an hour-long penalty.
+            mark_gemini_key_healthy(key)
             return _resp
         except Exception as exc:
             last_exc = exc
