@@ -128,6 +128,30 @@ def _without_zero_thinking(config):
             return None
 
 
+# Per-attempt ceiling for one Gemini HTTP call. Generous: a successful grounded
+# deck generates in ~14s, so this only catches a genuinely stuck connection.
+_GEMINI_HTTP_TIMEOUT_MS = int(os.getenv("GEMINI_HTTP_TIMEOUT_MS", "90000"))
+
+
+def _http_options(types_mod):
+    """Client options that stop the SDK from retrying underneath our rotation.
+
+    google-genai retries 429/5xx FIVE times by default with exponential backoff,
+    so one overloaded key took ~45s to surface a 503 — and generate_with_rotation
+    then paid that again on the next key. Measured: a 108s deck spent ~92s in two
+    such attempts and only ~14s actually generating.
+
+    Retrying the SAME key on a 503 is also the wrong move: "overloaded" is
+    server-side, and our rotation already responds correctly by moving to a
+    DIFFERENT key with its own backoff. attempts=1 disables the inner retry and
+    leaves that single, deliberate layer in charge.
+    """
+    return types_mod.HttpOptions(
+        timeout=_GEMINI_HTTP_TIMEOUT_MS,
+        retry_options=types_mod.HttpRetryOptions(attempts=1),
+    )
+
+
 def gemini_generate(api_key: str, *, model: str, contents, config):
     """One generate_content call on one key, on a model and config that key accepts.
 
@@ -145,6 +169,7 @@ def gemini_generate(api_key: str, *, model: str, contents, config):
     """
     try:
         from google import genai
+        from google.genai import types as _types
     except Exception as exc:
         raise GeminiUnavailable(f"google-genai not installed: {exc}") from exc
 
@@ -160,7 +185,7 @@ def gemini_generate(api_key: str, *, model: str, contents, config):
             # Bind the client to a local: as a bare temporary it can be collected
             # while the request is in flight, closing its transport underneath
             # the call ("Cannot send a request, as the client has been closed").
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(api_key=api_key, http_options=_http_options(_types))
             return client.models.generate_content(
                 model=want, contents=contents, config=cfg
             )
