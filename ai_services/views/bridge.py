@@ -2813,17 +2813,59 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
 
 
 # Step-1 detector: lightweight classification (subject + question type)
+# The subject list here must stay in sync with _DETECTOR_VALID_SUBJECTS below and
+# with the provided-subject mapping in resolve_doubt(). It used to offer only the
+# four JEE/NEET science subjects, so every humanities question came back as an
+# out-of-vocabulary answer, was rewritten to "physics", and the solver then
+# announced "Subject: PHYSICS" and refused to answer.
 _DOUBT_DETECTOR_SYSTEM = (
-    "You are a high-precision academic classifier for JEE/NEET. Categorize the question into Subject and Type.\\n"
-    "Subjects:\\n"
-    "- biology: Human health, diseases, immune system, allergy, genetics, cell biology, plant/animal physiology.\\n"
-    "- chemistry: Reactions, bonding, molarity, organic/inorganic compounds, thermodynamics.\\n"
-    "- physics: Mechanics, optics, electricity, magnetism, modern physics.\\n"
-    "- math: Calculus, algebra, geometry, probability.\\n"
-    "Types: numerical, derivation, conceptual, mcq, theory\\n"
-    "Respond with ONLY a valid JSON object.\\n"
-    'Format: {"subject": "<subject>", "type": "<type>"}\\n'
+    "You are a high-precision academic classifier for school (Classes 1-12) and "
+    "competitive-exam questions. Categorize the question into Subject and Type.\n"
+    "Subjects:\n"
+    "- biology: Human health, diseases, immune system, allergy, genetics, cell biology, plant/animal physiology.\n"
+    "- chemistry: Reactions, bonding, molarity, organic/inorganic compounds, thermodynamics.\n"
+    "- physics: Mechanics, optics, electricity, magnetism, modern physics.\n"
+    "- math: Calculus, algebra, geometry, probability, arithmetic.\n"
+    "- social_science: History, civics, political science, geography, economics, government, constitution.\n"
+    "- english: Grammar, literature, comprehension, essay/letter writing, poetry, prose.\n"
+    "- hindi: Questions written in Hindi, or about Hindi language and literature.\n"
+    "- odia: Questions written in Odia, or about Odia language and literature.\n"
+    "- computer: Programming, algorithms, databases, computer fundamentals.\n"
+    "- general: Anything that fits none of the above.\n"
+    "Types: numerical, derivation, conceptual, mcq, theory\n"
+    "Respond with ONLY a valid JSON object.\n"
+    'Format: {"subject": "<subject>", "type": "<type>"}\n'
 )
+
+
+# Every subject the solver prompt can be built for. Anything outside this set is
+# treated as unclassified rather than being coerced into a specific subject.
+_DETECTOR_VALID_SUBJECTS = {
+    "physics", "chemistry", "math", "biology",
+    "social_science", "english", "hindi", "odia", "computer", "general",
+}
+
+# Names the classifier plausibly returns for subjects we do know, normalized so a
+# correct classification is not thrown away on a wording mismatch.
+_DETECTOR_SUBJECT_ALIASES = {
+    "social science": "social_science",
+    "socialscience": "social_science",
+    "social studies": "social_science",
+    "sst": "social_science",
+    "civics": "social_science",
+    "political science": "social_science",
+    "politics": "social_science",
+    "polity": "social_science",
+    "history": "social_science",
+    "geography": "social_science",
+    "economics": "social_science",
+    "maths": "math",
+    "mathematics": "math",
+    "computer science": "computer",
+    "informatics": "computer",
+    "cs": "computer",
+    "literature": "english",
+}
 
 
 
@@ -2951,8 +2993,14 @@ def _detect_subject_and_type_for_doubt(question: str, has_image: bool, institute
 
 
 
-    # Fallback: LLM classifier for image-only or zero-keyword questions
-    subject, qtype = "physics", "numerical"
+    # Fallback: LLM classifier for image-only or zero-keyword questions.
+    #
+    # The default is deliberately neutral. Every keyword list above is STEM, so a
+    # civics/history/English question scores zero on all four and lands here; the
+    # old "physics"/"numerical" default then produced a solver prompt that both
+    # asserted the wrong subject and demanded arithmetic, and the model answered
+    # "I can only help with physics questions."
+    subject, qtype = "general", "conceptual"
     _detect_started = time.time()
     try:
         # gpt-oss-20b is a REASONING model: it spends completion tokens on internal
@@ -2987,19 +3035,19 @@ def _detect_subject_and_type_for_doubt(question: str, has_image: bool, institute
                 except json.JSONDecodeError:
                     pass
         if isinstance(detect_data, dict):
-            s = (detect_data.get("subject") or "physics").lower().strip()
-            t = (detect_data.get("type") or "numerical").lower().strip()
-            valid_subjects = {"physics", "chemistry", "math", "biology"}
+            s = (detect_data.get("subject") or "").lower().strip()
+            t = (detect_data.get("type") or "").lower().strip()
+            s = _DETECTOR_SUBJECT_ALIASES.get(s, s)
             valid_types = {"numerical", "derivation", "conceptual", "mcq", "theory"}
-            subject = s if s in valid_subjects else "physics"
-            qtype = t if t in valid_types else "numerical"
+            subject = s if s in _DETECTOR_VALID_SUBJECTS else "general"
+            qtype = t if t in valid_types else "conceptual"
     except Exception as exc:
         # Optional enrichment: failure here is not an error for the request, it just
         # means we classify by keyword instead. Elapsed time is logged because this
         # call used to rotate the entire key pool before giving up -- silently
         # expensive for a long time.
         logger.warning(
-            "Doubt LLM detector failed after %.2fs (%s); defaulting to physics/numerical",
+            "Doubt LLM detector failed after %.2fs (%s); defaulting to general/conceptual",
             time.time() - _detect_started, exc,
         )
 
@@ -3174,6 +3222,32 @@ def _doubt_framing(vertical: str, board: str = "") -> dict:
     }
 
 
+# How each internal subject id is written into the solver prompt. Only ids whose
+# raw .upper() reads badly need an entry.
+_SUBJECT_DISPLAY = {
+    "social_science": "SOCIAL SCIENCE",
+    "computer": "COMPUTER SCIENCE",
+    "general": "AS IMPLIED BY THE QUESTION",
+}
+
+
+# Subject classification is a best-effort routing hint, not a contract, and it is
+# wrong often enough to matter: an unlabelled doubt with no STEM keywords used to
+# be routed to physics, and the model then answered "I can only help with physics
+# questions" instead of answering the student. A misroute must degrade to a
+# slightly less tailored answer, never to a refusal.
+_SOLVER_SCOPE_RULE = (
+    "\n\nSCOPE (OVERRIDES THE SUBJECT LABEL ABOVE):\n"
+    "The subject named above comes from an automatic classifier and may be wrong. "
+    "It is a hint about tone and depth, NOT a restriction on what you may answer.\n"
+    "- Always answer the question the student actually asked, using whichever subject "
+    "it genuinely belongs to.\n"
+    "- NEVER say you can only help with one subject, and NEVER refuse to answer an "
+    "academic question. A refusal is a failed response.\n"
+    "- Keep the JSON output schema above exactly as specified.\n"
+)
+
+
 def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed", vertical: str = "coaching", board: str = "") -> str:
     """
     CLEANED & RE-PRIORITIZED SOLVER PROMPT.
@@ -3183,12 +3257,13 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
     """
     framing = _doubt_framing(vertical, board)
     subject_rules = _SUBJECT_RULES.get(subject, "")
+    subject_label = _SUBJECT_DISPLAY.get(subject, subject.upper())
     is_numerical = qtype.lower() in ("numerical", "derivation")
     is_mcq = qtype.lower() == "mcq"
     
     if is_mcq:
         return (
-            f"SYSTEM ROLE: You are a Senior Subject Expert. Subject: {subject.upper()}. Respond strictly in JSON format.\n"
+            f"SYSTEM ROLE: You are a Senior Subject Expert. Subject: {subject_label}. Respond strictly in JSON format.\n"
             "TASK: Solve the MCQ/Objective question.\n\n"
             "RULES:\n"
             "1. FORMAT: Your answer must follow this exact structure inside the 'solution' field:\n"
@@ -3212,7 +3287,7 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
         )
     elif is_numerical:
         return (
-            f"You are EDVA AI (Logic v3.0). Subject: {subject.upper()}. Type: {qtype}.\n\n"
+            f"You are EDVA AI (Logic v3.0). Subject: {subject_label}. Type: {qtype}.\n\n"
             f"{framing['numerical_rigor']}:\n"
             f"{subject_rules}\n\n"
             "UNIVERSAL RIGOR RULES:\n"
@@ -3243,7 +3318,7 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
         )
     else:
         return (
-            f"SYSTEM ROLE: You are a Senior {framing['theory_role']}. Subject: {subject.upper()}. Respond strictly in JSON format.\n"
+            f"SYSTEM ROLE: You are a Senior {framing['theory_role']}. Subject: {subject_label}. Respond strictly in JSON format.\n"
             "TASK: Generate structured, high-depth academic answers.\n\n"
             "RULES:\n"
             "1. MATCH QUESTION STRUCTURE: You MUST match the number of sub-parts in the question exactly. If the question has 4 parts (a, b, c, d) or (i, ii, iii, iv), you MUST provide 4 corresponding bold headers.\n"
@@ -3451,8 +3526,15 @@ def resolve_doubt(request):
     
     if provided_subject and any(k in provided_subject for k in ["english", "literature", "gramm", "communicative", "reading", "writing"]):
         subject, qtype = "english", "conceptual"
-    elif provided_subject and any(k in provided_subject for k in ["history", "civics", "geography", "social", "sst"]):
+    # "political science", "economics" and "computer science" have to be matched
+    # before the biology branch below, which matches the bare substring "science".
+    elif provided_subject and any(k in provided_subject for k in [
+        "history", "civics", "geography", "social", "sst",
+        "political", "polity", "econom", "constitution",
+    ]):
         subject, qtype = "social_science", "conceptual"
+    elif provided_subject and any(k in provided_subject for k in ["computer", "informatics", "coding"]):
+        subject, qtype = "computer", "conceptual"
     elif provided_subject and any(k in provided_subject for k in ["hindi"]):
         subject, qtype = "hindi", "conceptual"
     elif provided_subject and any(k in provided_subject for k in ["odia"]):
@@ -3503,7 +3585,7 @@ def resolve_doubt(request):
 
     print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model} | Vertical: {vertical} | Language: {language}")
     board = getattr(request, "board", "")
-    solver_system = _build_solver_system_prompt(subject, qtype, mode, vertical, board)
+    solver_system = _build_solver_system_prompt(subject, qtype, mode, vertical, board) + _SOLVER_SCOPE_RULE
 
     if is_odia:
         solver_system += (
