@@ -303,6 +303,7 @@ def ai_call_text(
                 max_tokens=max_tokens,
                 json_mode=False,
                 institute_id=institute_id,
+                feature=feature,
             )
         except RuntimeError as e:
             logger.error("LLM text call failed for %s (institute=%s, vertical=%s): %s", feature, institute_id, vertical, e)
@@ -435,6 +436,7 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
             temperature=temperature,
             max_tokens=max_tokens,
             institute_id=institute_id,
+            feature=feature,
         )
     except RuntimeError as e:
         logger.error("LLM call failed for %s (institute=%s, vertical=%s): %s", feature, institute_id, vertical, e)

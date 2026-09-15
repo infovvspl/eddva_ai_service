@@ -104,6 +104,20 @@ _JSON_MODE_TUTOR_SUFFIX = (
 )
 
 
+def build_effective_system_prompt(
+    system_prompt: str, json_mode: bool, json_mode_suffix: Optional[str] = None
+) -> str:
+    """The exact system prompt LLMClient has always sent to Groq.
+
+    Shared with the router's other provider adapters so that a fallback
+    provider receives the same instructions the primary did.
+    """
+    effective = _ANTI_HALLUCINATION_PREFIX + system_prompt
+    if json_mode:
+        effective += (json_mode_suffix if json_mode_suffix is not None else _JSON_MODE_SUFFIX)
+    return effective
+
+
 def _extract_json(raw: str) -> str:
     import re
     # 1. Aggressively remove <think> blocks (including unclosed ones)
@@ -268,15 +282,73 @@ class LLMClient:
         json_mode: bool = True,
         institute_id: Optional[str] = None,
         json_mode_suffix: Optional[str] = None,
+        feature: Optional[str] = None,
+        capability: Optional[str] = None,
     ) -> dict:
+        """Run one completion through the EDVA model router.
+
+        Every existing call site passes ``model``, which the router pins as the
+        primary and sends unchanged, and cross-provider fallback is off unless
+        AI_ROUTER_FALLBACK_ENABLED=true with a fully configured fallback. With
+        default configuration this is therefore the same Groq call as before the
+        router existed. ``feature`` / ``capability`` are optional routing hints.
+
+        AI_ROUTER_ENABLED=false bypasses the router entirely.
+        """
+        from ai_services.core import routing
+
+        # A missing model has always meant GROQ_MODEL. Pin it explicitly so the
+        # router can never substitute a policy default for it.
+        pinned_model = model or GROQ_MODEL
+        if not routing.router_enabled():
+            return self._complete_groq(
+                system_prompt=system_prompt, user_prompt=user_prompt, model=pinned_model,
+                temperature=temperature, max_tokens=max_tokens, json_mode=json_mode,
+                institute_id=institute_id, json_mode_suffix=json_mode_suffix,
+            )
+        return routing.get_router().execute(routing.AIRequest(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=pinned_model,
+            provider="groq",
+            feature=feature,
+            capability=capability,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            json_mode_suffix=json_mode_suffix,
+            institute_id=institute_id,
+        ))
+
+    def _complete_groq(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int = 3500,
+        json_mode: bool = True,
+        institute_id: Optional[str] = None,
+        json_mode_suffix: Optional[str] = None,
+    ) -> dict:
+        """Groq execution with multi-key rotation: the pre-router body of
+        complete(), unchanged except that failures raise typed routing errors
+        (all RuntimeError subclasses, same messages) so the router can tell a
+        transient failure from a deterministic one."""
         from groq import Groq, RateLimitError as GroqRateLimitError
+        from ai_services.core.routing.errors import (
+            NonRetryableProviderError,
+            ProviderConfigError,
+            RetryableProviderError,
+        )
 
         if not GROQ_API_KEYS:
-            raise RuntimeError("No GROQ_API_KEY configured -- set at least one in .env")
+            raise ProviderConfigError(
+                "No GROQ_API_KEY configured -- set at least one in .env", provider="groq", model=model,
+            )
 
-        effective_system = _ANTI_HALLUCINATION_PREFIX + system_prompt
-        if json_mode:
-            effective_system += (json_mode_suffix if json_mode_suffix is not None else _JSON_MODE_SUFFIX)
+        effective_system = build_effective_system_prompt(system_prompt, json_mode, json_mode_suffix)
 
         effective_model = _resolve_model(model)
 
@@ -367,7 +439,10 @@ class LLMClient:
         for round_num in range(3):
             keys_this_round = _active_keys()
             if not keys_this_round:
-                raise RuntimeError("No active GROQ keys left. Check invalid/restricted keys in .env")
+                raise ProviderConfigError(
+                    "No active GROQ keys left. Check invalid/restricted keys in .env",
+                    provider="groq", model=effective_model,
+                )
 
             n = len(keys_this_round)
             offset = start_offset % n
@@ -461,7 +536,10 @@ class LLMClient:
                             "LLM key %d/%d request too large for model %s -- not retrying (%s)",
                             actual_key_num, n, effective_model, last_error,
                         )
-                        raise RuntimeError(f"LLM request too large for model {effective_model}: {last_error}") from exc
+                        raise NonRetryableProviderError(
+                            f"LLM request too large for model {effective_model}: {last_error}",
+                            provider="groq", model=effective_model, status_code=413, kind="request_too_large",
+                        ) from exc
                     if _is_deterministic_request_error(last_error):
                         # Same reasoning as 413: identical request -> identical
                         # rejection on every key. One attempt is all the information
@@ -487,9 +565,10 @@ class LLMClient:
                             )
                         except Exception:
                             pass
-                        raise RuntimeError(
+                        raise NonRetryableProviderError(
                             f"LLM deterministic request failure for model {effective_model} "
-                            f"(json_validate_failed): {last_error}"
+                            f"(json_validate_failed): {last_error}",
+                            provider="groq", model=effective_model, status_code=400, kind="structured_output",
                         ) from exc
                     logger.error(
                         "LLM key %d/%d error (%s) -- rotating to next key",
@@ -518,9 +597,19 @@ class LLMClient:
                 )
                 time.sleep(wait_s)
 
-        raise RuntimeError(
+        exhausted_msg = (
             f"LLM call failed after 3 rounds across all {len(GROQ_API_KEYS)} keys "
             f"(check dead/exhausted keys in .env): {last_error}"
+        )
+        if last_error == "JSON parse failure":
+            # The final attempt produced unparseable JSON: an output-contract
+            # failure, not provider capacity. Another provider must not be asked
+            # to repeat a deterministic structured-output failure.
+            raise NonRetryableProviderError(
+                exhausted_msg, provider="groq", model=effective_model, kind="structured_output",
+            )
+        raise RetryableProviderError(
+            exhausted_msg, provider="groq", model=effective_model, kind="exhausted",
         )
 
     def parallel_complete_many(
