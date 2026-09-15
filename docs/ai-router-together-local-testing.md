@@ -82,6 +82,21 @@ Check the current state at any time:
 python manage.py ai_benchmark --list
 ```
 
+### Models that only accept streaming requests
+
+Some Together models reject a normal request with
+`This model only supports streaming` (HTTP 400, `streaming_required`). The error
+message names the variable to set, for example:
+
+```
+TOGETHER_MODEL_QWEN38_FLASH_STREAMING=true
+```
+
+The adapter then sends **one** streaming request and assembles the complete answer
+before returning, so every feature still receives a full response. The capability
+timeout bounds the whole stream. Token usage is recorded only if the stream reports
+it; otherwise the log says `tokens=not-reported`.
+
 ## 4. Benchmark from the command line (optional)
 
 Runs a model directly, bypassing policy, fallback, override and tenant usage:

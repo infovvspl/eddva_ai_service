@@ -81,6 +81,10 @@ class ModelSpec:
     context_tokens: Optional[int] = None
     structured_output: str = STRUCTURED_UNKNOWN
     supports_grounding: Optional[bool] = None
+    # True = the provider only accepts streaming requests for this model (the
+    # adapter streams and assembles the full answer); False/None = a normal
+    # request is used. Set from configuration after the provider refuses one.
+    streaming: Optional[bool] = None
     quality_tier: str = "standard"   # light | standard | high | premium
     cost_tier: str = "medium"        # low | medium | high
     # Where the metadata came from: "repository" = exercised by this codebase in

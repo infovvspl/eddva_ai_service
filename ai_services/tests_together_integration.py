@@ -714,3 +714,115 @@ class TogetherBenchmarkTests(_EventsPatched):
         with self.assertRaises(CommandError):
             call_command("ai_benchmark", "--provider", "together", "--model", "made-up-model", "--prompt", "hi",
                          stdout=StringIO())
+
+
+# ── streaming-only models ────────────────────────────────────────────────────
+class _Stream:
+    """Stands in for the context manager httpx.stream() returns."""
+
+    def __init__(self, status=200, lines=(), body=b"", headers=None):
+        self.status_code, self._lines, self._body, self.headers = status, list(lines), body, headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_lines(self):
+        yield from self._lines
+
+    def read(self):
+        return self._body
+
+
+def _sse(*chunks, done=True):
+    return [f"data: {json.dumps(c)}" for c in chunks] + (["data: [DONE]"] if done else [])
+
+
+class TogetherStreamingTests(_EventsPatched):
+    SPEC = spec("together/qwen3.8-flash", provider_model_id=QWEN, streaming=True)
+
+    def _run(self, stream, *, s=None, json_mode=False, timeout_s=None):
+        with patch.dict(os.environ, {"TOGETHER_API_KEY": KEY}), \
+             patch("httpx.stream", return_value=stream) as st, patch("httpx.post") as post:
+            out = TogetherAdapter().complete(
+                s or self.SPEC, ProviderCall("SYS", "USR", QWEN, json_mode=json_mode, timeout_s=timeout_s),
+            )
+        return out, st, post
+
+    def test_streaming_flag_defaults_unknown_and_comes_from_config(self):
+        self.assertIsNone(default_registry()["together/qwen3.8-flash"].streaming)
+        cfg = load_config({"TOGETHER_MODEL_QWEN38_FLASH_STREAMING": "true"}, debug=False)
+        self.assertTrue(cfg.models["together/qwen3.8-flash"].streaming)
+
+    def test_one_streamed_request_is_assembled_into_the_full_answer(self):
+        stream = _Stream(lines=[": keep-alive", "", *_sse(
+            {"choices": [{"delta": {"content": "Plants "}}]},
+            {"choices": [{"delta": {"content": "make food."}}]},
+            {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 4}},
+        )])
+        out, st, post = self._run(stream)
+        self.assertEqual(out["content"], "Plants make food.")
+        self.assertEqual((out["tokens_input"], out["tokens_output"], out["tokens_reported"], out["streamed"]),
+                         (9, 4, True, True))
+        self.assertEqual(st.call_count, 1)
+        post.assert_not_called()
+        self.assertEqual(st.call_args.args[0], "POST")
+        self.assertTrue(st.call_args.args[1].endswith("/chat/completions"))
+        self.assertIs(st.call_args.kwargs["json"]["stream"], True)
+
+    def test_non_streaming_models_are_unchanged(self):
+        glm = spec("together/glm-5.3-flash", provider_model_id="cfg/glm")
+        with patch.dict(os.environ, {"TOGETHER_API_KEY": KEY}), patch("httpx.stream") as st, \
+             patch("httpx.post", return_value=_chat("x")) as post:
+            out = TogetherAdapter().complete(glm, ProviderCall("s", "u", "cfg/glm", json_mode=False))
+        st.assert_not_called()
+        self.assertEqual(post.call_count, 1)
+        self.assertNotIn("stream", post.call_args.kwargs["json"])
+        self.assertFalse(out["streamed"])
+
+    def test_stream_without_usage_is_flagged_not_fabricated(self):
+        out, _, _ = self._run(_Stream(lines=_sse({"choices": [{"delta": {"content": "x"}}]})))
+        self.assertFalse(out["tokens_reported"])
+
+    def test_streamed_native_json(self):
+        s = replace(self.SPEC, structured_output=STRUCTURED_NATIVE)
+        out, st, _ = self._run(_Stream(lines=_sse(
+            {"choices": [{"delta": {"content": '{"a": '}}]},
+            {"choices": [{"delta": {"content": "1}"}}]},
+        )), s=s, json_mode=True)
+        self.assertEqual(out["content"], {"a": 1})
+        self.assertEqual(st.call_args.kwargs["json"]["response_format"], {"type": "json_object"})
+
+    def test_http_errors_on_a_stream_are_classified_and_scrubbed(self):
+        with self.assertRaises(RetryableProviderError) as cm:
+            self._run(_Stream(status=503, body=b"busy"))
+        self.assertEqual(cm.exception.kind, "server_error")
+        with self.assertRaises(ProviderConfigError) as cm:
+            self._run(_Stream(status=401, body=f"bad key {KEY}".encode()))
+        self.assertNotIn(KEY, str(cm.exception))
+
+    def test_error_inside_an_accepted_stream_never_falls_back(self):
+        with self.assertRaises(NonRetryableProviderError):
+            self._run(_Stream(lines=_sse({"error": {"message": "policy"}})))
+
+    def test_timeout_bounds_the_whole_stream(self):
+        import itertools
+
+        stream = _Stream(lines=_sse({"choices": [{"delta": {"content": "a"}}]},
+                                    {"choices": [{"delta": {"content": "b"}}]}))
+        clock = itertools.chain([0.0, 0.0], itertools.repeat(999.0))
+        with patch("ai_services.core.routing.providers.time.monotonic", side_effect=lambda: next(clock)):
+            with self.assertRaises(RetryableProviderError) as cm:
+                self._run(stream, timeout_s=30)
+        self.assertEqual(cm.exception.kind, "timeout")
+
+    def test_streaming_required_rejection_names_the_variable_to_set(self):
+        body = json.dumps({"error": {"message": 'This model only supports streaming. Set "stream": true.',
+                                     "code": "streaming_required"}})
+        max_spec = spec("together/qwen3.7-max", provider_model_id="cfg/max")
+        with patch.dict(os.environ, {"TOGETHER_API_KEY": KEY}), patch("httpx.post", return_value=_Resp(400, text=body)):
+            with self.assertRaises(NonRetryableProviderError) as cm:
+                TogetherAdapter().complete(max_spec, ProviderCall("s", "u", "cfg/max", json_mode=False))
+        self.assertIn("TOGETHER_MODEL_QWEN37_MAX_STREAMING=true", str(cm.exception))

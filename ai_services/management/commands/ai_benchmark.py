@@ -126,7 +126,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"config warning: {w}"))
         self.stdout.write(
             f"{'registry id':27} {'provider':8} {'model id':10} {'creds':5} {'json':8} {'long_ctx':8} "
-            f"{'vision':7} {'ground':7} {'quality':8} {'cost':6} {'source':10} {'env var':34} capabilities"
+            f"{'vision':7} {'ground':7} {'stream':7} {'quality':8} {'cost':6} {'source':10} {'env var':34} capabilities"
         )
         for rid in sorted(cfg.models):
             s = cfg.models[rid]
@@ -136,8 +136,8 @@ class Command(BaseCommand):
             self.stdout.write(
                 f"{rid:27} {s.provider:8} {mid:10} {creds:5} {s.structured_output:8} "
                 f"{support_label(s.long_context):8} {support_label(s.multimodal):7} "
-                f"{support_label(s.supports_grounding):7} {s.quality_tier:8} {s.cost_tier:6} "
-                f"{s.metadata_source:10} {(s.model_env or '-'):34} {','.join(sorted(s.capabilities))}"
+                f"{support_label(s.supports_grounding):7} {support_label(s.streaming):7} {s.quality_tier:8} "
+                f"{s.cost_tier:6} {s.metadata_source:10} {(s.model_env or '-'):34} {','.join(sorted(s.capabilities))}"
             )
         self.stdout.write("\npolicies:")
         for cap, p in sorted(cfg.policies.items()):

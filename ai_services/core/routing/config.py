@@ -20,6 +20,7 @@ configuration change, never a code change.
     <model env>_MULTIMODAL          true | false | unknown
     <model env>_GROUNDING           true | false | unknown
     <model env>_CONTEXT_TOKENS      positive integer | unknown
+    <model env>_STREAMING           true (model only accepts streaming) | false | unknown
 
   Local-development model override (server-side only, OFF by default):
     AI_MODEL_OVERRIDE_ENABLED       must be "true"
@@ -253,7 +254,7 @@ def _contains_secret_like_field(obj) -> Optional[str]:
 
 
 # Tri-state support flags: true / false / null (UNKNOWN).
-_MODEL_FLAG_FIELDS = ("multimodal", "long_context", "supports_grounding")
+_MODEL_FLAG_FIELDS = ("multimodal", "long_context", "supports_grounding", "streaming")
 _MODEL_STR_FIELDS = ("quality_tier", "cost_tier", "notes", "model_env")
 
 
@@ -321,6 +322,7 @@ _META_ENV_SUFFIXES = {
     "LONG_CONTEXT": "long_context",
     "MULTIMODAL": "multimodal",
     "GROUNDING": "supports_grounding",
+    "STREAMING": "streaming",
     "CONTEXT_TOKENS": "context_tokens",
 }
 

@@ -14,9 +14,10 @@ and raises only routing.errors types, classified retryable / non-retryable.
     GeminiAdapter    delegates to gemini_client.complete_text / complete_json —
                      the existing key rotation, cooldowns and model fallback.
     TogetherAdapter  OpenAI-compatible chat completions over httpx.
-                     Exactly ONE HTTP attempt per call: retry and fallback
+                     Exactly ONE HTTP request per call: retry and fallback
                      belong to the router, and a retry layer here would multiply
-                     with it.
+                     with it. Models the provider only serves as a stream are
+                     requested as one streaming request and assembled here.
 
 Speech (Whisper, Sarvam) and image generation (FLUX) are deliberately not
 adapters. They are not chat completions and do not belong in this router.
@@ -234,8 +235,126 @@ class TogetherAdapter:
     def _headers(self, key: str) -> dict:
         return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
-    def complete(self, spec: ModelSpec, call: ProviderCall) -> dict:
+    def _raise_http_error(self, status: int, text: str, model: str, key: str,
+                          retry_after_ms: Optional[int], streaming_hint: str) -> None:
+        evt = "429" if status == 429 else ("5xx" if status >= 500 else "provider_error")
+        self._event(evt, model, status, key, retry_after_ms)
+        text = text or ""
+        hint = streaming_hint if ("streaming_required" in text or "supports streaming" in text.lower()) else ""
+        raise error_for_status(
+            status, f"Together {status} for model {model}: {scrub(text[:300], key)}{hint}",
+            provider="together", model=model,
+        )
+
+    def _post_completion(self, body: dict, key: str, model: str, timeout: float, streaming_hint: str):
+        """One non-streaming request. Returns (status, raw_text, usage_or_None)."""
         import httpx
+
+        try:
+            resp = httpx.post(
+                f"{self.base_url()}/chat/completions", json=body, headers=self._headers(key), timeout=timeout,
+            )
+        except httpx.TimeoutException:
+            self._event("timeout", model, None, key)
+            raise RetryableProviderError(
+                f"Together request timed out after {timeout:.0f}s (model {model})",
+                provider="together", model=model, kind="timeout",
+            ) from None
+        except httpx.RequestError as exc:
+            self._event("provider_error", model, None, key)
+            raise RetryableProviderError(
+                f"Together network error ({exc.__class__.__name__}) for model {model}",
+                provider="together", model=model, kind="network",
+            ) from None
+
+        if resp.status_code >= 400:
+            self._raise_http_error(resp.status_code, resp.text, model, key, _retry_after_ms(resp), streaming_hint)
+
+        try:
+            data = resp.json()
+            raw = data["choices"][0]["message"].get("content") or ""
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            self._event("provider_error", model, resp.status_code, key)
+            raise RetryableProviderError(
+                f"Together returned an unreadable response envelope (model {model})",
+                provider="together", model=model, status_code=resp.status_code, kind="server_error",
+            ) from None
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
+        return resp.status_code, raw, usage
+
+    def _stream_completion(self, body: dict, key: str, model: str, timeout: float, streaming_hint: str):
+        """One streaming request, assembled into a complete answer.
+
+        Used only for models configured as streaming-only. Still exactly one HTTP
+        request, and the timeout bounds the WHOLE stream, not just the gap
+        between chunks — a slow trickle must not hold a worker indefinitely.
+        """
+        import httpx
+
+        body = dict(body, stream=True)
+        deadline = time.monotonic() + timeout
+        parts: list[str] = []
+        usage = None
+        status = None
+        try:
+            with httpx.stream(
+                "POST", f"{self.base_url()}/chat/completions", json=body, headers=self._headers(key), timeout=timeout,
+            ) as resp:
+                status = resp.status_code
+                if status >= 400:
+                    text = resp.read().decode("utf-8", "replace")
+                    self._raise_http_error(status, text, model, key, _retry_after_ms(resp), streaming_hint)
+                for line in resp.iter_lines():
+                    if time.monotonic() > deadline:
+                        self._event("timeout", model, None, key)
+                        raise RetryableProviderError(
+                            f"Together stream exceeded {timeout:.0f}s (model {model})",
+                            provider="together", model=model, kind="timeout",
+                        )
+                    line = (line or "").strip()
+                    if not line.startswith("data:"):
+                        continue  # blank separators, SSE comments / keep-alives
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except ValueError:
+                        self._event("provider_error", model, status, key)
+                        raise RetryableProviderError(
+                            f"Together returned an unreadable stream chunk (model {model})",
+                            provider="together", model=model, status_code=status, kind="server_error",
+                        ) from None
+                    if isinstance(chunk.get("error"), dict):
+                        # An error inside an accepted stream is not a capacity
+                        # signal we can classify; never mask it behind a fallback.
+                        self._event("provider_error", model, status, key)
+                        raise NonRetryableProviderError(
+                            f"Together stream error for model {model}: "
+                            f"{scrub(json.dumps(chunk['error'])[:300], key)}",
+                            provider="together", model=model, status_code=status, kind="deterministic",
+                        )
+                    if isinstance(chunk.get("usage"), dict):
+                        usage = chunk["usage"]
+                    for choice in chunk.get("choices") or []:
+                        delta = (choice or {}).get("delta") or {}
+                        if isinstance(delta.get("content"), str):
+                            parts.append(delta["content"])
+        except httpx.TimeoutException:
+            self._event("timeout", model, None, key)
+            raise RetryableProviderError(
+                f"Together request timed out after {timeout:.0f}s (model {model})",
+                provider="together", model=model, kind="timeout",
+            ) from None
+        except httpx.RequestError as exc:
+            self._event("provider_error", model, None, key)
+            raise RetryableProviderError(
+                f"Together network error ({exc.__class__.__name__}) for model {model}",
+                provider="together", model=model, kind="network",
+            ) from None
+        return status, "".join(parts), usage
+
+    def complete(self, spec: ModelSpec, call: ProviderCall) -> dict:
         from ai_services.core.llm_client import _extract_json, strip_think_tags
 
         key = self._api_key()
@@ -274,45 +393,18 @@ class TogetherAdapter:
         if call.json_mode and spec.structured_output == STRUCTURED_NATIVE:
             body["response_format"] = {"type": "json_object"}
 
+        streamed = spec.streaming is True
+        streaming_hint = (
+            f" — this model only accepts streaming requests; set {spec.model_env}_STREAMING=true"
+            if spec.model_env else ""
+        )
         started = time.perf_counter()
-        try:
-            resp = httpx.post(
-                f"{self.base_url()}/chat/completions", json=body, headers=self._headers(key), timeout=timeout,
-            )
-        except httpx.TimeoutException:
-            self._event("timeout", model, None, key)
-            raise RetryableProviderError(
-                f"Together request timed out after {timeout:.0f}s (model {model})",
-                provider="together", model=model, kind="timeout",
-            ) from None
-        except httpx.RequestError as exc:
-            self._event("provider_error", model, None, key)
-            raise RetryableProviderError(
-                f"Together network error ({exc.__class__.__name__}) for model {model}",
-                provider="together", model=model, kind="network",
-            ) from None
+        if streamed:
+            status_code, raw, usage = self._stream_completion(body, key, model, timeout, streaming_hint)
+        else:
+            status_code, raw, usage = self._post_completion(body, key, model, timeout, streaming_hint)
         latency_ms = (time.perf_counter() - started) * 1000
 
-        if resp.status_code >= 400:
-            evt = "429" if resp.status_code == 429 else ("5xx" if resp.status_code >= 500 else "provider_error")
-            self._event(evt, model, resp.status_code, key, _retry_after_ms(resp))
-            raise error_for_status(
-                resp.status_code,
-                f"Together {resp.status_code} for model {model}: {scrub(resp.text[:300], key)}",
-                provider="together", model=model,
-            )
-
-        try:
-            data = resp.json()
-            raw = data["choices"][0]["message"].get("content") or ""
-        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-            self._event("provider_error", model, resp.status_code, key)
-            raise RetryableProviderError(
-                f"Together returned an unreadable response envelope (model {model})",
-                provider="together", model=model, status_code=resp.status_code, kind="server_error",
-            ) from None
-
-        usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
         tokens_reported = bool(usage) and ("prompt_tokens" in usage or "completion_tokens" in usage)
         tokens_in = int((usage or {}).get("prompt_tokens") or 0)
         tokens_out = int((usage or {}).get("completion_tokens") or 0)
@@ -330,19 +422,19 @@ class TogetherAdapter:
                 # Deterministic: same prompt, same model -> same malformed output.
                 raise NonRetryableProviderError(
                     f"Together model {model} did not return valid JSON",
-                    provider="together", model=model, status_code=resp.status_code, kind="structured_output",
+                    provider="together", model=model, status_code=status_code, kind="structured_output",
                 ) from None
         else:
             content = strip_think_tags(raw)
             if not content:
                 raise NonRetryableProviderError(
                     f"Together model {model} returned an empty response",
-                    provider="together", model=model, status_code=resp.status_code, kind="empty_response",
+                    provider="together", model=model, status_code=status_code, kind="empty_response",
                 )
 
         logger.info(
-            "LLM (%s) | provider=together model=%s latency=%.0fms tokens=%s",
-            "json" if call.json_mode else "text", model, latency_ms,
+            "LLM (%s) | provider=together model=%s stream=%s latency=%.0fms tokens=%s",
+            "json" if call.json_mode else "text", model, streamed, latency_ms,
             f"{tokens_in}+{tokens_out}" if tokens_reported else "not-reported",
         )
         return {
@@ -353,6 +445,7 @@ class TogetherAdapter:
             "tokens_input": tokens_in,
             "tokens_output": tokens_out,
             "tokens_reported": tokens_reported,
+            "streamed": streamed,
         }
 
     def list_model_records(self) -> list[dict]:
