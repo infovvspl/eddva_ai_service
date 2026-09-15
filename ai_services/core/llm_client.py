@@ -342,6 +342,7 @@ class LLMClient:
                 system_prompt=system_prompt, user_prompt=user_prompt, model=model,
                 temperature=temperature, max_tokens=max_tokens, json_mode=json_mode,
                 institute_id=institute_id, json_mode_suffix=json_mode_suffix,
+                legacy_prompt_shaping=legacy_prompt_shaping,
             )
         if provider == "gemini":
             from ai_services.core.routing.providers import GeminiAdapter, ProviderCall
@@ -408,6 +409,7 @@ class LLMClient:
         json_mode: bool = True,
         institute_id: Optional[str] = None,
         json_mode_suffix: Optional[str] = None,
+        legacy_prompt_shaping: bool = True,
     ) -> dict:
         """Groq execution with multi-key rotation: the pre-router body of
         complete(), unchanged except that failures raise typed routing errors
@@ -425,7 +427,13 @@ class LLMClient:
                 "No GROQ_API_KEY configured -- set at least one in .env", provider="groq", model=model,
             )
 
-        effective_system = build_effective_system_prompt(system_prompt, json_mode, json_mode_suffix)
+        # The shaping prefix ends "START YOUR RESPONSE DIRECTLY WITH '{'", which is
+        # right for JSON calls and wrong for anything else that must be exact —
+        # code generation wrapped Python in braces. Callers can opt out.
+        effective_system = (
+            build_effective_system_prompt(system_prompt, json_mode, json_mode_suffix)
+            if legacy_prompt_shaping else system_prompt
+        )
 
         effective_model = _resolve_model(model)
 

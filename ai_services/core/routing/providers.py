@@ -119,6 +119,7 @@ class GroqAdapter:
             json_mode=call.json_mode,
             institute_id=call.institute_id,
             json_mode_suffix=call.json_mode_suffix,
+            legacy_prompt_shaping=call.legacy_prompt_shaping,
         )
 
 

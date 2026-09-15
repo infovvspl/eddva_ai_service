@@ -2907,6 +2907,35 @@ def _detect_subject_by_keyword(question: str):
 
 
 
+# Question types that need the symbolic scientific solver. Everything else is
+# answered directly by the LLM.
+_SOLVER_QTYPES = ("numerical", "derivation")
+_SOLVER_SUBJECTS = ("physics", "chemistry", "mathematics", "math", "science")
+
+_COMPUTE_VERBS = re.compile(
+    r"\b(calculate|compute|evaluate|solve|simplify|factori[sz]e|expand|integrate|differentiate|"
+    r"derive|prove|show that|verify that|find|determine|convert|work out|"
+    r"how (?:much|many|far|long|fast|high)|what is the value)\b"
+)
+_COMPUTE_EXPR = re.compile(
+    r"\d\s*[-+*/\u00d7\u00f7%^]\s*[\d(]"            # 3 + 4, 12/5, 2^3
+    r"|[a-z0-9)]\s*[=^]\s*[-\d(a-z]"                  # x = 5, 2x = y, a^2
+    r"|[a-z]\s*[+*]\s*\d"                            # x + 3
+    r"|[\u221a\u222b\u2211\u03c0]"                  # √ ∫ ∑ π
+    r"|\b(?:sin|cos|tan|log|ln)\s*\("
+    r"|\d+(?:\.\d+)?\s*(?:m/s|km/h|km|kg|cm|mm|ml|mol|\u00b0c?|m|s|g|n|j|w|v|l)\b"
+)
+# Context the doubt flow appends to a student's question; not part of the question.
+_DOUBT_CONTEXT_SUFFIX = re.compile(r"\(at segment timestamp:[^)]*\)|lecture:.*$", re.I | re.S)
+
+
+def _looks_computational(question: str) -> bool:
+    """Whether a doubt asks for a calculation, proof or derivation — i.e. whether
+    the symbolic solver can add anything — judged from the question itself."""
+    q = _DOUBT_CONTEXT_SUFFIX.sub(" ", (question or "").lower())
+    return bool(_COMPUTE_VERBS.search(q) or _COMPUTE_EXPR.search(q))
+
+
 def _detect_type_by_keyword(question: str) -> str:
     """Returns question type string. Defaults to 'numerical' for JEE/NEET."""
     q = question.lower()
@@ -3561,6 +3590,18 @@ def resolve_doubt(request):
 
 
 
+    # A subject label says nothing about whether THIS question needs computing:
+    # "Mathematics" always mapped to "derivation", so "What are whole numbers?"
+    # generated Python, ran it in a sandbox and made four LLM calls (~15s) to state
+    # a definition. For text questions, decide from the question itself. Image
+    # doubts keep their classification (the text is a description of the image).
+    if subject in _SOLVER_SUBJECTS and not image_description:
+        _computational = _looks_computational(question_text)
+        if qtype in _SOLVER_QTYPES and not _computational:
+            qtype = "conceptual"
+        elif qtype not in _SOLVER_QTYPES and qtype != "mcq" and _computational:
+            qtype = "numerical"
+
     # ── Step 2: Route to correct model, build prompt, solve ───────────────────
     vertical = getattr(request, "vertical", "coaching")
     language = (data.get("language") or "").strip().lower()
@@ -3619,7 +3660,7 @@ def resolve_doubt(request):
     try:
         if use_gemini:
             raise NotImplementedError("Scientific solver not supported for regional languages")
-        if subject in ("physics", "chemistry", "mathematics", "math", "science"):
+        if subject in _SOLVER_SUBJECTS and qtype in _SOLVER_QTYPES:
             from asgiref.sync import async_to_sync
             from ai_services.solver.scientific_solver import scientific_solver
 
@@ -3628,13 +3669,23 @@ def resolve_doubt(request):
             # JEE/NEET formula sheets, so it is used for coaching only — a Class 1-12
             # answer must not be grounded with IIT-JEE formulae.
             scientific_res = async_to_sync(scientific_solver.solve)(combined_question, mode, vertical)
+            _solver_usage = (scientific_res or {}).pop("_usage", None) or {}
             if scientific_res and ("brief" in scientific_res or "detailed" in scientific_res):
                 parsed = scientific_res
-                solve_result = {"model": "scientific_solver"}
+                solve_result = {
+                    "model": "scientific_solver",
+                    "tokens_input": int(_solver_usage.get("tokens_input") or 0),
+                    "tokens_output": int(_solver_usage.get("tokens_output") or 0),
+                    # The model the solver's LLM calls actually ran on, for telemetry.
+                    "provider_model": _solver_usage.get("model"),
+                }
             else:
                 raise RuntimeError("scientific_solver returned empty/invalid response")
         else:
-            raise NotImplementedError("Subject not mapped to scientific solver")
+            raise NotImplementedError(
+                "Not a computational question; scientific solver not needed"
+                if subject in _SOLVER_SUBJECTS else "Subject not mapped to scientific solver"
+            )
     except Exception as solver_err:
         logger.warning("[DOUBT RESOLVER] Scientific solver bypassed/failed (%s). Using LLM.", solver_err)
         try:
@@ -3771,7 +3822,8 @@ def resolve_doubt(request):
             institute_type='school',
             feature_id='doubt_resolver',
             feature_category='student',
-            model_used=_doubt_model if _doubt_model != 'scientific_solver' else 'openai/gpt-oss-120b',
+            model_used=_doubt_model if _doubt_model != 'scientific_solver'
+            else (solve_result.get('provider_model') or 'openai/gpt-oss-120b'),
             tokens_input=solve_result.get('tokens_input', 0),
             tokens_output=solve_result.get('tokens_output', 0),
             latency_ms=int((time.time() - _start_time) * 1000),
