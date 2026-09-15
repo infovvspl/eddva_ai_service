@@ -161,3 +161,42 @@ class GroqUnshapedPromptTests(SimpleTestCase):
         self.assertEqual(sent[0]["messages"][0]["content"], "RAW CODEGEN PROMPT")
         self.assertTrue(sent[1]["messages"][0]["content"].endswith("RAW CODEGEN PROMPT"))
         self.assertNotEqual(sent[1]["messages"][0]["content"], "RAW CODEGEN PROMPT")   # default unchanged
+
+
+class DoubtAnswerShapeTests(SimpleTestCase):
+    """Teacher/student school doubt pages read brief.final_answer / detailed.explanation;
+    LLM answers wrote brief.answer / detailed.solution, so Brief and Detailed were empty."""
+
+    def test_llm_shape_gains_the_solver_field_names(self):
+        from ai_services.views.bridge import _normalize_doubt_answer
+
+        brief = {"answer": "Neurons carry signals.", "question_nature": "theory"}
+        detailed = {"solution": "**(i) Structure**\n- dendrites", "final_answer": "Neurons transmit signals.",
+                    "verification": "None", "key_concept": "none"}
+        _normalize_doubt_answer(brief, detailed)
+        self.assertEqual(brief["final_answer"], "Neurons carry signals.")
+        self.assertEqual(detailed["explanation"], "**(i) Structure**\n- dendrites")
+        self.assertEqual((detailed["verification"], detailed["key_concept"]), ("", ""))
+
+    def test_solver_shape_gains_the_llm_field_names_and_keeps_its_own(self):
+        from ai_services.views.bridge import _normalize_doubt_answer
+
+        brief = {"final_answer": "HCF = 4"}
+        detailed = {"explanation": "Apply Euclid's lemma", "verification": "4 divides both", "key_concept": "Euclid"}
+        _normalize_doubt_answer(brief, detailed)
+        self.assertEqual((brief["answer"], brief["final_answer"]), ("HCF = 4", "HCF = 4"))
+        self.assertEqual((detailed["solution"], detailed["explanation"]), ("Apply Euclid's lemma",) * 2)
+        self.assertEqual(detailed["verification"], "4 divides both")
+
+    def test_existing_values_are_never_overwritten(self):
+        from ai_services.views.bridge import _normalize_doubt_answer
+
+        brief = {"answer": "short", "final_answer": "final"}
+        detailed = {"solution": "sol", "explanation": "exp"}
+        _normalize_doubt_answer(brief, detailed)
+        self.assertEqual((brief["answer"], brief["final_answer"], detailed["solution"], detailed["explanation"]),
+                         ("short", "final", "sol", "exp"))
+
+    def test_resolve_doubt_calls_the_normalizer(self):
+        src = io.open(os.path.join(os.path.dirname(__file__), "views", "bridge.py"), encoding="utf-8").read()
+        self.assertIn("    _normalize_doubt_answer(brief_obj, detailed_obj)\n", src)

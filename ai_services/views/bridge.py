@@ -3815,6 +3815,8 @@ def resolve_doubt(request):
     for k, v in brief_obj.items(): brief_obj[k] = _safe_str(v)
     for k, v in detailed_obj.items(): detailed_obj[k] = _safe_str(v)
 
+    _normalize_doubt_answer(brief_obj, detailed_obj)
+
     try:
         _doubt_model = solve_result.get('model', 'unknown')
         log_usage(
@@ -3854,6 +3856,31 @@ def resolve_doubt(request):
 
 
 
+
+
+# Template placeholder values a model copies verbatim ("verification": "None").
+_ANSWER_PLACEHOLDERS = {"none", "n/a", "na", "null", "nil", "-"}
+
+
+def _normalize_doubt_answer(brief_obj: dict, detailed_obj: dict) -> None:
+    """Make an answer readable by every doubt page, in place.
+
+    Two shapes are in circulation: the LLM prompts write brief.answer /
+    detailed.solution, the scientific solver writes brief.final_answer /
+    detailed.explanation, and the school doubt pages read the solver's names — so
+    every non-solver answer rendered an empty Brief and Detailed view. Each name
+    is filled from the other, and the prompt template's "None" placeholders are
+    blanked instead of being shown as content.
+    """
+    for obj in (brief_obj, detailed_obj):
+        for key, value in list(obj.items()):
+            if isinstance(value, str) and value.strip().lower() in _ANSWER_PLACEHOLDERS:
+                obj[key] = ""
+    for obj, a, b in ((detailed_obj, "solution", "explanation"), (brief_obj, "answer", "final_answer")):
+        if obj.get(a) and not obj.get(b):
+            obj[b] = obj[a]
+        elif obj.get(b) and not obj.get(a):
+            obj[a] = obj[b]
 
 
 _DOUBT_VISION_PROMPT = (
