@@ -13,9 +13,10 @@ and raises only routing.errors types, classified retryable / non-retryable.
                      provider-event telemetry, unchanged.
     GeminiAdapter    delegates to gemini_client.complete_text / complete_json —
                      the existing key rotation, cooldowns and model fallback.
-    TogetherAdapter  new. OpenAI-compatible chat completions over httpx.
-                     Exactly ONE HTTP attempt per call: retry policy belongs to
-                     the router, and a retry layer here would multiply with it.
+    TogetherAdapter  OpenAI-compatible chat completions over httpx.
+                     Exactly ONE HTTP attempt per call: retry and fallback
+                     belong to the router, and a retry layer here would multiply
+                     with it.
 
 Speech (Whisper, Sarvam) and image generation (FLUX) are deliberately not
 adapters. They are not chat completions and do not belong in this router.
@@ -37,12 +38,17 @@ from ai_services.core.routing.errors import (
     RetryableProviderError,
     error_for_status,
 )
-from ai_services.core.routing.registry import STRUCTURED_NATIVE, ModelSpec
+from ai_services.core.routing.registry import JSON_CAPABLE, STRUCTURED_NATIVE, ModelSpec
 
 logger = logging.getLogger("ai_services.routing")
 
 # Together's OpenAI-compatible endpoint. Overridable; no model ids are implied.
 DEFAULT_TOGETHER_BASE_URL = "https://api.together.xyz/v1"
+TOGETHER_API_KEY_ENV = "TOGETHER_API_KEY"
+
+# Fields copied from the provider's model listing when it reports them. Nothing
+# is filled in when a field is absent.
+_DISCOVERY_FIELDS = ("id", "type", "display_name", "organization", "context_length")
 
 
 @dataclass(frozen=True)
@@ -204,7 +210,7 @@ class TogetherAdapter:
 
     @staticmethod
     def _api_key() -> str:
-        return (os.getenv("TOGETHER_API_KEY") or "").strip()
+        return (os.getenv(TOGETHER_API_KEY_ENV) or "").strip()
 
     @staticmethod
     def base_url() -> str:
@@ -236,12 +242,23 @@ class TogetherAdapter:
         model = call.model_id
         if not key:
             raise ProviderConfigError(
-                "Together is not configured (TOGETHER_API_KEY is unset)", provider="together", model=model,
+                f"Together is not configured ({TOGETHER_API_KEY_ENV} is unset)", provider="together", model=model,
             )
         if not model:
             hint = f" — set {spec.model_env}" if spec.model_env else ""
             raise ProviderConfigError(
                 f"No Together model id configured for {spec.id}{hint}", provider="together", model=None,
+            )
+        # Never downgrade a JSON requirement. "prompted" is an explicit,
+        # operator-selected compatibility path; "unknown" and "none" refuse
+        # before any tokens are spent.
+        if call.json_mode and spec.structured_output not in JSON_CAPABLE:
+            hint = f"; verify the model, then set {spec.model_env}_STRUCTURED_OUTPUT=native|prompted" \
+                if spec.model_env else ""
+            raise NonRetryableProviderError(
+                f"{spec.id} structured-output support is {spec.structured_output.upper()}: refusing a JSON "
+                f"request rather than downgrading it{hint}",
+                provider="together", model=model, kind="structured_output",
             )
 
         timeout = float(call.timeout_s or os.getenv("TOGETHER_TIMEOUT_S") or 60)
@@ -254,8 +271,6 @@ class TogetherAdapter:
             "temperature": call.temperature,
             "max_tokens": call.max_tokens,
         }
-        # Only models verified to honour it get response_format; an unverified
-        # model can reject the field with a 400, which is not retryable.
         if call.json_mode and spec.structured_output == STRUCTURED_NATIVE:
             body["response_format"] = {"type": "json_object"}
 
@@ -297,9 +312,16 @@ class TogetherAdapter:
                 provider="together", model=model, status_code=resp.status_code, kind="server_error",
             ) from None
 
-        usage = data.get("usage") or {}
-        tokens_in = int(usage.get("prompt_tokens") or 0)
-        tokens_out = int(usage.get("completion_tokens") or 0)
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
+        tokens_reported = bool(usage) and ("prompt_tokens" in usage or "completion_tokens" in usage)
+        tokens_in = int((usage or {}).get("prompt_tokens") or 0)
+        tokens_out = int((usage or {}).get("completion_tokens") or 0)
+        if not tokens_reported:
+            # The usage row needs integers. Record 0, but say so: the row is not
+            # provider-reported usage and must not be read as "free".
+            logger.warning(
+                "Together model %s returned no token usage; recorded as 0 with tokens_reported=false", model,
+            )
 
         if call.json_mode:
             try:
@@ -319,8 +341,9 @@ class TogetherAdapter:
                 )
 
         logger.info(
-            "LLM (%s) | provider=together model=%s latency=%.0fms",
+            "LLM (%s) | provider=together model=%s latency=%.0fms tokens=%s",
             "json" if call.json_mode else "text", model, latency_ms,
+            f"{tokens_in}+{tokens_out}" if tokens_reported else "not-reported",
         )
         return {
             "content": content,
@@ -329,16 +352,19 @@ class TogetherAdapter:
             "latency_ms": latency_ms,
             "tokens_input": tokens_in,
             "tokens_output": tokens_out,
+            "tokens_reported": tokens_reported,
         }
 
-    def list_models(self) -> list[str]:
-        """Discover the model ids this account can call. The only sanctioned way
-        to obtain Together ids — they are never guessed."""
+    def list_model_records(self) -> list[dict]:
+        """The models this account can call, as the provider reports them. The
+        only sanctioned way to obtain Together ids — they are never guessed."""
         import httpx
 
         key = self._api_key()
         if not key:
-            raise ProviderConfigError("Together is not configured (TOGETHER_API_KEY is unset)", provider="together")
+            raise ProviderConfigError(
+                f"Together is not configured ({TOGETHER_API_KEY_ENV} is unset)", provider="together",
+            )
         try:
             resp = httpx.get(f"{self.base_url()}/models", headers=self._headers(key), timeout=30.0)
         except httpx.RequestError as exc:
@@ -352,9 +378,21 @@ class TogetherAdapter:
                 f"Together {resp.status_code} listing models: {scrub(resp.text[:200], key)}",
                 provider="together", model=None,
             )
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            raise RetryableProviderError(
+                "Together returned an unreadable model listing", provider="together", kind="server_error",
+            ) from None
         items = data if isinstance(data, list) else (data.get("data") or [])
-        return sorted({str(i["id"]) for i in items if isinstance(i, dict) and i.get("id")})
+        records = [
+            {k: item[k] for k in _DISCOVERY_FIELDS if k in item}
+            for item in items if isinstance(item, dict) and item.get("id")
+        ]
+        return sorted(records, key=lambda r: str(r["id"]))
+
+    def list_models(self) -> list[str]:
+        return [str(r["id"]) for r in self.list_model_records()]
 
 
 def default_adapters() -> dict:

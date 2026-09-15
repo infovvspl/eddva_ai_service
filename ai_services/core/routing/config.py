@@ -11,8 +11,21 @@ configuration change, never a code change.
     AI_ROUTE_<CAPABILITY>_FALLBACKS          comma-separated registry ids
     AI_ROUTE_<CAPABILITY>_TIMEOUT_S
     AI_ROUTE_<CAPABILITY>_FALLBACK_DEADLINE_S
-    <model_env>                  provider model id per registry entry,
-                                 e.g. TOGETHER_MODEL_QWEN3_8_FLASH
+
+  Together candidates (ids are NEVER built in):
+    TOGETHER_API_KEY
+    TOGETHER_MODEL_GPT_OSS_120B | _QWEN38_FLASH | _GLM53_FLASH | _DEEPSEEK_V4_FLASH | _QWEN37_MAX
+    <model env>_STRUCTURED_OUTPUT   native | prompted | none | unknown
+    <model env>_LONG_CONTEXT        true | false | unknown
+    <model env>_MULTIMODAL          true | false | unknown
+    <model env>_GROUNDING           true | false | unknown
+    <model env>_CONTEXT_TOKENS      positive integer | unknown
+
+  Local-development model override (server-side only, OFF by default):
+    AI_MODEL_OVERRIDE_ENABLED       must be "true"
+    AI_MODEL_OVERRIDE_<CAPABILITY>  e.g. together:qwen3.8-flash
+    AI_MODEL_OVERRIDE_ALL           applies to every capability without its own override
+  Honoured only when Django DEBUG is true. Refused (with an error) otherwise.
 
 JSON document::
 
@@ -43,17 +56,20 @@ from typing import Mapping, Optional
 from ai_services.core.routing.registry import (
     CAPABILITIES,
     KNOWN_PROVIDERS,
-    STRUCTURED_NATIVE,
-    STRUCTURED_NONE,
-    STRUCTURED_PROMPTED,
+    STRUCTURED_VALUES,
     ModelSpec,
     default_registry,
+    resolve_model_ref,
 )
 
 logger = logging.getLogger("ai_services.routing")
 
 _TRUE = {"1", "true", "yes", "on"}
 _SECRET_LIKE = ("key", "secret", "token", "password", "credential", "bearer")
+
+OVERRIDE_ENABLE_ENV = "AI_MODEL_OVERRIDE_ENABLED"
+OVERRIDE_PREFIX = "AI_MODEL_OVERRIDE_"
+OVERRIDE_ALL = "__all__"
 
 
 @dataclass(frozen=True)
@@ -89,6 +105,10 @@ class RouterConfig:
     policies: Mapping[str, RoutePolicy]
     features: Mapping[str, FeatureRoute]
     warnings: tuple = field(default=())
+    # capability (or OVERRIDE_ALL) -> registry id. Empty unless the override is
+    # explicitly enabled AND Django DEBUG is true.
+    overrides: Mapping[str, str] = field(default_factory=dict)
+    debug: bool = False
 
 
 def default_policies() -> dict[str, RoutePolicy]:
@@ -136,7 +156,7 @@ def default_policies() -> dict[str, RoutePolicy]:
             capability="grounded",
             primary="gemini/gemini-2.5-flash",
             fallbacks=(),
-            candidates=("together/qwen3.8-flash",),
+            candidates=("together/qwen3.8-flash", "together/glm-5.3-flash"),
             timeout_s=240.0,
             fallback_deadline_s=240.0,
             description="Source-constrained generation. Call sites own their ungrounded fallback.",
@@ -165,6 +185,7 @@ def default_features() -> dict[str, FeatureRoute]:
     features.setdefault("doubt_resolver", FeatureRoute(capability="reasoning"))
     features.setdefault("content_generate", FeatureRoute(capability="content"))
     features.setdefault("ppt_generate", FeatureRoute(capability="content"))
+    features.setdefault("ai_lecture_notes", FeatureRoute(capability="content"))
     return features
 
 
@@ -172,6 +193,19 @@ def _truthy(value: Optional[str], default: bool) -> bool:
     if value is None or str(value).strip() == "":
         return default
     return str(value).strip().lower() in _TRUE
+
+
+def _detect_debug(env: Mapping[str, str]) -> bool:
+    """Django's DEBUG when settings are loaded (the authoritative value), else
+    the same DJANGO_DEBUG env var settings.py reads."""
+    try:
+        from django.conf import settings
+
+        if settings.configured:
+            return bool(settings.DEBUG)
+    except Exception:
+        pass
+    return str(env.get("DJANGO_DEBUG", "false")).strip().lower() in ("true", "1", "yes")
 
 
 def _load_json_document(env: Mapping[str, str], warnings: list) -> dict:
@@ -218,7 +252,8 @@ def _contains_secret_like_field(obj) -> Optional[str]:
     return None
 
 
-_MODEL_BOOL_FIELDS = ("multimodal", "long_context", "supports_grounding")
+# Tri-state support flags: true / false / null (UNKNOWN).
+_MODEL_FLAG_FIELDS = ("multimodal", "long_context", "supports_grounding")
 _MODEL_STR_FIELDS = ("quality_tier", "cost_tier", "notes", "model_env")
 
 
@@ -256,29 +291,77 @@ def _apply_model_overrides(models: dict, doc_models, warnings: list) -> None:
                 updates["capabilities"] = frozenset(caps)
             else:
                 warnings.append(f"models.{model_id}.capabilities: invalid; ignored field")
-        for f in _MODEL_BOOL_FIELDS:
+        for f in _MODEL_FLAG_FIELDS:
             if f in fields:
-                if isinstance(fields[f], bool):
+                if fields[f] is None or isinstance(fields[f], bool):
                     updates[f] = fields[f]
                 else:
-                    warnings.append(f"models.{model_id}.{f}: must be boolean; ignored field")
+                    warnings.append(f"models.{model_id}.{f}: must be true, false or null (UNKNOWN); ignored field")
         if "context_tokens" in fields:
             v = fields["context_tokens"]
-            if v is None or (isinstance(v, int) and v > 0):
+            if v is None or (isinstance(v, int) and not isinstance(v, bool) and v > 0):
                 updates["context_tokens"] = v
             else:
-                warnings.append(f"models.{model_id}.context_tokens: must be a positive integer; ignored field")
+                warnings.append(f"models.{model_id}.context_tokens: must be a positive integer or null; ignored field")
         if "structured_output" in fields:
-            if fields["structured_output"] in (STRUCTURED_NATIVE, STRUCTURED_PROMPTED, STRUCTURED_NONE):
+            if fields["structured_output"] in STRUCTURED_VALUES:
                 updates["structured_output"] = fields["structured_output"]
             else:
-                warnings.append(f"models.{model_id}.structured_output: invalid; ignored field")
+                warnings.append(f"models.{model_id}.structured_output: must be one of {sorted(STRUCTURED_VALUES)}; ignored field")
         for f in _MODEL_STR_FIELDS:
             if f in fields and isinstance(fields[f], str):
                 updates[f] = fields[f]
         if updates:
             updates["metadata_source"] = "config"
         models[model_id] = replace(base, **updates)
+
+
+_META_ENV_SUFFIXES = {
+    "STRUCTURED_OUTPUT": "structured_output",
+    "LONG_CONTEXT": "long_context",
+    "MULTIMODAL": "multimodal",
+    "GROUNDING": "supports_grounding",
+    "CONTEXT_TOKENS": "context_tokens",
+}
+
+
+def _apply_together_env_metadata(models: dict, env: Mapping[str, str], warnings: list) -> None:
+    """<model env>_<FIELD> lets an operator record what they have verified about
+    a Together model without writing a JSON document. Together only: Groq and
+    Gemini metadata is repository-verified and not overridable this way."""
+    for model_id, spec in list(models.items()):
+        if spec.provider != "together" or not spec.model_env:
+            continue
+        updates = {}
+        for suffix, fname in _META_ENV_SUFFIXES.items():
+            name = f"{spec.model_env}_{suffix}"
+            raw = (env.get(name) or "").strip()
+            if not raw:
+                continue
+            low = raw.lower()
+            if fname == "structured_output":
+                if low in STRUCTURED_VALUES:
+                    updates[fname] = low
+                else:
+                    warnings.append(f"{name}: must be one of {sorted(STRUCTURED_VALUES)}; ignored")
+            elif fname == "context_tokens":
+                if low == "unknown":
+                    updates[fname] = None
+                elif low.isdigit() and int(low) > 0:
+                    updates[fname] = int(low)
+                else:
+                    warnings.append(f"{name}: must be a positive integer or 'unknown'; ignored")
+            else:
+                if low in ("true", "yes", "1"):
+                    updates[fname] = True
+                elif low in ("false", "no", "0"):
+                    updates[fname] = False
+                elif low == "unknown":
+                    updates[fname] = None
+                else:
+                    warnings.append(f"{name}: must be true, false or unknown; ignored")
+        if updates:
+            models[model_id] = replace(spec, metadata_source="config", **updates)
 
 
 def _apply_policy_fields(policy: RoutePolicy, fields: dict, models: dict, where: str, warnings: list) -> RoutePolicy:
@@ -312,8 +395,45 @@ def _apply_policy_fields(policy: RoutePolicy, fields: dict, models: dict, where:
     return replace(policy, **updates) if updates else policy
 
 
-def load_config(env: Optional[Mapping[str, str]] = None) -> RouterConfig:
+def _load_overrides(env: Mapping[str, str], models: dict, policies: dict, debug: bool, warnings: list) -> dict:
+    """Local-development model override. Server-side configuration only: nothing
+    here reads a request, so no client can select a provider or model."""
+    requested = {}
+    for cap in policies:
+        name = f"{OVERRIDE_PREFIX}{cap.upper()}"
+        if (env.get(name) or "").strip():
+            requested[cap] = (name, env[name].strip())
+    if (env.get(f"{OVERRIDE_PREFIX}ALL") or "").strip():
+        requested[OVERRIDE_ALL] = (f"{OVERRIDE_PREFIX}ALL", env[f"{OVERRIDE_PREFIX}ALL"].strip())
+    if not requested:
+        return {}
+    names = sorted(n for n, _ in requested.values())
+    if not _truthy(env.get(OVERRIDE_ENABLE_ENV), False):
+        warnings.append(f"model override variables {names} are set but {OVERRIDE_ENABLE_ENV} is not true; ignored")
+        return {}
+    if not debug:
+        warnings.append(
+            f"REFUSED model overrides {names}: local-development only and Django DEBUG is not true. "
+            "Production routing is unchanged."
+        )
+        return {}
+    active = {}
+    for cap, (name, value) in requested.items():
+        spec = resolve_model_ref(models, value)
+        if spec is None:
+            warnings.append(f"{name}={value!r}: not a registered model (use provider:alias, e.g. together:qwen3.8-flash); ignored")
+            continue
+        if not spec.is_configured:
+            hint = f" — set {spec.model_env}" if spec.model_env else ""
+            warnings.append(f"{name}: {spec.id} has no provider model id configured{hint}; ignored")
+            continue
+        active[cap] = spec.id
+    return active
+
+
+def load_config(env: Optional[Mapping[str, str]] = None, *, debug: Optional[bool] = None) -> RouterConfig:
     env = os.environ if env is None else env
+    debug = _detect_debug(env) if debug is None else bool(debug)
     warnings: list[str] = []
 
     models = default_registry()
@@ -323,6 +443,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> RouterConfig:
             val = (env.get(spec.model_env) or "").strip()
             if val:
                 models[model_id] = spec.with_model_id(val)
+    _apply_together_env_metadata(models, env, warnings)
 
     policies = default_policies()
     features = default_features()
@@ -368,7 +489,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> RouterConfig:
                     fb = tuple(fb)
                 features[name] = FeatureRoute(capability=cap, primary=primary, fallbacks=fb)
 
-    # 3. Targeted env overrides (highest precedence).
+    # 3. Targeted env overrides (highest precedence among production settings).
     for cap in list(policies):
         prefix = f"AI_ROUTE_{cap.upper()}_"
         fields = {}
@@ -382,6 +503,9 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> RouterConfig:
         if fields:
             policies[cap] = _apply_policy_fields(policies[cap], fields, models, prefix.rstrip("_"), warnings)
 
+    # 4. Local-development model override (last, and gated).
+    overrides = _load_overrides(env, models, policies, debug, warnings)
+
     cfg = RouterConfig(
         enabled=_truthy(env.get("AI_ROUTER_ENABLED"), True),
         fallback_enabled=_truthy(env.get("AI_ROUTER_FALLBACK_ENABLED"), False),
@@ -389,7 +513,14 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> RouterConfig:
         policies=policies,
         features=features,
         warnings=tuple(warnings),
+        overrides=overrides,
+        debug=debug,
     )
     for w in cfg.warnings:
         logger.warning("AI routing config: %s", w)
+    if overrides:
+        logger.warning(
+            "LOCAL MODEL OVERRIDE ACTIVE (development only, DEBUG=true): %s",
+            ", ".join(f"{('ALL' if k == OVERRIDE_ALL else k)} -> {v}" for k, v in sorted(overrides.items())),
+        )
     return cfg

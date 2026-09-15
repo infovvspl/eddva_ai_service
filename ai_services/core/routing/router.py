@@ -6,23 +6,27 @@ no educational business logic: prompts, grounding, feature output parsing and
 feature-specific degradation (e.g. "drop the textbook and retry ungrounded")
 stay in the views that already implement them.
 
-Compatibility guarantees (pinned by tests_model_router):
+Primary selection, highest precedence first:
 
-  * A call site that names a model ("pinned") gets exactly that model as
-    primary, with the model string passed through unchanged. Every existing
-    LLMClient.complete() call is pinned, so default routing executes the same
-    Groq call as before the router existed.
+    local_override     AI_MODEL_OVERRIDE_* — local development only (DEBUG)
+    feature_override   an operator's features.<name>.primary in routing config
+    pinned             the model the call site named (every existing call site)
+    policy             the capability policy's primary
+
+Compatibility guarantees (pinned by tests_model_router / tests_together_integration):
+
+  * A pinned call gets exactly that model as primary, with the model string
+    passed through unchanged. With default configuration every existing
+    LLMClient.complete() call executes the same Groq call as before.
   * Cross-provider fallback is OFF unless AI_ROUTER_FALLBACK_ENABLED=true AND
     the fallback's provider credentials AND provider model id are configured.
   * Fallback happens only on retryable errors (429 / 5xx / timeout / network /
     exhausted rotation). Deterministic, validation, structured-output and
     configuration errors raise immediately.
-  * When only one attempt ran, the original exception object is re-raised, so
-    callers see exactly what they saw before.
+  * When only one attempt ran, the original exception object is re-raised.
   * One logical request stays one usage row. The router annotates the result
-    with provider/fallback metadata and never logs usage itself; individual
-    attempts are observable as provider events (failover / 429 / 5xx / timeout)
-    and log lines carrying request_id — never prompts, never credentials.
+    and never logs usage itself; attempts are observable as provider events and
+    log lines carrying request_id — never prompts, never credentials.
 """
 from __future__ import annotations
 
@@ -31,7 +35,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import Optional
 
-from ai_services.core.routing.config import RoutePolicy, RouterConfig
+from ai_services.core.routing.config import OVERRIDE_ALL, RoutePolicy, RouterConfig
 from ai_services.core.routing.errors import (
     FallbackExhaustedError,
     NoRouteError,
@@ -40,17 +44,49 @@ from ai_services.core.routing.errors import (
 )
 from ai_services.core.routing.providers import ProviderCall, default_adapters, scrub
 from ai_services.core.routing.registry import (
+    CAPABILITY_PREFERENCE,
     STRUCTURED_NATIVE,
+    UNQUALIFIED_TELEMETRY_PROVIDERS,
     ModelSpec,
     find_by_provider_model,
+    support_label,
     unmet_requirements,
 )
 
 logger = logging.getLogger("ai_services.routing")
 
-# When a pinned model must be mapped to a capability, prefer the everyday
-# classes; "premium" is last so nothing lands there by inference.
-_CAPABILITY_PREFERENCE = ("reasoning", "lightweight", "content", "bulk_text", "grounded", "vision", "premium")
+
+def telemetry_model_id(provider: Optional[str], model: Optional[str]) -> Optional[str]:
+    """The model string recorded in usage telemetry.
+
+    Groq and Gemini ids stay bare, exactly as before. Any other provider is
+    recorded as "<provider>:<model id>" so a row is attributable to the provider
+    that actually served it (the usage row has no separate provider column, and
+    the same model id can exist on several providers).
+    """
+    if not model or not provider or provider in UNQUALIFIED_TELEMETRY_PROVIDERS:
+        return model
+    prefix = f"{provider}:"
+    return model if str(model).startswith(prefix) else f"{prefix}{model}"
+
+
+def telemetry_model_from_error(exc: BaseException, default: str) -> str:
+    """Model string for a failure row: the provider/model that actually failed
+    when the error carries it, else the call site's own default."""
+    if isinstance(exc, ProviderError) and exc.provider and exc.model:
+        return telemetry_model_id(exc.provider, exc.model)
+    return default
+
+
+def telemetry_model_from_results(results, default: str) -> str:
+    """Model string for a row covering several routed results (e.g. parallel quiz
+    chunks). Only a result served by a provider whose ids are qualified changes
+    the default, so Groq and Gemini rows keep exactly the label they had."""
+    for r in results or ():
+        if isinstance(r, dict) and r.get("model") and r.get("provider") \
+                and r["provider"] not in UNQUALIFIED_TELEMETRY_PROVIDERS:
+            return telemetry_model_id(r["provider"], r["model"])
+    return default
 
 
 @dataclass
@@ -90,7 +126,7 @@ class Candidate:
     spec: ModelSpec
     model_id: str
     role: str     # primary | fallback
-    source: str   # pinned | policy | feature_override
+    source: str   # local_override | feature_override | pinned | policy
 
 
 @dataclass(frozen=True)
@@ -112,6 +148,7 @@ class Attempt:
     retryable: Optional[bool] = None
     status_code: Optional[int] = None
     latency_ms: int = 0
+    source: str = "pinned"
 
     def as_dict(self) -> dict:
         return {
@@ -119,6 +156,7 @@ class Attempt:
             "provider": self.provider,
             "model": self.model,
             "role": self.role,
+            "source": self.source,
             "outcome": self.outcome,
             "kind": self.kind,
             "retryable": self.retryable,
@@ -134,6 +172,18 @@ def _ctx(name: str):
         return request_context.get(name)
     except Exception:
         return None
+
+
+def _unmet_detail(spec: ModelSpec, unmet: list) -> str:
+    support = (
+        f"structured_output={spec.structured_output}, long_context={support_label(spec.long_context)}, "
+        f"multimodal={support_label(spec.multimodal)}, grounding={support_label(spec.supports_grounding)}"
+    )
+    hint = ""
+    if spec.provider == "together" and spec.model_env:
+        hint = (f" After verifying the model, record its support with {spec.model_env}_STRUCTURED_OUTPUT / "
+                f"_LONG_CONTEXT / _MULTIMODAL / _GROUNDING.")
+    return f"does not satisfy {unmet} [{support}].{hint}"
 
 
 class ModelRouter:
@@ -178,7 +228,7 @@ class ModelRouter:
         if req.feature and req.feature in self.config.features:
             return self.config.features[req.feature].capability
         if pinned is not None:
-            for cap in _CAPABILITY_PREFERENCE:
+            for cap in CAPABILITY_PREFERENCE:
                 if cap in pinned.capabilities and cap in self.config.policies:
                     return cap
         return "reasoning"
@@ -201,9 +251,13 @@ class ModelRouter:
         capability = self._resolve_capability(req, pinned)
         policy = self.config.policies[capability]
         feature_route = self.config.features.get(req.feature) if req.feature else None
+        override_id = self.config.overrides.get(capability) or self.config.overrides.get(OVERRIDE_ALL)
 
-        # Primary: explicit operator override > call-site pin > policy default.
-        if feature_route is not None and feature_route.primary:
+        if override_id:
+            spec = self.config.models[override_id]
+            self._require_configured(spec, "override")
+            primary = Candidate(spec, spec.provider_model_id, "primary", "local_override")
+        elif feature_route is not None and feature_route.primary:
             spec = self.config.models[feature_route.primary]
             self._require_configured(spec, "primary")
             primary = Candidate(spec, spec.provider_model_id, "primary", "feature_override")
@@ -220,12 +274,14 @@ class ModelRouter:
             primary = Candidate(spec, spec.provider_model_id, "primary", "policy")
 
         # A pin is the call site's existing, working choice and is not second-
-        # guessed. A model the router picked must actually meet the request.
+        # guessed. A model the router or an operator picked must meet the request
+        # — a JSON request is refused, never silently downgraded.
         if primary.source != "pinned":
             unmet = unmet_requirements(primary.spec, req)
             if unmet:
                 raise NoRouteError(
-                    f"primary {primary.spec.id} for capability {capability!r} does not satisfy {unmet}"
+                    f"{primary.source} primary {primary.spec.id} for capability {capability!r} "
+                    + _unmet_detail(primary.spec, unmet)
                 )
 
         candidates = [primary]
@@ -269,18 +325,17 @@ class ModelRouter:
 
     # ── execution ────────────────────────────────────────────────────────────
     def _log_attempt(self, req: AIRequest, plan: RoutePlan, a: Attempt) -> None:
-        # Plain primary success is the overwhelmingly common case and the
-        # provider already logs it; keep it at DEBUG. Anything the router had
-        # to do — an error, a fallback — is INFO/WARNING so it is visible.
-        level = logging.DEBUG if (a.outcome == "success" and a.role == "primary") else (
-            logging.INFO if a.outcome == "success" else logging.WARNING
-        )
+        # A plain pinned/policy primary success is the overwhelmingly common case
+        # and the provider already logs it: DEBUG. Anything an operator or the
+        # router chose (override, fallback) or any error is visible by default.
+        quiet = a.outcome == "success" and a.role == "primary" and a.source in ("pinned", "policy")
+        level = logging.DEBUG if quiet else (logging.INFO if a.outcome == "success" else logging.WARNING)
         logger.log(
             level,
-            "AI route attempt | request_id=%s institute=%s feature=%s capability=%s role=%s "
+            "AI route attempt | request_id=%s institute=%s feature=%s capability=%s role=%s source=%s "
             "provider=%s model=%s outcome=%s kind=%s status=%s latency_ms=%d",
             _ctx("request_id") or "-", _ctx("institute_id") or req.institute_id or "-",
-            req.feature or "-", plan.capability, a.role, a.provider, a.model, a.outcome,
+            req.feature or "-", plan.capability, a.role, a.source, a.provider, a.model, a.outcome,
             a.kind or "-", a.status_code if a.status_code is not None else "-", a.latency_ms,
         )
 
@@ -335,7 +390,7 @@ class ModelRouter:
                 a = Attempt(
                     cand.spec.id, cand.spec.provider, cand.model_id or "-", cand.role, "error",
                     kind=exc.kind, retryable=exc.retryable, status_code=exc.status_code,
-                    latency_ms=int((time.perf_counter() - t0) * 1000),
+                    latency_ms=int((time.perf_counter() - t0) * 1000), source=cand.source,
                 )
                 attempts.append(a)
                 self._log_attempt(req, plan, a)
@@ -349,7 +404,7 @@ class ModelRouter:
                 a = Attempt(
                     cand.spec.id, cand.spec.provider, cand.model_id or "-", cand.role, "error",
                     kind="unclassified", retryable=False,
-                    latency_ms=int((time.perf_counter() - t0) * 1000),
+                    latency_ms=int((time.perf_counter() - t0) * 1000), source=cand.source,
                 )
                 attempts.append(a)
                 self._log_attempt(req, plan, a)
@@ -357,7 +412,7 @@ class ModelRouter:
 
             a = Attempt(
                 cand.spec.id, cand.spec.provider, str(result.get("model") or cand.model_id), cand.role,
-                "success", latency_ms=int((time.perf_counter() - t0) * 1000),
+                "success", latency_ms=int((time.perf_counter() - t0) * 1000), source=cand.source,
             )
             attempts.append(a)
             self._log_attempt(req, plan, a)
@@ -381,9 +436,16 @@ class ModelRouter:
             out["usage"] = {"prompt_tokens": ti, "completion_tokens": to, "total_tokens": ti + to}
         out.setdefault("tokens_input", out["usage"].get("prompt_tokens", 0))
         out.setdefault("tokens_output", out["usage"].get("completion_tokens", 0))
+        raw_model = out.get("model") or cand.model_id
+        out["provider_model_id"] = raw_model
+        # Every existing call site logs result["model"] as model_used, so this is
+        # the one place provider attribution reaches the usage row.
+        out["model"] = telemetry_model_id(cand.spec.provider, raw_model)
         out["provider"] = cand.spec.provider
         out["registry_id"] = cand.spec.id
         out["capability"] = plan.capability
+        out["route_source"] = cand.source
+        out["override_applied"] = cand.source == "local_override"
         out["fallback_used"] = cand.role == "fallback"
         out["route_attempts"] = [a.as_dict() for a in attempts]
         out["route_latency_ms"] = int((time.monotonic() - started) * 1000)

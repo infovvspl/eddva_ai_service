@@ -46,7 +46,26 @@ MODEL_COSTS = {
     'sarvam-stt':                      {'input': 0.04,  'output': 0.0},
 }
 
-def calculate_cost(model: str, tokens_input: int, tokens_output: int) -> float:
+def _is_unpriced_router_provider(model) -> bool:
+    """A "<provider>:<model id>" id from the model router for a provider with no
+    configured price (e.g. "together:..."). Reporting no estimate is honest;
+    reporting $0 is not. NestJS stores a missing estimatedCost as NULL.
+
+    Ids like "mayura:v1" are unaffected: only a known router provider prefix counts.
+    """
+    if not model or ":" not in str(model):
+        return False
+    try:
+        from ai_services.core.routing.registry import KNOWN_PROVIDERS, UNQUALIFIED_TELEMETRY_PROVIDERS
+    except Exception:
+        return False
+    prefix = str(model).split(":", 1)[0]
+    return prefix in KNOWN_PROVIDERS and prefix not in UNQUALIFIED_TELEMETRY_PROVIDERS
+
+
+def calculate_cost(model: str, tokens_input: int, tokens_output: int) -> "float | None":
+    if _is_unpriced_router_provider(model):
+        return None
     rates = MODEL_COSTS.get(model, MODEL_COSTS.get(model.split('/')[-1], None))
     if not rates:
         return 0.0
@@ -102,7 +121,7 @@ def log_ai_usage_sync(
         try:
             resp = httpx.post(url, json=payload, headers=headers, timeout=10.0)
             resp.raise_for_status()
-            logger.debug("AI usage logged: feature=%s model=%s cost=$%.6f", feature_id, model_used, cost)
+            logger.debug("AI usage logged: feature=%s model=%s cost=%s", feature_id, model_used, cost)
             return
         except Exception as e:
             last_err = e

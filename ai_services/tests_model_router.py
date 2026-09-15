@@ -34,10 +34,20 @@ from ai_services.core.routing import (
 from ai_services.core.routing import benchmark
 from ai_services.core.routing.errors import classify_status
 from ai_services.core.routing.providers import GeminiAdapter, ProviderCall, TogetherAdapter, scrub
-from ai_services.core.routing.registry import STRUCTURED_NATIVE, default_registry, unmet_requirements
+from ai_services.core.routing.registry import (
+    STRUCTURED_NATIVE,
+    STRUCTURED_PROMPTED,
+    default_registry,
+    unmet_requirements,
+)
 
 TOGETHER_ID = "test/fixture-gpt-oss-120b"
-FALLBACK_ENV = {"AI_ROUTER_FALLBACK_ENABLED": "true", "TOGETHER_MODEL_GPT_OSS_120B": TOGETHER_ID}
+FALLBACK_ENV = {
+    "AI_ROUTER_FALLBACK_ENABLED": "true",
+    "TOGETHER_MODEL_GPT_OSS_120B": TOGETHER_ID,
+    # Structured output is UNKNOWN until verified; JSON fallbacks need it declared.
+    "TOGETHER_MODEL_GPT_OSS_120B_STRUCTURED_OUTPUT": "prompted",
+}
 SECRET = "tk-live-SUPERSECRET-abcdef123456"
 
 
@@ -111,6 +121,7 @@ def _chat(content, prompt_tokens=2, completion_tokens=3):
 
 
 def _together_spec(**changes):
+    changes.setdefault("structured_output", STRUCTURED_PROMPTED)
     return replace(default_registry()["together/gpt-oss-120b"], provider_model_id=TOGETHER_ID, **changes)
 
 
@@ -379,7 +390,7 @@ class CapabilityRequirementTests(SimpleTestCase):
             r.plan(req(model=None, capability="vision", requires_vision=True))
 
     def test_7c_unverified_candidates_default_to_no_vision(self):
-        self.assertFalse(default_registry()["together/qwen3.8-flash"].multimodal)
+        self.assertIsNone(default_registry()["together/qwen3.8-flash"].multimodal)  # UNKNOWN
 
     def test_8_long_context_grounded_request_excludes_groq(self):
         doc = {"policies": {"grounded": {"fallbacks": ["groq/gpt-oss-120b"]}}}
@@ -533,10 +544,10 @@ class ConfigurationTests(SimpleTestCase):
             "capability": "content", "primary": "together/qwen3.8-flash", "fallbacks": ["gemini/gemini-2.5-flash"],
         }}}
         r, _ = make_router({
-            "AI_ROUTING_CONFIG": json.dumps(doc), "TOGETHER_MODEL_QWEN3_8_FLASH": "cfg-qwen",
+            "AI_ROUTING_CONFIG": json.dumps(doc), "TOGETHER_MODEL_QWEN38_FLASH": "cfg-qwen",
             "AI_ROUTER_FALLBACK_ENABLED": "true",
         })
-        plan = r.plan(req(feature="content_generate"))
+        plan = r.plan(req(feature="content_generate", json_mode=False))
         self.assertEqual((plan.candidates[0].model_id, plan.candidates[0].source), ("cfg-qwen", "feature_override"))
         self.assertEqual(plan.candidates[1].spec.id, "gemini/gemini-2.5-flash")
 
@@ -596,7 +607,7 @@ class MissingProviderConfigurationTests(SimpleTestCase):
         r, _ = make_router()
         with self.assertRaises(ProviderConfigError) as cm:
             r.plan(req(model=None, capability="premium"))
-        self.assertIn("TOGETHER_MODEL_QWEN3_7_MAX", str(cm.exception))
+        self.assertIn("TOGETHER_MODEL_QWEN37_MAX", str(cm.exception))
 
     def test_14d_together_without_key_is_a_config_error(self):
         with patch.dict(os.environ, {"TOGETHER_API_KEY": ""}):
@@ -793,11 +804,11 @@ class BenchmarkTests(SimpleTestCase):
         r, a = make_router()
         recs = benchmark.benchmark_candidate(r, "together/qwen3.8-flash", system_prompt="s", user_prompt="u")
         self.assertEqual(recs[0]["status"], benchmark.BLOCKED)
-        self.assertIn("TOGETHER_MODEL_QWEN3_8_FLASH", recs[0]["reason"])
+        self.assertIn("TOGETHER_MODEL_QWEN38_FLASH", recs[0]["reason"])
         self.assertEqual(a["together"].calls, [])
 
     def test_missing_credentials_are_blocked(self):
-        r, _ = make_router({"TOGETHER_MODEL_QWEN3_8_FLASH": "cfg-qwen"},
+        r, _ = make_router({"TOGETHER_MODEL_QWEN38_FLASH": "cfg-qwen"},
                            together=FakeAdapter("together", configured=False))
         recs = benchmark.benchmark_candidate(r, "together/qwen3.8-flash", system_prompt="s", user_prompt="u")
         self.assertEqual(recs[0]["status"], benchmark.BLOCKED)
@@ -808,7 +819,7 @@ class BenchmarkTests(SimpleTestCase):
             ok("cfg-qwen", content="notes"),
             RetryableProviderError("503", provider="together", status_code=503, kind="server_error"),
         ])
-        r, a = make_router({"TOGETHER_MODEL_QWEN3_8_FLASH": "cfg-qwen"}, together=together)
+        r, a = make_router({"TOGETHER_MODEL_QWEN38_FLASH": "cfg-qwen"}, together=together)
         before = dict(r.config.policies)
         recs = benchmark.benchmark_candidate(r, "together/qwen3.8-flash", system_prompt="s",
                                              user_prompt="u", repeat=2)

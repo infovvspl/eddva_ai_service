@@ -69,6 +69,7 @@ from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
 from ai_services.core.usage_logger import log_usage
 from ai_services.core.serpapi_images import search_google_images
 from .base import ai_call, ai_call_text, get_llm, metered
+from ai_services.core.routing import telemetry_model_from_error, telemetry_model_from_results
 
 
 
@@ -1783,6 +1784,8 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
         max_tokens=safe_max_tokens,
         json_mode=False,
         institute_id=institute_id,
+        feature="ai_lecture_notes",
+        capability="content",
     )
     return llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
 
@@ -1893,6 +1896,8 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
         max_tokens=merge_max_tokens,
         json_mode=False,
         institute_id=institute_id,
+        feature="ai_lecture_notes",
+        capability="content",
     )
     return llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
 
@@ -2795,6 +2800,8 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
             max_tokens=_safe_max_tokens(system_prompt + user_prompt, int(os.getenv("NOTES_POLISH_MAX_TOKENS", "4096"))),
             json_mode=False,
             institute_id=institute_id,
+            feature="ai_lecture_notes",
+            capability="content",
         )
         polished = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
         polished = _convert_html_sub_sup(_downgrade_h1_headings(polished.strip()))
@@ -5395,7 +5402,7 @@ def generate_quiz_questions(request):
                 institute_type='school',
                 feature_id='in_video_quiz_generator',
                 feature_category='teacher',
-                model_used='openai/gpt-oss-120b',
+                model_used=telemetry_model_from_results(results, 'openai/gpt-oss-120b'),
                 tokens_input=int(len(source_text) / 4),
                 tokens_output=0,
                 latency_ms=int((time.time() - _start_time) * 1000),
@@ -6432,7 +6439,7 @@ def generate_subjective_rubrics(request):
                 institute_type=vertical if vertical in ("school", "coaching") else "coaching",
                 feature_id="subjective_rubric_generation",
                 feature_category="teacher",
-                model_used="openai/gpt-oss-120b",
+                model_used=telemetry_model_from_error(exc, "openai/gpt-oss-120b"),
                 latency_ms=int((time.time() - _start_time) * 1000),
                 success=False,
                 error_message=str(exc)[:500],
@@ -6564,7 +6571,7 @@ def grade_subjective_answer(request):
                 institute_type=vertical if vertical in ("school", "coaching") else "coaching",
                 feature_id="subjective_answer_grading",
                 feature_category="teacher",
-                model_used="openai/gpt-oss-120b",
+                model_used=telemetry_model_from_error(exc, "openai/gpt-oss-120b"),
                 latency_ms=int((time.time() - _start_time) * 1000),
                 success=False,
                 error_message=str(exc)[:500],
@@ -7171,6 +7178,8 @@ def generate_topic_content(request):
             max_tokens=8192 if content_type in {"dpp", "pyq"} else 4096,
             json_mode=False,
             institute_id=institute_id,
+            feature="content_generate",
+            capability="content",
         )
     except RuntimeError as e:
         try:
@@ -7179,7 +7188,7 @@ def generate_topic_content(request):
                 institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
                 feature_id=f'content_{content_type}' if content_type else 'content_generate',
                 feature_category='content',
-                model_used='openai/gpt-oss-120b',
+                model_used=telemetry_model_from_error(e, 'openai/gpt-oss-120b'),
                 latency_ms=int((time.time() - _start_time) * 1000),
                 success=False,
                 error_message=str(e)[:500],
@@ -7207,6 +7216,8 @@ def generate_topic_content(request):
                 max_tokens=8192,
                 json_mode=False,
                 institute_id=institute_id,
+                feature="content_generate",
+                capability="content",
             )
         except RuntimeError as e:
             try:
@@ -7215,7 +7226,7 @@ def generate_topic_content(request):
                     institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
                     feature_id=f'content_{content_type}' if content_type else 'content_generate',
                     feature_category='content',
-                    model_used='openai/gpt-oss-120b',
+                    model_used=telemetry_model_from_error(e, 'openai/gpt-oss-120b'),
                     latency_ms=int((time.time() - _start_time) * 1000),
                     success=False,
                     error_message=f"MCQ retry failed: {str(e)[:500]}",
@@ -7385,7 +7396,7 @@ def generate_notes_from_transcript(request):
                 institute_type='school',
                 feature_id='ai_lecture_notes',
                 feature_category='teacher',
-                model_used='openai/gpt-oss-120b',
+                model_used=telemetry_model_from_error(exc, 'openai/gpt-oss-120b'),
                 tokens_input=int(len(transcript) / 4),
                 tokens_output=0,
                 latency_ms=int((time.time() - _start_time) * 1000),
@@ -7707,7 +7718,7 @@ def generate_notes_from_youtube(request):
                 institute_type='school',
                 feature_id='ai_lecture_notes',
                 feature_category='teacher',
-                model_used='openai/gpt-oss-120b',
+                model_used=telemetry_model_from_error(exc, 'openai/gpt-oss-120b'),
                 tokens_input=int(len(transcript) / 4),
                 tokens_output=0,
                 latency_ms=int((time.time() - _start_time) * 1000),

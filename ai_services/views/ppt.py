@@ -26,6 +26,7 @@ from ai_services.core.boards import board_instruction
 from ai_services.core.serpapi_images import search_google_images
 from ai_services.core.usage_logger import log_usage
 from .base import get_llm, metered
+from ai_services.core.routing import telemetry_model_from_error
 
 logger = logging.getLogger("ai_services.ppt")
 
@@ -1119,10 +1120,12 @@ def generate_presentation(request):
             max_tokens=_gen_max_tokens,
             json_mode=True,
             institute_id=institute_id,
+            feature="ppt_generate",
+            capability="content",
         )
     except Exception as exc:
         logger.warning("PPT generate failed: %s", exc)
-        _log(institute_id, vertical, _MODEL, success=False, error=exc)
+        _log(institute_id, vertical, telemetry_model_from_error(exc, _MODEL), success=False, error=exc)
         return Response(
             {"error": "Failed to generate slide content. Please try again."},
             status=status.HTTP_502_BAD_GATEWAY,
@@ -1213,10 +1216,12 @@ def regenerate_slide(request):
             max_tokens=2048,
             json_mode=True,
             institute_id=institute_id,
+            feature="ppt_generate",
+            capability="content",
         )
     except Exception as exc:
         logger.error("PPT regenerate-slide LLM error: %s", exc)
-        _log(institute_id, vertical, _MODEL, success=False, error=exc)
+        _log(institute_id, vertical, telemetry_model_from_error(exc, _MODEL), success=False, error=exc)
         return Response(
             {"error": "Failed to regenerate slide. Please try again."},
             status=status.HTTP_502_BAD_GATEWAY,
