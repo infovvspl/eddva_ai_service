@@ -113,61 +113,75 @@ class RouterConfig:
 
 
 def default_policies() -> dict[str, RoutePolicy]:
+    """TOGETHER-FIRST. Every text capability names a Together model as primary.
+
+    The previous production models are kept as fallbacks so cross-provider
+    failover can be switched on later; fallback itself stays OFF by default.
+    Where a Together primary is not configured, or cannot meet a request's
+    requirements, the router uses the call site's existing model instead (see
+    router.py, source=legacy) — so an environment without Together configuration
+    keeps its current behaviour exactly.
+    """
     return {
         "reasoning": RoutePolicy(
             capability="reasoning",
-            primary="groq/gpt-oss-120b",
-            fallbacks=("together/gpt-oss-120b",),
+            primary="together/gpt-oss-120b",
+            fallbacks=("groq/gpt-oss-120b",),
             timeout_s=60.0,
-            description="Doubts, tutor, complex teacher Q&A, assessment reasoning.",
+            description="Doubts, tutor, quiz, assessments, grading, teacher analysis.",
         ),
         "lightweight": RoutePolicy(
             capability="lightweight",
-            primary="groq/gpt-oss-20b",
-            fallbacks=(),
-            candidates=("together/deepseek-v4-flash",),
-            timeout_s=30.0,
-            description="Classification, extraction, cleanup, metadata. Not a quality route.",
+            primary="together/deepseek-v4-flash",
+            fallbacks=("groq/gpt-oss-20b",),
+            timeout_s=60.0,
+            description="Classification, extraction, transcript cleanup, metadata.",
         ),
         "content": RoutePolicy(
             capability="content",
-            primary="groq/gpt-oss-120b",
-            fallbacks=(),
-            candidates=("together/qwen3.8-flash", "together/glm-5.3-flash", "gemini/gemini-2.5-flash"),
+            primary="together/qwen3.8-flash",
+            fallbacks=("groq/gpt-oss-120b",),
+            candidates=("together/glm-5.3-flash", "gemini/gemini-2.5-flash"),
             timeout_s=120.0,
             fallback_deadline_s=120.0,
-            description="Long educational documents. Candidates await benchmark evidence.",
+            description="Textbook/chapter content, lecture notes, ungrounded PPT.",
         ),
         "premium": RoutePolicy(
             capability="premium",
             primary="together/qwen3.7-max",
-            fallbacks=("groq/gpt-oss-120b",),
+            fallbacks=("together/gpt-oss-120b",),
             timeout_s=120.0,
             description="Opt-in only. No feature routes here by default.",
         ),
         "bulk_text": RoutePolicy(
             capability="bulk_text",
-            primary="groq/gpt-oss-20b",
-            fallbacks=(),
-            candidates=("together/deepseek-v4-flash",),
+            primary="together/deepseek-v4-flash",
+            fallbacks=("groq/gpt-oss-20b",),
             timeout_s=60.0,
             description="High-volume background text.",
         ),
         "grounded": RoutePolicy(
             capability="grounded",
-            primary="gemini/gemini-2.5-flash",
-            fallbacks=(),
-            candidates=("together/qwen3.8-flash", "together/glm-5.3-flash"),
-            timeout_s=240.0,
-            fallback_deadline_s=240.0,
-            description="Source-constrained generation. Call sites own their ungrounded fallback.",
+            # GLM-5.3 Flash rather than Qwen3.8 Flash: grounded generation is
+            # faithful reproduction of supplied passages, and Gemini's grounded
+            # calls disable thinking because reasoning tokens truncated question
+            # papers. In local probes Qwen3.8 Flash spent ~1,250 output tokens
+            # on a two-sentence answer; GLM-5.3 Flash spent ~90. Switchable with
+            # AI_ROUTE_GROUNDED_PRIMARY.
+            primary="together/glm-5.3-flash",
+            fallbacks=("gemini/gemini-2.5-flash",),
+            candidates=("together/qwen3.8-flash",),
+            timeout_s=200.0,
+            fallback_deadline_s=200.0,
+            description="Textbook-grounded content and PPT. Retrieval, citations and the "
+                        "ungrounded fallback stay in EDVA code.",
         ),
         "vision": RoutePolicy(
             capability="vision",
             primary="gemini/gemini-2.5-flash",
             fallbacks=(),
             timeout_s=60.0,
-            description="Registered only; existing vision call sites are not routed yet.",
+            description="Not routed: vision/OCR call sites remain specialized (see routing/catalog.py).",
         ),
     }
 

@@ -145,9 +145,56 @@ class Command(BaseCommand):
                 f"  {cap:12} primary={p.primary} fallbacks={list(p.fallbacks)} candidates={list(p.candidates)}"
             )
 
+    def _plan_all(self, router):
+        """Resolve every audited call site through the live router."""
+        from ai_services.core.routing import AIRequest, RoutingError
+        from ai_services.core.routing.catalog import CALL_SITES, ROUTED
+
+        cfg = router.config
+        self.stdout.write(
+            f"router_enabled={cfg.enabled} fallback_enabled={cfg.fallback_enabled} debug={cfg.debug} "
+            f"local_overrides={dict(cfg.overrides) or 'none'}"
+        )
+        self.stdout.write(
+            f"{'call site':28} {'current':34} {'capability':11} {'json':5} {'grnd':5} {'routed to':46} "
+            f"{'source':15} {'risk':6} why-not-policy"
+        )
+        counts = {}
+        for site in CALL_SITES:
+            current = f"{site.current_provider}:{site.current_model}"
+            if site.status != ROUTED:
+                counts[site.status] = counts.get(site.status, 0) + 1
+                self.stdout.write(
+                    f"{site.id:28} {current[:34]:34} {'-':11} {'-':5} {'-':5} {'(not routed)':46} "
+                    f"{site.status.upper():15} {'-':6} {site.notes}"
+                )
+                continue
+            req = AIRequest(
+                system_prompt="", user_prompt="", model=site.current_model, provider=site.current_provider,
+                feature=site.route_feature, capability=site.capability, json_mode=site.json_mode,
+                requires_grounding=site.grounding,
+            )
+            try:
+                plan = router.plan(req)
+            except RoutingError as exc:
+                counts["no_route"] = counts.get("no_route", 0) + 1
+                self.stdout.write(f"{site.id:28} {current[:34]:34} NO ROUTE: {exc}")
+                continue
+            c = plan.candidates[0]
+            counts[c.spec.provider] = counts.get(c.spec.provider, 0) + 1
+            why = next((r for rid, r in plan.skipped if rid == plan.policy.primary), "")
+            self.stdout.write(
+                f"{site.id:28} {current[:34]:34} {plan.capability:11} {str(site.json_mode)[:5]:5} "
+                f"{str(site.grounding)[:5]:5} {(c.spec.provider + ':' + str(c.model_id))[:46]:46} "
+                f"{c.source:15} {site.risk:6} {why}"
+            )
+        self.stdout.write("\nsummary: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+
     def _plan(self, router, opts):
         from ai_services.core.routing import AIRequest, RoutingError
 
+        if not (opts["feature"] or opts["capability"] or opts["model"]):
+            return self._plan_all(router)
         req = AIRequest(
             system_prompt="", user_prompt="", feature=opts["feature"], capability=opts["capability"],
             model=opts["model"], provider=opts["provider"], requires_vision=opts["vision"],

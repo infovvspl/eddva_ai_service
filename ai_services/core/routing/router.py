@@ -6,18 +6,24 @@ no educational business logic: prompts, grounding, feature output parsing and
 feature-specific degradation (e.g. "drop the textbook and retry ungrounded")
 stay in the views that already implement them.
 
+TOGETHER-FIRST. Each capability's policy names a Together model as primary.
 Primary selection, highest precedence first:
 
     local_override     AI_MODEL_OVERRIDE_* — local development only (DEBUG)
     feature_override   an operator's features.<name>.primary in routing config
-    pinned             the model the call site named (every existing call site)
-    policy             the capability policy's primary
+    policy             the capability's Together model — used whenever it is
+                       configured (model id + credentials) AND satisfies the
+                       request (structured output, grounding, context size)
+    legacy             the model the call site names (Groq / Gemini) — used
+                       only when the policy model cannot serve the request
 
-Compatibility guarantees (pinned by tests_model_router / tests_together_integration):
+"legacy" is a plan-time decision made before any provider is called, never a
+reaction to a provider failure. An environment with no Together configuration
+(every deployed environment today) therefore keeps exactly its current routing,
+and each reason a policy model was passed over is logged once per process.
 
-  * A pinned call gets exactly that model as primary, with the model string
-    passed through unchanged. With default configuration every existing
-    LLMClient.complete() call executes the same Groq call as before.
+Compatibility guarantees (pinned by tests):
+
   * Cross-provider fallback is OFF unless AI_ROUTER_FALLBACK_ENABLED=true AND
     the fallback's provider credentials AND provider model id are configured.
   * Fallback happens only on retryable errors (429 / 5xx / timeout / network /
@@ -31,6 +37,7 @@ Compatibility guarantees (pinned by tests_model_router / tests_together_integrat
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Optional
@@ -54,6 +61,9 @@ from ai_services.core.routing.registry import (
 )
 
 logger = logging.getLogger("ai_services.routing")
+
+_LEGACY_WARNED: set = set()
+_LEGACY_WARNED_LOCK = threading.Lock()
 
 
 def telemetry_model_id(provider: Optional[str], model: Optional[str]) -> Optional[str]:
@@ -95,7 +105,8 @@ class AIRequest:
     user_prompt: str
     feature: Optional[str] = None
     capability: Optional[str] = None
-    # Provider model id named by a legacy call site. Pinned = used as primary.
+    # The model the call site names. Used as the legacy route when the
+    # capability's policy model cannot serve the request.
     model: Optional[str] = None
     provider: str = "groq"
     # Metadata only: admission control is enforced upstream by NestJS.
@@ -126,7 +137,7 @@ class Candidate:
     spec: ModelSpec
     model_id: str
     role: str     # primary | fallback
-    source: str   # local_override | feature_override | pinned | policy
+    source: str   # local_override | feature_override | policy | legacy
 
 
 @dataclass(frozen=True)
@@ -148,7 +159,7 @@ class Attempt:
     retryable: Optional[bool] = None
     status_code: Optional[int] = None
     latency_ms: int = 0
-    source: str = "pinned"
+    source: str = "policy"
 
     def as_dict(self) -> dict:
         return {
@@ -177,12 +188,13 @@ def _ctx(name: str):
 def _unmet_detail(spec: ModelSpec, unmet: list) -> str:
     support = (
         f"structured_output={spec.structured_output}, long_context={support_label(spec.long_context)}, "
-        f"multimodal={support_label(spec.multimodal)}, grounding={support_label(spec.supports_grounding)}"
+        f"multimodal={support_label(spec.multimodal)}, grounding={support_label(spec.supports_grounding)}, "
+        f"context_tokens={spec.context_tokens}"
     )
     hint = ""
     if spec.provider == "together" and spec.model_env:
         hint = (f" After verifying the model, record its support with {spec.model_env}_STRUCTURED_OUTPUT / "
-                f"_LONG_CONTEXT / _MULTIMODAL / _GROUNDING.")
+                f"_GROUNDING / _CONTEXT_TOKENS / _LONG_CONTEXT / _MULTIMODAL.")
     return f"does not satisfy {unmet} [{support}].{hint}"
 
 
@@ -246,12 +258,39 @@ class ModelRouter:
                 provider=spec.provider, model=spec.provider_model_id,
             )
 
+    def _unusable_reason(self, spec: ModelSpec, req: AIRequest) -> Optional[str]:
+        """None when the policy model can serve this request; otherwise why not."""
+        if not spec.is_configured:
+            return f"model_id_not_configured({spec.model_env})" if spec.model_env else "model_id_not_configured"
+        adapter = self.adapters.get(spec.provider)
+        if adapter is None:
+            return "no_adapter"
+        if not adapter.is_configured():
+            return "provider_not_configured"
+        unmet = unmet_requirements(spec, req)
+        if unmet:
+            return "unmet:" + ",".join(unmet)
+        return None
+
+    def _note_legacy(self, capability: str, policy_primary: str, reason: str, legacy: ModelSpec) -> None:
+        key = (capability, policy_primary, reason, legacy.provider, legacy.provider_model_id)
+        with _LEGACY_WARNED_LOCK:
+            if key in _LEGACY_WARNED:
+                return
+            _LEGACY_WARNED.add(key)
+        logger.warning(
+            "AI route legacy | capability=%s policy_primary=%s reason=%s using=%s:%s "
+            "(plan-time selection, not a failover; logged once per process)",
+            capability, policy_primary, reason, legacy.provider, legacy.provider_model_id,
+        )
+
     def plan(self, req: AIRequest) -> RoutePlan:
         pinned = self._pinned_spec(req) if req.model else None
         capability = self._resolve_capability(req, pinned)
         policy = self.config.policies[capability]
         feature_route = self.config.features.get(req.feature) if req.feature else None
         override_id = self.config.overrides.get(capability) or self.config.overrides.get(OVERRIDE_ALL)
+        skipped = []
 
         if override_id:
             spec = self.config.models[override_id]
@@ -261,22 +300,31 @@ class ModelRouter:
             spec = self.config.models[feature_route.primary]
             self._require_configured(spec, "primary")
             primary = Candidate(spec, spec.provider_model_id, "primary", "feature_override")
-        elif pinned is not None:
-            if pinned.provider not in self.adapters:
-                raise ProviderConfigError(
-                    f"pinned provider {pinned.provider!r} has no adapter", provider=pinned.provider, model=req.model,
-                )
-            # The original string, untouched: identical to the pre-router call.
-            primary = Candidate(pinned, req.model, "primary", "pinned")
         else:
-            spec = self.config.models[policy.primary]
-            self._require_configured(spec, "primary")
-            primary = Candidate(spec, spec.provider_model_id, "primary", "policy")
+            policy_spec = self.config.models[policy.primary]
+            reason = self._unusable_reason(policy_spec, req)
+            if reason is None:
+                primary = Candidate(policy_spec, policy_spec.provider_model_id, "primary", "policy")
+            elif pinned is not None:
+                if pinned.provider not in self.adapters:
+                    raise ProviderConfigError(
+                        f"legacy provider {pinned.provider!r} has no adapter",
+                        provider=pinned.provider, model=req.model,
+                    )
+                # The original string, untouched: identical to the pre-router call.
+                primary = Candidate(pinned, req.model, "primary", "legacy")
+                skipped.append((policy.primary, reason))
+                self._note_legacy(capability, policy.primary, reason, pinned)
+            else:
+                # Nothing to fall back to at plan time: surface the configuration
+                # problem instead of guessing.
+                self._require_configured(policy_spec, "primary")
+                primary = Candidate(policy_spec, policy_spec.provider_model_id, "primary", "policy")
 
-        # A pin is the call site's existing, working choice and is not second-
-        # guessed. A model the router or an operator picked must meet the request
-        # — a JSON request is refused, never silently downgraded.
-        if primary.source != "pinned":
+        # A legacy route is the call site's existing, working choice and is not
+        # second-guessed. Anything the router or an operator picked must meet the
+        # request — a JSON request is refused, never silently downgraded.
+        if primary.source != "legacy":
             unmet = unmet_requirements(primary.spec, req)
             if unmet:
                 raise NoRouteError(
@@ -285,7 +333,6 @@ class ModelRouter:
                 )
 
         candidates = [primary]
-        skipped = []
         if feature_route is not None and feature_route.fallbacks is not None:
             fallback_ids, fb_source = feature_route.fallbacks, "feature_override"
         else:
@@ -325,10 +372,10 @@ class ModelRouter:
 
     # ── execution ────────────────────────────────────────────────────────────
     def _log_attempt(self, req: AIRequest, plan: RoutePlan, a: Attempt) -> None:
-        # A plain pinned/policy primary success is the overwhelmingly common case
-        # and the provider already logs it: DEBUG. Anything an operator or the
-        # router chose (override, fallback) or any error is visible by default.
-        quiet = a.outcome == "success" and a.role == "primary" and a.source in ("pinned", "policy")
+        # A plain policy/legacy primary success is the common case and the
+        # provider already logs it: DEBUG. Anything an operator chose (override),
+        # any fallback and any error is visible by default.
+        quiet = a.outcome == "success" and a.role == "primary" and a.source in ("policy", "legacy")
         level = logging.DEBUG if quiet else (logging.INFO if a.outcome == "success" else logging.WARNING)
         logger.log(
             level,

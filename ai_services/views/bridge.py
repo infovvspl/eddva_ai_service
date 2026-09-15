@@ -7122,19 +7122,32 @@ def generate_topic_content(request):
     if grounded_block:
         user_prompt += grounded_block
 
-    # Grounded output runs on Gemini. Groq's llama-3.3-70b did not hold to
-    # "use only this source" across a prompt this long — it returned fluent but
-    # uncited general-knowledge content with none of the book's own markers —
-    # and a chapter plus instructions also crowds Groq's 12k TPM ceiling.
+    # Grounded output never runs on Groq: llama-3.3-70b did not hold to "use only
+    # this source" across a prompt this long, and a chapter plus instructions
+    # crowds Groq's 12k TPM ceiling. The call is routed (capability "grounded"):
+    # the grounded policy's Together model when it is configured and verified for
+    # grounding and context size, otherwise Gemini exactly as before — same
+    # prompts, temperature, output budget and unshaped system prompt. Retrieval,
+    # ranking, citations, the source rules above and the ungrounded fallback
+    # below are EDVA's own and unchanged.
     if grounded:
         try:
             from ai_services.core import gemini_client as _gc
-            if _gc.is_available():
-                _g = _gc.complete_text(
+            _grounded_llm = get_llm()
+            _grounded_route = dict(
+                model=_gc.DEFAULT_MODEL, provider="gemini", capability="grounded",
+                feature="content_generate", json_mode=False, requires_grounding=True,
+                min_context_tokens=(len(system_prompt) + len(user_prompt)) // 3 + 8000,
+            )
+            if _grounded_llm.can_route(**_grounded_route):
+                _g = _grounded_llm.complete(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     temperature=0.3,
-                    max_output_tokens=8000,
+                    max_tokens=8000,
+                    institute_id=institute_id,
+                    legacy_prompt_shaping=False,
+                    **_grounded_route,
                 )
                 _c = _normalize_generated_math_markdown(_g["content"])
                 if content_type == "pyq":
@@ -7160,7 +7173,7 @@ def generate_topic_content(request):
             # block in place made every one of the 20 keys return 413 and the
             # teacher got a 500 instead of an ungrounded document.
             logger.warning(
-                "Grounded generation via Gemini failed (%s) — retrying on Groq "
+                "Grounded generation failed (%s) — retrying ungrounded "
                 "without the source block", exc,
             )
             grounded = False

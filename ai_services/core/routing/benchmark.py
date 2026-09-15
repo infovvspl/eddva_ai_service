@@ -111,6 +111,7 @@ def benchmark_candidate(
                 wall_ms=int((time.perf_counter() - t0) * 1000),
                 provider_latency_ms=int(result.get("latency_ms") or 0),
                 reported_model=result.get("model"),
+                provider_reported_model=result.get("provider_reported_model"),
                 tokens_input=int(result.get("tokens_input") or usage.get("prompt_tokens") or 0),
                 tokens_output=int(result.get("tokens_output") or usage.get("completion_tokens") or 0),
                 tokens_reported=bool(result.get("tokens_reported", True)),

@@ -284,33 +284,41 @@ class LLMClient:
         json_mode_suffix: Optional[str] = None,
         feature: Optional[str] = None,
         capability: Optional[str] = None,
+        provider: str = "groq",
+        legacy_prompt_shaping: bool = True,
+        requires_grounding: bool = False,
+        min_context_tokens: Optional[int] = None,
     ) -> dict:
         """Run one completion through the EDVA model router.
 
-        Every existing call site passes ``model``, which the router pins as the
-        primary and sends unchanged, and cross-provider fallback is off unless
-        AI_ROUTER_FALLBACK_ENABLED=true with a fully configured fallback. With
-        default configuration this is therefore the same Groq call as before the
-        router existed. ``feature`` / ``capability`` are optional routing hints.
+        The router is Together-first: each capability's Together model serves the
+        request when it is configured and meets the request's requirements.
+        Otherwise ``provider``/``model`` — the call site's existing choice — is
+        used unchanged (a plan-time decision, not a failover), so an environment
+        without Together configuration behaves exactly as before.
 
-        AI_ROUTER_ENABLED=false bypasses the router entirely.
+        ``legacy_prompt_shaping=False`` sends ``system_prompt`` exactly as given
+        (grounded prompts were never shaped for Gemini and must not be now).
+        ``requires_grounding`` / ``min_context_tokens`` are hard requirements a
+        routed model must satisfy. AI_ROUTER_ENABLED=false bypasses the router.
         """
         from ai_services.core import routing
 
-        # A missing model has always meant GROQ_MODEL. Pin it explicitly so the
-        # router can never substitute a policy default for it.
-        pinned_model = model or GROQ_MODEL
+        # A missing Groq model has always meant GROQ_MODEL. Pin it explicitly so
+        # the legacy route can never become something else.
+        pinned_model = model or (GROQ_MODEL if provider == "groq" else model)
         if not routing.router_enabled():
-            return self._complete_groq(
-                system_prompt=system_prompt, user_prompt=user_prompt, model=pinned_model,
-                temperature=temperature, max_tokens=max_tokens, json_mode=json_mode,
-                institute_id=institute_id, json_mode_suffix=json_mode_suffix,
+            return self._complete_legacy(
+                provider=provider, system_prompt=system_prompt, user_prompt=user_prompt,
+                model=pinned_model, temperature=temperature, max_tokens=max_tokens,
+                json_mode=json_mode, institute_id=institute_id, json_mode_suffix=json_mode_suffix,
+                legacy_prompt_shaping=legacy_prompt_shaping,
             )
         return routing.get_router().execute(routing.AIRequest(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             model=pinned_model,
-            provider="groq",
+            provider=provider,
             feature=feature,
             capability=capability,
             temperature=temperature,
@@ -318,7 +326,76 @@ class LLMClient:
             json_mode=json_mode,
             json_mode_suffix=json_mode_suffix,
             institute_id=institute_id,
+            legacy_prompt_shaping=legacy_prompt_shaping,
+            requires_grounding=requires_grounding,
+            min_context_tokens=min_context_tokens,
         ))
+
+    def _complete_legacy(
+        self, *, provider: str, system_prompt: str, user_prompt: str, model: str,
+        temperature: float, max_tokens: int, json_mode: bool, institute_id: Optional[str],
+        json_mode_suffix: Optional[str], legacy_prompt_shaping: bool,
+    ) -> dict:
+        """The pre-router execution path for a call site's own provider (kill switch)."""
+        if provider == "groq":
+            return self._complete_groq(
+                system_prompt=system_prompt, user_prompt=user_prompt, model=model,
+                temperature=temperature, max_tokens=max_tokens, json_mode=json_mode,
+                institute_id=institute_id, json_mode_suffix=json_mode_suffix,
+            )
+        if provider == "gemini":
+            from ai_services.core.routing.providers import GeminiAdapter, ProviderCall
+            from ai_services.core.routing.registry import ModelSpec
+
+            spec = ModelSpec(id=f"gemini/{model}", provider="gemini", provider_model_id=model,
+                             capabilities=frozenset())
+            return GeminiAdapter().complete(spec, ProviderCall(
+                system_prompt=system_prompt, user_prompt=user_prompt, model_id=model,
+                temperature=temperature, max_tokens=max_tokens, json_mode=json_mode,
+                json_mode_suffix=json_mode_suffix, institute_id=institute_id,
+                legacy_prompt_shaping=legacy_prompt_shaping,
+            ))
+        from ai_services.core.routing.errors import ProviderConfigError
+
+        raise ProviderConfigError(f"No legacy execution path for provider {provider!r}",
+                                  provider=provider, model=model)
+
+    def can_route(
+        self, *, capability: str, model: str, provider: str = "groq", json_mode: bool = True,
+        requires_grounding: bool = False, min_context_tokens: Optional[int] = None,
+        feature: Optional[str] = None,
+    ) -> bool:
+        """Whether a request of this shape has an available provider right now.
+
+        For call sites that must decide before doing expensive work (grounded
+        generation used ``gemini_client.is_available()`` for this). Makes no
+        provider call.
+        """
+        from ai_services.core import routing
+
+        def _legacy_available() -> bool:
+            if provider == "gemini":
+                from ai_services.core import gemini_client
+
+                return gemini_client.is_available()
+            return bool(GROQ_API_KEYS) if provider == "groq" else False
+
+        if not routing.router_enabled():
+            return _legacy_available()
+        router = routing.get_router()
+        try:
+            plan = router.plan(routing.AIRequest(
+                system_prompt="", user_prompt="", model=model, provider=provider, capability=capability,
+                feature=feature, json_mode=json_mode, requires_grounding=requires_grounding,
+                min_context_tokens=min_context_tokens,
+            ))
+        except routing.RoutingError:
+            return False
+        primary = plan.candidates[0]
+        if primary.source == "legacy" or primary.spec.provider == provider:
+            return _legacy_available() if primary.spec.provider == provider else False
+        adapter = router.adapters.get(primary.spec.provider)
+        return bool(adapter and adapter.is_configured())
 
     def _complete_groq(
         self,

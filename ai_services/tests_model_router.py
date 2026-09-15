@@ -94,6 +94,12 @@ def req(**kw):
     return AIRequest(**base)
 
 
+def t_retryable(status=503, kind="server_error"):
+    return RetryableProviderError(
+        f"Together {status}", provider="together", model=TOGETHER_ID, status_code=status, kind=kind,
+    )
+
+
 def retryable(status=503, kind="server_error"):
     return RetryableProviderError(
         f"Error code: {status}", provider="groq", model="openai/gpt-oss-120b", status_code=status, kind=kind,
@@ -158,14 +164,17 @@ class RegistryTests(SimpleTestCase):
                 self.assertNotIn("together/qwen3.7-max", (p.primary, *p.fallbacks), cap)
 
     def test_1e_default_primaries_are_todays_production_models(self):
+        # Together-first: each capability's primary is a Together model, and the
+        # previous production model is kept as a (disabled) fallback.
         p = load_config({}).policies
-        self.assertEqual(p["reasoning"].primary, "groq/gpt-oss-120b")
-        self.assertEqual(p["lightweight"].primary, "groq/gpt-oss-20b")
-        self.assertEqual(p["content"].primary, "groq/gpt-oss-120b")
-        self.assertEqual(p["grounded"].primary, "gemini/gemini-2.5-flash")
-        # Qwen is a benchmark candidate for content, not a route.
-        self.assertIn("together/qwen3.8-flash", p["content"].candidates)
-        self.assertNotIn("together/qwen3.8-flash", (p["content"].primary, *p["content"].fallbacks))
+        self.assertEqual(p["reasoning"].primary, "together/gpt-oss-120b")
+        self.assertEqual(p["content"].primary, "together/qwen3.8-flash")
+        self.assertEqual(p["lightweight"].primary, "together/deepseek-v4-flash")
+        self.assertEqual(p["bulk_text"].primary, "together/deepseek-v4-flash")
+        self.assertEqual(p["premium"].primary, "together/qwen3.7-max")
+        self.assertEqual(p["grounded"].primary, "together/glm-5.3-flash")
+        self.assertEqual(p["reasoning"].fallbacks, ("groq/gpt-oss-120b",))
+        self.assertEqual(p["grounded"].fallbacks, ("gemini/gemini-2.5-flash",))
 
     def test_1f_router_on_and_fallback_off_by_default(self):
         cfg = load_config({})
@@ -196,9 +205,14 @@ class RoutingSelectionTests(SimpleTestCase):
         self.assertFalse(out["fallback_used"])
 
     def test_3b_unpinned_request_uses_policy_primary(self):
-        r, a = make_router()
-        r.execute(req(model=None, capability="lightweight"))
-        self.assertEqual(a["groq"].calls[0][1].model_id, "openai/gpt-oss-20b")
+        r, a = make_router({"TOGETHER_MODEL_DEEPSEEK_V4_FLASH": "cfg/deepseek"})
+        r.execute(req(model=None, capability="lightweight", json_mode=False))
+        self.assertEqual(a["together"].calls[0][1].model_id, "cfg/deepseek")
+        # With no model named and no Together model configured there is nothing
+        # to route to: a clear configuration error, never a guess.
+        r2, _ = make_router()
+        with self.assertRaises(ProviderConfigError):
+            r2.plan(req(model=None, capability="lightweight"))
 
     def test_3c_pin_outside_registry_is_still_honoured(self):
         r, a = make_router()
@@ -217,9 +231,8 @@ class RoutingSelectionTests(SimpleTestCase):
             r.plan(req(capability="telepathy"))
 
     def test_13c_unknown_feature_without_model_defaults_to_reasoning(self):
-        r, _ = make_router()
-        self.assertEqual(r.plan(req(feature="zzz", model=None)).capability, "reasoning")
-
+        r, _ = make_router({"TOGETHER_MODEL_GPT_OSS_120B": TOGETHER_ID})
+        self.assertEqual(r.plan(req(feature="zzz", model=None, json_mode=False)).capability, "reasoning")
 
 # ── 4 / 5. fallback + error classes ──────────────────────────────────────────
 class FallbackTests(SimpleTestCase):
@@ -229,57 +242,59 @@ class FallbackTests(SimpleTestCase):
         self.addCleanup(p.stop)
 
     def test_4_retryable_primary_failure_falls_back_to_together(self):
+        # Together primary fails transiently -> the previous production model
+        # (Groq) serves it, when fallback is enabled.
         r, a = make_router(
             FALLBACK_ENV,
-            groq=FakeAdapter("groq", script=[retryable()]),
-            together=FakeAdapter("together", script=[ok(TOGETHER_ID)]),
+            together=FakeAdapter("together", script=[t_retryable()]),
+            groq=FakeAdapter("groq", script=[ok("openai/gpt-oss-120b")]),
         )
         out = r.execute(req(feature="doubt_resolve"))
         self.assertTrue(out["fallback_used"])
-        self.assertEqual(out["provider"], "together")
-        self.assertEqual(out["registry_id"], "together/gpt-oss-120b")
+        self.assertEqual(out["provider"], "groq")
+        self.assertEqual(out["registry_id"], "groq/gpt-oss-120b")
         self.assertEqual(a["together"].calls[0][1].model_id, TOGETHER_ID)
         self.assertEqual([x["outcome"] for x in out["route_attempts"]], ["error", "success"])
 
     def test_4b_fallback_flag_off_means_primary_error_unchanged(self):
-        err = retryable()
-        r, a = make_router({"TOGETHER_MODEL_GPT_OSS_120B": TOGETHER_ID}, groq=FakeAdapter("groq", script=[err]))
+        err = t_retryable()
+        env = {"TOGETHER_MODEL_GPT_OSS_120B": TOGETHER_ID, "TOGETHER_MODEL_GPT_OSS_120B_STRUCTURED_OUTPUT": "prompted"}
+        r, a = make_router(env, together=FakeAdapter("together", script=[err]))
         with self.assertRaises(RetryableProviderError) as cm:
             r.execute(req())
         self.assertIs(cm.exception, err)
-        self.assertEqual(a["together"].calls, [])
+        self.assertEqual(a["groq"].calls, [])
 
     def test_5_deterministic_error_never_falls_back(self):
-        err = NonRetryableProviderError("json_validate_failed", provider="groq", status_code=400,
-                                        kind="structured_output")
-        r, a = make_router(FALLBACK_ENV, groq=FakeAdapter("groq", script=[err]))
+        err = NonRetryableProviderError("invalid request", provider="together", status_code=400, kind="bad_request")
+        r, a = make_router(FALLBACK_ENV, together=FakeAdapter("together", script=[err]))
         with self.assertRaises(NonRetryableProviderError) as cm:
             r.execute(req())
         self.assertIs(cm.exception, err)
-        self.assertEqual(a["together"].calls, [])
+        self.assertEqual(a["groq"].calls, [])
 
     def test_5b_configuration_error_never_falls_back(self):
-        err = ProviderConfigError("No active GROQ keys left", provider="groq")
-        r, a = make_router(FALLBACK_ENV, groq=FakeAdapter("groq", script=[err]))
+        err = ProviderConfigError("Together 401", provider="together", kind="auth")
+        r, a = make_router(FALLBACK_ENV, together=FakeAdapter("together", script=[err]))
         with self.assertRaises(ProviderConfigError):
             r.execute(req())
-        self.assertEqual(a["together"].calls, [])
+        self.assertEqual(a["groq"].calls, [])
 
     def test_5c_unclassified_exception_never_falls_back(self):
-        r, a = make_router(FALLBACK_ENV, groq=FakeAdapter("groq", script=[ValueError("bug")]))
+        r, a = make_router(FALLBACK_ENV, together=FakeAdapter("together", script=[ValueError("bug")]))
         with self.assertRaises(ValueError):
             r.execute(req())
-        self.assertEqual(a["together"].calls, [])
+        self.assertEqual(a["groq"].calls, [])
 
     def test_5d_every_retryable_class_falls_back(self):
-        for err in (retryable(429, "rate_limited"), retryable(500, "server_error"),
-                    RetryableProviderError("timed out", provider="groq", kind="timeout"),
-                    RetryableProviderError("conn refused", provider="groq", kind="network"),
-                    RetryableProviderError("rotation exhausted", provider="groq", kind="exhausted")):
+        for err in (t_retryable(429, "rate_limited"), t_retryable(500, "server_error"),
+                    RetryableProviderError("timed out", provider="together", kind="timeout"),
+                    RetryableProviderError("conn refused", provider="together", kind="network"),
+                    RetryableProviderError("stream unreadable", provider="together", kind="server_error")):
             r, _ = make_router(
                 FALLBACK_ENV,
-                groq=FakeAdapter("groq", script=[err]),
-                together=FakeAdapter("together", script=[ok(TOGETHER_ID)]),
+                together=FakeAdapter("together", script=[err]),
+                groq=FakeAdapter("groq", script=[ok("openai/gpt-oss-120b")]),
             )
             self.assertTrue(r.execute(req())["fallback_used"], err.kind)
 
@@ -296,10 +311,8 @@ class FallbackTests(SimpleTestCase):
     def test_5f_all_providers_failing_raises_exhausted_with_attempts(self):
         r, _ = make_router(
             FALLBACK_ENV,
+            together=FakeAdapter("together", script=[t_retryable()]),
             groq=FakeAdapter("groq", script=[retryable()]),
-            together=FakeAdapter("together", script=[
-                RetryableProviderError("Together 503", provider="together", status_code=503, kind="server_error"),
-            ]),
         )
         with self.assertRaises(FallbackExhaustedError) as cm:
             r.execute(req())
@@ -309,23 +322,22 @@ class FallbackTests(SimpleTestCase):
     def test_5g_no_retry_amplification(self):
         r, a = make_router(
             FALLBACK_ENV,
+            together=FakeAdapter("together", script=[t_retryable()]),
             groq=FakeAdapter("groq", script=[retryable()]),
-            together=FakeAdapter("together", script=[retryable()]),
         )
         with self.assertRaises(FallbackExhaustedError):
             r.execute(req())
-        self.assertEqual((len(a["groq"].calls), len(a["together"].calls)), (1, 1))
+        self.assertEqual((len(a["together"].calls), len(a["groq"].calls)), (1, 1))
 
     def test_5h_fallback_skipped_once_primary_passed_the_deadline(self):
         r, a = make_router(
             {**FALLBACK_ENV, "AI_ROUTE_REASONING_FALLBACK_DEADLINE_S": "10"},
-            groq=FakeAdapter("groq", script=[retryable()]),
+            together=FakeAdapter("together", script=[t_retryable()]),
         )
         with patch("ai_services.core.routing.router.time.monotonic", side_effect=[0.0, 50.0, 50.0, 50.0]):
             with self.assertRaises(RetryableProviderError):
                 r.execute(req())
-        self.assertEqual(a["together"].calls, [])
-
+        self.assertEqual(a["groq"].calls, [])
 
 # ── 6. structured output ─────────────────────────────────────────────────────
 class StructuredOutputTests(SimpleTestCase):
@@ -394,10 +406,20 @@ class CapabilityRequirementTests(SimpleTestCase):
 
     def test_8_long_context_grounded_request_excludes_groq(self):
         doc = {"policies": {"grounded": {"fallbacks": ["groq/gpt-oss-120b"]}}}
-        r, _ = make_router({"AI_ROUTER_FALLBACK_ENABLED": "true", "AI_ROUTING_CONFIG": json.dumps(doc)})
-        plan = r.plan(req(model=None, capability="grounded", requires_long_context=True, requires_grounding=True))
-        self.assertEqual([c.spec.id for c in plan.candidates], ["gemini/gemini-2.5-flash"])
+        env = {"AI_ROUTER_FALLBACK_ENABLED": "true", "AI_ROUTING_CONFIG": json.dumps(doc),
+               "TOGETHER_MODEL_GLM53_FLASH": "cfg/glm", "TOGETHER_MODEL_GLM53_FLASH_GROUNDING": "true",
+               "TOGETHER_MODEL_GLM53_FLASH_LONG_CONTEXT": "true"}
+        r, _ = make_router(env)
+        plan = r.plan(req(model=None, capability="grounded", requires_long_context=True, requires_grounding=True,
+                          json_mode=False))
+        self.assertEqual([c.spec.id for c in plan.candidates], ["together/glm-5.3-flash"])
         self.assertIn(("groq/gpt-oss-120b", "unmet:long_context,grounding"), plan.skipped)
+        # Grounding not verified on the Together model -> the call site's Gemini route.
+        r2, _ = make_router({"TOGETHER_MODEL_GLM53_FLASH": "cfg/glm"})
+        plan2 = r2.plan(req(model="gemini-2.5-flash", provider="gemini", capability="grounded",
+                            requires_grounding=True, json_mode=False))
+        self.assertEqual((plan2.candidates[0].spec.provider, plan2.candidates[0].source), ("gemini", "legacy"))
+        self.assertIn(("together/glm-5.3-flash", "unmet:grounding"), plan2.skipped)
 
     def test_8b_min_context_respects_groqs_request_ceiling(self):
         spec = default_registry()["groq/gpt-oss-120b"]
@@ -417,7 +439,8 @@ class GeminiAvailabilityTests(SimpleTestCase):
 
     def test_9_gemini_registered_and_primary_for_grounded_and_vision(self):
         p = load_config({}).policies
-        self.assertEqual(p["grounded"].primary, "gemini/gemini-2.5-flash")
+        # Gemini stays available: grounded fallback and the (unrouted) vision policy.
+        self.assertIn("gemini/gemini-2.5-flash", p["grounded"].fallbacks)
         self.assertEqual(p["vision"].primary, "gemini/gemini-2.5-flash")
         self.assertTrue(self.SPEC.supports_grounding and self.SPEC.multimodal and self.SPEC.long_context)
 
@@ -464,8 +487,8 @@ class AttributionAndTelemetryTests(SimpleTestCase):
     def _fallback_router(self):
         return make_router(
             FALLBACK_ENV,
-            groq=FakeAdapter("groq", script=[retryable()]),
-            together=FakeAdapter("together", script=[ok(TOGETHER_ID)]),
+            together=FakeAdapter("together", script=[t_retryable()]),
+            groq=FakeAdapter("groq", script=[ok("openai/gpt-oss-120b")]),
         )
 
     def test_10_institute_reaches_provider_and_context_is_untouched(self):
@@ -494,7 +517,7 @@ class AttributionAndTelemetryTests(SimpleTestCase):
         ev = failovers[0]
         self.assertEqual(
             (ev["requestId"], ev["instituteId"], ev["feature"], ev["provider"], ev["statusCode"]),
-            ("req-123", self.INSTITUTE, "doubt_resolve", "groq", 503),
+            ("req-123", self.INSTITUTE, "doubt_resolve", "together", 503),
         )
 
     def test_11_result_carries_route_metadata(self):
@@ -518,7 +541,7 @@ class AttributionAndTelemetryTests(SimpleTestCase):
         gem = FakeAdapter("gemini", script=[{"content": "x", "model": "gemini-2.5-flash", "latency_ms": 1,
                                              "tokens_input": 10, "tokens_output": 20}])
         r, _ = make_router(gemini=gem)
-        out = r.execute(req(model=None, capability="grounded", json_mode=False))
+        out = r.execute(req(model="gemini-2.5-flash", provider="gemini", capability="grounded", json_mode=False))
         self.assertEqual(out["usage"], {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30})
 
     def test_11d_attempt_logs_carry_request_id_and_never_prompts(self):
@@ -553,12 +576,12 @@ class ConfigurationTests(SimpleTestCase):
 
     def test_12c_invalid_json_keeps_defaults_and_warns(self):
         cfg = load_config({"AI_ROUTING_CONFIG": "{not json"})
-        self.assertEqual(cfg.policies["reasoning"].primary, "groq/gpt-oss-120b")
+        self.assertEqual(cfg.policies["reasoning"].primary, "together/gpt-oss-120b")
         self.assertTrue(any("invalid JSON" in w for w in cfg.warnings))
 
     def test_12d_unknown_model_in_override_is_ignored_with_warning(self):
         cfg = load_config({"AI_ROUTE_REASONING_PRIMARY": "nope/model"})
-        self.assertEqual(cfg.policies["reasoning"].primary, "groq/gpt-oss-120b")
+        self.assertEqual(cfg.policies["reasoning"].primary, "together/gpt-oss-120b")
         self.assertTrue(any("nope/model" in w for w in cfg.warnings))
 
     def test_12e_config_file_is_loaded(self):
@@ -601,7 +624,9 @@ class MissingProviderConfigurationTests(SimpleTestCase):
 
     def test_14b_fallback_without_model_id_is_skipped(self):
         r, _ = make_router({"AI_ROUTER_FALLBACK_ENABLED": "true"})
-        self.assertIn(("together/gpt-oss-120b", "model_id_not_configured"), r.plan(req()).skipped)
+        plan = r.plan(req())
+        self.assertIn(("together/gpt-oss-120b", "model_id_not_configured(TOGETHER_MODEL_GPT_OSS_120B)"), plan.skipped)
+        self.assertEqual(plan.candidates[0].source, "legacy")
 
     def test_14c_unconfigured_policy_primary_names_the_env_var(self):
         r, _ = make_router()
@@ -832,7 +857,7 @@ class BenchmarkTests(SimpleTestCase):
         r, _ = make_router()
         self.assertEqual(
             benchmark.candidate_ids_for(r, "capability:content"),
-            ["groq/gpt-oss-120b", "together/qwen3.8-flash", "together/glm-5.3-flash", "gemini/gemini-2.5-flash"],
+            ["together/qwen3.8-flash", "groq/gpt-oss-120b", "together/glm-5.3-flash", "gemini/gemini-2.5-flash"],
         )
 
     def test_summary_is_computed_only_from_real_runs(self):

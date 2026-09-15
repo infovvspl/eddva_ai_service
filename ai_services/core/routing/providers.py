@@ -66,7 +66,8 @@ class ProviderCall:
     # Apply LLMClient's historical system-prompt shaping (anti-hallucination
     # prefix + JSON suffix). Groq always applies it inside _complete_groq; the
     # other adapters apply it when set, so a fallback provider receives exactly
-    # the instructions the primary did.
+    # the instructions the primary did. Grounded call sites turn it off: their
+    # prompts reached Gemini unshaped and must reach any provider unshaped.
     legacy_prompt_shaping: bool = True
 
 
@@ -247,7 +248,7 @@ class TogetherAdapter:
         )
 
     def _post_completion(self, body: dict, key: str, model: str, timeout: float, streaming_hint: str):
-        """One non-streaming request. Returns (status, raw_text, usage_or_None)."""
+        """One non-streaming request. Returns (status, raw_text, usage_or_None, reported_model)."""
         import httpx
 
         try:
@@ -280,7 +281,8 @@ class TogetherAdapter:
                 provider="together", model=model, status_code=resp.status_code, kind="server_error",
             ) from None
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
-        return resp.status_code, raw, usage
+        reported = data.get("model") if isinstance(data.get("model"), str) else None
+        return resp.status_code, raw, usage, reported
 
     def _stream_completion(self, body: dict, key: str, model: str, timeout: float, streaming_hint: str):
         """One streaming request, assembled into a complete answer.
@@ -295,6 +297,7 @@ class TogetherAdapter:
         deadline = time.monotonic() + timeout
         parts: list[str] = []
         usage = None
+        reported = None
         status = None
         try:
             with httpx.stream(
@@ -334,6 +337,8 @@ class TogetherAdapter:
                             f"{scrub(json.dumps(chunk['error'])[:300], key)}",
                             provider="together", model=model, status_code=status, kind="deterministic",
                         )
+                    if reported is None and isinstance(chunk.get("model"), str):
+                        reported = chunk["model"]
                     if isinstance(chunk.get("usage"), dict):
                         usage = chunk["usage"]
                     for choice in chunk.get("choices") or []:
@@ -352,7 +357,7 @@ class TogetherAdapter:
                 f"Together network error ({exc.__class__.__name__}) for model {model}",
                 provider="together", model=model, kind="network",
             ) from None
-        return status, "".join(parts), usage
+        return status, "".join(parts), usage, reported
 
     def complete(self, spec: ModelSpec, call: ProviderCall) -> dict:
         from ai_services.core.llm_client import _extract_json, strip_think_tags
@@ -400,9 +405,9 @@ class TogetherAdapter:
         )
         started = time.perf_counter()
         if streamed:
-            status_code, raw, usage = self._stream_completion(body, key, model, timeout, streaming_hint)
+            status_code, raw, usage, reported = self._stream_completion(body, key, model, timeout, streaming_hint)
         else:
-            status_code, raw, usage = self._post_completion(body, key, model, timeout, streaming_hint)
+            status_code, raw, usage, reported = self._post_completion(body, key, model, timeout, streaming_hint)
         latency_ms = (time.perf_counter() - started) * 1000
 
         tokens_reported = bool(usage) and ("prompt_tokens" in usage or "completion_tokens" in usage)
@@ -433,14 +438,17 @@ class TogetherAdapter:
                 )
 
         logger.info(
-            "LLM (%s) | provider=together model=%s stream=%s latency=%.0fms tokens=%s",
-            "json" if call.json_mode else "text", model, streamed, latency_ms,
+            "LLM (%s) | provider=together model=%s reported_model=%s stream=%s latency=%.0fms tokens=%s",
+            "json" if call.json_mode else "text", model, reported or "-", streamed, latency_ms,
             f"{tokens_in}+{tokens_out}" if tokens_reported else "not-reported",
         )
         return {
             "content": content,
             "usage": _usage(tokens_in, tokens_out),
             "model": model,
+            # What the provider says actually served the request (may carry a
+            # version suffix the configured id does not).
+            "provider_reported_model": reported,
             "latency_ms": latency_ms,
             "tokens_input": tokens_in,
             "tokens_output": tokens_out,

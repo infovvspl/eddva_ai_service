@@ -843,6 +843,21 @@ def _classify_gemini_failure(exc: Exception) -> str:
     return "gemini_error"              # malformed JSON, empty response, transport
 
 
+def _classify_grounded_failure(exc: Exception) -> str:
+    """Reason code for the teacher's badge.
+
+    Gemini failures keep their precise codes. A failure of any other provider
+    maps to the provider-neutral "unavailable": the frontend's gemini_* messages
+    tell the teacher to check the Gemini quota or key, which would be wrong
+    advice when Together served the call.
+    """
+    from ai_services.core.routing import ProviderError
+
+    if isinstance(exc, ProviderError) and exc.provider and exc.provider != "gemini":
+        return "unavailable"
+    return _classify_gemini_failure(getattr(exc, "__cause__", None) or exc)
+
+
 def _fmt_ms(ms):
     """Milliseconds -> seconds with one decimal, or None when unavailable."""
     return None if ms is None else round(ms / 1000.0, 1)
@@ -862,12 +877,19 @@ def _generate_grounded(
     from ai_services.core import gemini_client as _gc
     from ai_services.core import grounding as _gr
 
-    if not _gc.is_available():
-        # No key present or the SDK is not installed on this host. This is the
-        # blanket failure that turns EVERY grounded deck into general knowledge.
+    # Routed like generate_topic_content: the grounded policy's Together model
+    # when configured and verified, otherwise Gemini exactly as before.
+    llm = get_llm()
+    _route = dict(model=_gc.DEFAULT_MODEL, provider="gemini", capability="grounded",
+                  feature="ppt_generate", json_mode=True, requires_grounding=True)
+    if not llm.can_route(**_route):
+        # No grounded LLM on this host: no verified grounded Together model and
+        # no Gemini key / SDK. This is the blanket failure that turns EVERY
+        # grounded deck into general knowledge.
         logger.warning(
-            "Grounded PPT skipped: Gemini unavailable (no key or google-genai "
-            "missing) — deck for %r will be general knowledge despite %d passages",
+            "Grounded PPT skipped: no grounded LLM available (Together grounded model not "
+            "configured and Gemini unavailable) — deck for %r will be general knowledge "
+            "despite %d passages",
             ctx.get("chapterName") or topic, len(passages),
         )
         return None, "gemini_unavailable"
@@ -913,10 +935,15 @@ def _generate_grounded(
     _prompt_chars = len(_system_prompt) + len(_user_prompt)
     _t_llm_start = time.perf_counter()
     try:
-        result = _gc.complete_json(
+        result = llm.complete(
             system_prompt=_system_prompt,
             user_prompt=_user_prompt,
-            max_output_tokens=_out_tokens,
+            temperature=0.3,
+            max_tokens=_out_tokens,
+            institute_id=institute_id,
+            legacy_prompt_shaping=False,
+            min_context_tokens=_prompt_chars // 3 + _out_tokens,
+            **_route,
         )
     except Exception as exc:
         logger.warning(
@@ -925,12 +952,12 @@ def _generate_grounded(
             _select_s, time.perf_counter() - _t_llm_start, _prompt_chars,
             len(selection["passages"]), len(passages), slide_count, _out_tokens,
         )
-        reason = _classify_gemini_failure(exc)
+        reason = _classify_grounded_failure(exc)
         logger.warning(
             "Grounded PPT fell back (%s) for %r: %s",
             reason, ctx.get("chapterName") or topic, exc,
         )
-        _log(institute_id, vertical, "gemini", success=False, error=exc)
+        _log(institute_id, vertical, telemetry_model_from_error(exc, "gemini"), success=False, error=exc)
         return None, reason
 
     _log(institute_id, vertical, result.get("model", "gemini"), result=result)

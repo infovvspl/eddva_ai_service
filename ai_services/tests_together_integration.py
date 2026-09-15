@@ -414,44 +414,55 @@ class LocalOverrideTests(_EventsPatched):
 
 # ── 13. default routes must not change ───────────────────────────────────────
 class DefaultRoutePreservationTests(SimpleTestCase):
-    """Every representative EDVA call, with Together FULLY configured (key + ids +
-    verified metadata) but no override: the pinned Groq model is still primary."""
+    """Together-first routing, and exact preservation where Together is absent."""
 
     CALLS = [
-        ("student doubt", dict(model="openai/gpt-oss-120b", json_mode=True, feature="doubt_resolver")),
-        ("tutor", dict(model="openai/gpt-oss-120b", json_mode=False, feature="tutor_session")),
-        ("quiz", dict(model="quiz", json_mode=False)),
-        ("assessment", dict(model="openai/gpt-oss-120b", json_mode=True)),
-        ("teacher analysis", dict(model="openai/gpt-oss-120b", json_mode=True, feature="teacher_recording_analysis")),
-        ("lecture notes", dict(model="openai/gpt-oss-20b", json_mode=False, feature="ai_lecture_notes", capability="content")),
-        ("content", dict(model="openai/gpt-oss-120b", json_mode=False, feature="content_generate", capability="content")),
-        ("ppt", dict(model="openai/gpt-oss-120b", json_mode=True, feature="ppt_generate", capability="content")),
-        ("transcript cleanup", dict(model="openai/gpt-oss-20b", json_mode=False)),
+        ("student doubt", dict(model="openai/gpt-oss-120b", json_mode=True, feature="doubt_resolver"), "together/gpt-oss-120b"),
+        ("tutor", dict(model="openai/gpt-oss-120b", json_mode=False, feature="tutor_session"), "together/gpt-oss-120b"),
+        ("quiz", dict(model="quiz", json_mode=False), "together/gpt-oss-120b"),
+        ("assessment", dict(model="openai/gpt-oss-120b", json_mode=True), "together/gpt-oss-120b"),
+        ("teacher analysis", dict(model="openai/gpt-oss-120b", json_mode=True, feature="teacher_recording_analysis"),
+         "together/gpt-oss-120b"),
+        ("lecture notes", dict(model="openai/gpt-oss-20b", json_mode=False, feature="ai_lecture_notes", capability="content"),
+         "together/qwen3.8-flash"),
+        ("content", dict(model="openai/gpt-oss-120b", json_mode=False, feature="content_generate", capability="content"),
+         "together/qwen3.8-flash"),
+        ("ppt", dict(model="openai/gpt-oss-120b", json_mode=True, feature="ppt_generate", capability="content"),
+         "together/qwen3.8-flash"),
+        ("transcript cleanup", dict(model="openai/gpt-oss-20b", json_mode=False), "together/deepseek-v4-flash"),
     ]
     ENV = {**TOGETHER_IDS, "TOGETHER_API_KEY": KEY,
            "TOGETHER_MODEL_GPT_OSS_120B_STRUCTURED_OUTPUT": "native",
-           "TOGETHER_MODEL_QWEN38_FLASH_STRUCTURED_OUTPUT": "native"}
+           "TOGETHER_MODEL_QWEN38_FLASH_STRUCTURED_OUTPUT": "native",
+           "TOGETHER_MODEL_DEEPSEEK_V4_FLASH_STRUCTURED_OUTPUT": "native"}
 
-    def test_pinned_groq_primary_and_no_fallback_for_every_feature(self):
+    def test_together_serves_every_feature_by_capability_when_configured(self):
         for debug in (False, True):
             r, _ = router_with(self.ENV, debug=debug)
-            for label, kw in self.CALLS:
+            for label, kw, expected in self.CALLS:
                 plan = r.plan(req(**kw))
-                self.assertEqual(len(plan.candidates), 1, label)
                 c = plan.candidates[0]
-                self.assertEqual((c.spec.provider, c.source, c.model_id), ("groq", "pinned", kw["model"]), label)
+                self.assertEqual((c.spec.id, c.source, len(plan.candidates)), (expected, "policy", 1), label)
+
+    def test_without_together_every_feature_keeps_its_exact_current_model(self):
+        r, _ = router_with({}, debug=True)
+        for label, kw, _expected in self.CALLS:
+            plan = r.plan(req(**kw))
+            self.assertEqual(len(plan.candidates), 1, label)
+            c = plan.candidates[0]
+            self.assertEqual((c.spec.provider, c.source, c.model_id), ("groq", "legacy", kw["model"]), label)
 
     def test_policies_and_gemini_routes_unchanged(self):
         p = load_config(self.ENV, debug=True).policies
         self.assertEqual(
             {k: (v.primary, v.fallbacks) for k, v in p.items()},
             {
-                "reasoning": ("groq/gpt-oss-120b", ("together/gpt-oss-120b",)),
-                "lightweight": ("groq/gpt-oss-20b", ()),
-                "content": ("groq/gpt-oss-120b", ()),
-                "premium": ("together/qwen3.7-max", ("groq/gpt-oss-120b",)),
-                "bulk_text": ("groq/gpt-oss-20b", ()),
-                "grounded": ("gemini/gemini-2.5-flash", ()),
+                "reasoning": ("together/gpt-oss-120b", ("groq/gpt-oss-120b",)),
+                "lightweight": ("together/deepseek-v4-flash", ("groq/gpt-oss-20b",)),
+                "content": ("together/qwen3.8-flash", ("groq/gpt-oss-120b",)),
+                "premium": ("together/qwen3.7-max", ("together/gpt-oss-120b",)),
+                "bulk_text": ("together/deepseek-v4-flash", ("groq/gpt-oss-20b",)),
+                "grounded": ("together/glm-5.3-flash", ("gemini/gemini-2.5-flash",)),
                 "vision": ("gemini/gemini-2.5-flash", ()),
             },
         )
@@ -486,29 +497,35 @@ class DefaultRoutePreservationTests(SimpleTestCase):
 class TogetherFallbackTests(_EventsPatched):
     def test_fallback_stays_off_by_default_even_when_together_is_configured(self):
         r, _ = router_with({**TOGETHER_IDS, "TOGETHER_MODEL_GPT_OSS_120B_STRUCTURED_OUTPUT": "native"})
-        self.assertIn(("together/gpt-oss-120b", "fallback_disabled"), r.plan(req()).skipped)
+        plan = r.plan(req())
+        self.assertEqual(plan.candidates[0].spec.id, "together/gpt-oss-120b")
+        self.assertIn(("groq/gpt-oss-120b", "fallback_disabled"), plan.skipped)
 
-    def test_json_fallback_requires_verified_structured_output(self):
+    def test_json_request_to_unverified_together_model_uses_the_legacy_route(self):
         r, _ = router_with({**TOGETHER_IDS, "AI_ROUTER_FALLBACK_ENABLED": "true"})
-        self.assertIn(("together/gpt-oss-120b", "unmet:structured_output"), r.plan(req(json_mode=True)).skipped)
-        self.assertEqual(len(r.plan(req(json_mode=False)).candidates), 2)
+        plan = r.plan(req(json_mode=True))
+        self.assertEqual((plan.candidates[0].spec.id, plan.candidates[0].source), ("groq/gpt-oss-120b", "legacy"))
+        self.assertIn(("together/gpt-oss-120b", "unmet:structured_output"), plan.skipped)
+        self.assertEqual([c.spec.id for c in r.plan(req(json_mode=False)).candidates],
+                         ["together/gpt-oss-120b", "groq/gpt-oss-120b"])
 
-    def test_retryable_groq_failure_falls_back_to_together_when_enabled(self):
-        groq = FakeAdapter("groq", script=[RetryableProviderError("503", provider="groq", status_code=503, kind="server_error")])
-        together = FakeAdapter("together", script=[ok(GPTOSS)])
+    def test_retryable_together_failure_falls_back_to_groq_when_enabled(self):
+        together = FakeAdapter("together", script=[RetryableProviderError("503", provider="together", model=GPTOSS,
+                                                                          status_code=503, kind="server_error")])
+        groq = FakeAdapter("groq", script=[ok("openai/gpt-oss-120b")])
         r, _ = router_with({**TOGETHER_IDS, "AI_ROUTER_FALLBACK_ENABLED": "true",
                             "TOGETHER_MODEL_GPT_OSS_120B_STRUCTURED_OUTPUT": "native"}, groq=groq, together=together)
         out = r.execute(req(json_mode=True))
         self.assertTrue(out["fallback_used"])
-        self.assertEqual(out["model"], f"together:{GPTOSS}")
+        self.assertEqual(out["model"], "openai/gpt-oss-120b")
 
-    def test_deterministic_groq_failure_never_reaches_together(self):
-        groq = FakeAdapter("groq", script=[NonRetryableProviderError("bad", provider="groq", status_code=400)])
+    def test_deterministic_together_failure_never_reaches_groq(self):
+        together = FakeAdapter("together", script=[NonRetryableProviderError("bad", provider="together", status_code=400)])
         r, a = router_with({**TOGETHER_IDS, "AI_ROUTER_FALLBACK_ENABLED": "true",
-                            "TOGETHER_MODEL_GPT_OSS_120B_STRUCTURED_OUTPUT": "native"}, groq=groq)
+                            "TOGETHER_MODEL_GPT_OSS_120B_STRUCTURED_OUTPUT": "native"}, together=together)
         with self.assertRaises(NonRetryableProviderError):
             r.execute(req())
-        self.assertEqual(a["together"].calls, [])
+        self.assertEqual(a["groq"].calls, [])
 
 
 # ── 11. timeout via the router ───────────────────────────────────────────────
