@@ -5608,6 +5608,26 @@ _CONTENT_TYPE_PROMPTS = {
         "Include concepts to understand, formulas to memorise, and types of problems to practice. "
         "Do NOT write normal notes; every actionable item must be a checkbox."
     ),
+    "lesson_brief": (
+        "Generate a short, skimmable PRE-CLASS BRIEF for the TEACHER about to teach this topic — "
+        "this is read once, right before walking into class, NOT student-facing notes and NOT a "
+        "formal lesson-plan document. Keep the whole thing readable in under a minute.\n\n"
+        "Structure, using Markdown headings:\n"
+        "## Quick Recap\n"
+        "1-2 lines on what students should already know coming in.\n\n"
+        "## Today's Objective\n"
+        "1-2 lines: what students should be able to do by the end of this period.\n\n"
+        "## Teaching Flow\n"
+        "A numbered sequence of what to actually do in this period, each step with a rough "
+        "time estimate (e.g. '1. Recap (5 min) - ...'). Keep it concrete and classroom-practical.\n\n"
+        "## Key Points to Emphasize\n"
+        "3-5 bullet points on what's easy to gloss over or commonly misunderstood.\n\n"
+        "## Quick Check\n"
+        "One fast way to gauge understanding before moving on (a question to ask, a 2-minute task).\n\n"
+        "## Homework / Follow-up\n"
+        "1-2 lines on what to assign or carry into the next class.\n\n"
+        "Do not pad any section. If a section genuinely needs only one line, leave it at one line."
+    ),
     # â"€â"€ same as lesson/summary but with short label aliases â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     "study_guide":         "Generate a crisp, exam-ready summary of this topic in Markdown. Use bullet points and short paragraphs. Cover every exam-important concept.",
     "key_concepts":        "Generate a structured list of ALL key formulas and must-know concepts for this topic in Markdown. For each: name, definition, units (if applicable), one-line use-case.",
