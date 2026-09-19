@@ -3475,12 +3475,37 @@ def resolve_doubt(request):
 
     if image_source:
         logger.info("[DOUBT] Image detected, attempting vision transcription... url_len=%d", len(image_source))
+        # Curriculum context is read here rather than further down because the
+        # transcription needs it: an image-only doubt has no other signal, so a
+        # misread word becomes the whole question.
+        _vctx = data.get("studentContext") or {}
+        _vision_prompt = _build_doubt_vision_prompt(
+            subject=str(data.get("subjectName") or _vctx.get("subject") or ""),
+            class_name=str(_vctx.get("className") or ""),
+            board=str(getattr(request, "board", "") or _vctx.get("board") or ""),
+            chapter=str(_vctx.get("chapterName") or ""),
+        )
+        logger.info("[DOUBT] Vision context: subject=%s class=%s board=%s chapter=%s",
+                    _vctx.get("subject") or "-", _vctx.get("className") or "-",
+                    getattr(request, "board", "") or "-", _vctx.get("chapterName") or "-")
         # Primary: Groq Qwen 3.6 27B vision (or Gemini directly for Odia)
-        image_description = _vision_text_from_image(image_source, _DOUBT_VISION_PROMPT, language)
+        _vision_started = time.time()
+        image_description = _vision_text_from_image(image_source, _vision_prompt, language)
         if image_description:
-            logger.info("[DOUBT] Groq vision succeeded: %d chars", len(image_description))
+            # Elapsed + length are logged because the inline vision call is NOT
+            # separately metered: it runs inside @metered("doubt_resolver"), so a
+            # silent misread or a fallback is invisible in ai_usage_events. Without
+            # this line there is no way to tell a good transcription from a bad one.
+            logger.info(
+                "[DOUBT] vision OK | elapsed=%.2fs chars=%d preview=%r",
+                time.time() - _vision_started, len(image_description),
+                image_description[:120],
+            )
         else:
-            logger.warning("[DOUBT] Groq vision returned empty. Trying EasyOCR fallback...")
+            logger.warning(
+                "[DOUBT] vision EMPTY after %.2fs - trying EasyOCR fallback",
+                time.time() - _vision_started,
+            )
             # Fallback: EasyOCR (local, no network dependency)
             try:
                 image_description = _extract_text_from_image_url(image_source)
@@ -3804,6 +3829,41 @@ _DOUBT_VISION_PROMPT = (
     "graphs, figures, or numerical problems. "
     "Be thorough and precise. Write equations in readable plain text (e.g. x^2 + 3x = 0)."
 )
+
+
+def _build_doubt_vision_prompt(subject: str = "", class_name: str = "",
+                               board: str = "", chapter: str = "") -> str:
+    """Prime transcription with the curriculum the image comes from.
+
+    Handwriting OCR is a guessing game about proper nouns. Given no priors a
+    vision model reading cursive "Horace" will happily emit "Florence" - a real
+    failure observed on DEV, where the student's question was image-only, so the
+    misread name became the entire question and the answer was unusable.
+
+    Naming the board, class, subject and (when known) chapter turns an open guess
+    into a constrained one: the model knows which characters, terms and notation
+    are plausible. Costs a few prompt tokens; no extra call.
+
+    Falls back to the generic prompt when nothing is known, so behaviour is
+    unchanged for callers that pass no context.
+    """
+    bits = [b for b in (
+        (board or "").strip().upper(),
+        (class_name or "").strip(),
+        (subject or "").strip(),
+    ) if b]
+    if not bits and not (chapter or "").strip():
+        return _DOUBT_VISION_PROMPT
+
+    header = "CONTEXT: This is a question from " + ", ".join(bits) if bits else "CONTEXT:"
+    if (chapter or "").strip():
+        header += f", chapter \"{chapter.strip()}\""
+    header += (
+        ". Proper nouns, technical terms and notation in the image are most likely "
+        "those used in that syllabus - prefer a reading consistent with it over a "
+        "more common-looking word. Transcribe what is written; do not answer it." + chr(10) * 2
+    )
+    return header + _DOUBT_VISION_PROMPT
 
 
 
