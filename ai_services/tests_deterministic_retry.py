@@ -176,8 +176,11 @@ class DoubtDetectorConfigTests(unittest.TestCase):
 
     def test_F_detector_failure_still_falls_back_to_keyword_defaults(self):
         body = self._detector_src()
-        # The except branch must survive and still yield usable defaults.
-        self.assertIn("defaulting to physics/numerical", body)
+        # The except branch must survive and still yield usable defaults. The
+        # default is general/conceptual, not physics/numerical: an unclassifiable
+        # question is not a physics question, and claiming it is made the solver
+        # refuse to answer anything outside physics.
+        self.assertIn("defaulting to general/conceptual", body)
         self.assertIn("except Exception as exc:", body)
 
     def test_F_detector_failure_logs_elapsed_time(self):

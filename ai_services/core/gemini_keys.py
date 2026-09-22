@@ -1,10 +1,144 @@
 import os
 import threading
+import time
 
 
 _LOCK = threading.Lock()
 _NEXT_INDEX = 0
 _DISABLED_KEYS: set[str] = set()
+
+# ── Short-lived cooldown for transiently failing keys ─────────────────────────
+# A key that just returned 429 (its quota is spent) or 503 (its project has no
+# capacity right now) will almost certainly do so again seconds later. Without
+# memory, every request rediscovers the same dead keys serially — and a 503 is
+# not cheap: Google attempts the generation before giving up, so it costs about
+# as long as a successful call (measured: 14-27s per key, turning a ~13s deck
+# into 57s).
+#
+# These are NOT _DISABLED_KEYS: that set is permanent and reserved for keys the
+# API rejected outright. Quota and capacity both come back, so the key is only
+# stepped over until its cooldown expires.
+_COOLING_KEYS: "dict[str, float]" = {}
+
+# Measured, not guessed: the same two keys 503'd at 14:43, 14:49 and 16:14, and
+# one 503 took 40s to come back. These failures are persistent rather than
+# momentary, and each rediscovery costs most of a request — so the window has to
+# outlive the gap between a teacher's generations, not just a burst.
+_COOLDOWN_S = {
+    "429": float(os.getenv("GEMINI_COOLDOWN_429_S", "300")),   # quota window
+    "503": float(os.getenv("GEMINI_COOLDOWN_503_S", "600")),   # capacity starvation
+}
+
+# Redis key prefix. The cooldown MUST be shared: gunicorn runs 3 workers here, so
+# a process-local set means each worker pays to rediscover the same dead keys.
+_COOL_PREFIX = "gemini:cooling:"
+
+
+def _cool_redis():
+    """Shared Redis, or None. Never raises — this is an optimisation, not a gate."""
+    try:
+        from ai_services.core.cache import get_redis
+        return get_redis()
+    except Exception:
+        return None
+
+
+# Consecutive-failure counter, so a key that keeps failing is retried less and
+# less often instead of costing a full rediscovery every cooldown expiry.
+_FAIL_PREFIX = "gemini:failstreak:"
+_COOLDOWN_MAX_S = float(os.getenv("GEMINI_COOLDOWN_MAX_S", "3600"))
+
+
+def mark_gemini_key_cooling(api_key: str, kind: str) -> None:
+    """Step over this key after a 429/503, across every worker.
+
+    The window doubles per consecutive failure (10min, 20min, 40min, capped at
+    an hour for 503). A key broken all afternoon then costs one probe an hour
+    instead of one every ten minutes, while a key that fails once and recovers
+    is barely penalised — its streak resets on the next success.
+
+    Self-healing and best-effort: entries expire on their own, and Redis being
+    unavailable degrades to process-local memory rather than failing the call.
+    """
+    base = _COOLDOWN_S.get(kind)
+    if not base:
+        return
+
+    fp = _fingerprint(api_key)
+    r = _cool_redis()
+    if r is not None:
+        try:
+            # Track the streak for longer than the cooldown itself, or the
+            # counter would expire alongside it and never escalate.
+            streak = r.incr(f"{_FAIL_PREFIX}{fp}")
+            r.expire(f"{_FAIL_PREFIX}{fp}", int(_COOLDOWN_MAX_S * 2))
+            seconds = min(base * (2 ** (max(1, int(streak)) - 1)), _COOLDOWN_MAX_S)
+            r.setex(f"{_COOL_PREFIX}{fp}", int(seconds), kind)
+            return
+        except Exception:
+            pass
+    with _LOCK:
+        _COOLING_KEYS[api_key] = time.time() + base
+
+
+def mark_gemini_key_healthy(api_key: str) -> None:
+    """Clear a key's failure streak after it succeeds.
+
+    Without this the streak only ever grows, so a key that recovers would keep
+    inheriting an hour-long penalty from a bad afternoon.
+    """
+    r = _cool_redis()
+    if r is None:
+        return
+    try:
+        r.delete(f"{_FAIL_PREFIX}{_fingerprint(api_key)}")
+    except Exception:
+        pass
+
+
+def _fingerprint(api_key: str) -> str:
+    """Stable short id for a key. Never store or log the key itself."""
+    import hashlib
+    return hashlib.sha256(api_key.encode()).hexdigest()[:12]
+
+
+def _cooling_now(keys: "list[str]") -> "set[str]":
+    """Keys currently cooling, from Redis when available plus local fallback."""
+    cooling = set()
+    r = _cool_redis()
+    if r is not None:
+        try:
+            fps = {_fingerprint(k): k for k in keys}
+            vals = r.mget([f"{_COOL_PREFIX}{fp}" for fp in fps])
+            cooling.update(
+                key for (fp, key), v in zip(fps.items(), vals) if v is not None
+            )
+        except Exception:
+            pass
+
+    now = time.time()
+    with _LOCK:
+        for k, until in list(_COOLING_KEYS.items()):
+            if until <= now:
+                del _COOLING_KEYS[k]
+        cooling.update(_COOLING_KEYS)
+    return cooling
+
+
+def _live_keys(keys: "list[str]") -> "list[str]":
+    """Keys worth trying now: not permanently disabled, not cooling.
+
+    Fails OPEN. If every key is cooling, the cooldowns are ignored rather than
+    returning nothing — a slow attempt beats refusing to generate at all.
+    """
+    with _LOCK:
+        disabled = set(_DISABLED_KEYS)
+    cooling = _cooling_now(keys)
+
+    usable = [k for k in keys if k not in disabled and k not in cooling]
+    if usable:
+        return usable
+    return [k for k in keys if k not in disabled]
 
 # ── Per-key model availability ────────────────────────────────────────────────
 # Google withdraws a model "for new users" rather than for everyone: a key whose
@@ -75,17 +209,20 @@ def get_rotated_gemini_keys() -> list[tuple[int, str]]:
     if not keys:
         return []
 
-    with _LOCK:
-        start = _NEXT_INDEX % len(keys)
-        _NEXT_INDEX = (_NEXT_INDEX + 1) % len(keys)
-        disabled = set(_DISABLED_KEYS)
+    # Try keys that are not known-bad first; a key cooling off after a 429/503
+    # is stepped over rather than re-probed on every request.
+    usable = _live_keys(keys)
+    if not usable:
+        return []
 
-    rotated = keys[start:] + keys[:start]
-    indexed = []
-    for key in rotated:
-        if key not in disabled:
-            indexed.append((keys.index(key) + 1, key))
-    return indexed
+    with _LOCK:
+        start = _NEXT_INDEX % len(usable)
+        _NEXT_INDEX = (_NEXT_INDEX + 1) % len(usable)
+
+    rotated = usable[start:] + usable[:start]
+    # Key numbers stay 1-based over the FULL configured list so log lines and
+    # provider events keep naming the same key across requests.
+    return [(keys.index(key) + 1, key) for key in rotated]
 
 
 def resolve_gemini_model(api_key: str, model: str) -> str:

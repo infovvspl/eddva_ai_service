@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     feedback, notes, content, test, career,
-    personalization, admin_api, bridge, evaluate, ppt, textbook,
+    personalization, admin_api, bridge, evaluate, ppt, textbook, diagram,
 )
 
 urlpatterns = [
@@ -49,6 +49,9 @@ urlpatterns = [
     # AI #10 — Resume Analyzer
     path("resume/analyze", bridge.analyze_resume),
 
+    # Teacher coaching — rubric scoring over a lecture transcript.
+    path("teacher/analyze-recording", bridge.analyze_teacher_recording),
+
     # AI #11 — Interview Prep
     path("interview/start", bridge.start_interview_prep),
 
@@ -79,6 +82,9 @@ urlpatterns = [
     path("ppt/generate", ppt.generate_presentation),
     path("ppt/regenerate-slide", ppt.regenerate_slide),
     path("ppt/search-image", ppt.search_image),
+
+    # Diagram rendering (a figure a question needs that the textbook does not contain)
+    path("diagram/render", diagram.render),
 
     # Textbook ingestion (chapter PDF -> page-tagged passages for grounded generation)
     path("textbook/ingest", textbook.ingest_textbook),
