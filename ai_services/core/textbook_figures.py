@@ -739,9 +739,14 @@ def _phash(pil_image):
 
 
 def _trim_whitespace(pil_image, pad_px=6):
-    """Shrink a crop to its ink, so figures are tight without tuned margins."""
+    """Shrink a crop to its ink, so figures are tight without tuned margins.
+
+    NumPy only. This used to import cv2 as well and never use it, which meant
+    that anywhere OpenCV was absent the function quietly returned the crop
+    untrimmed — a figure with a page-width margin around it, and no error to
+    say why.
+    """
     try:
-        import cv2
         import numpy as np
     except ImportError:                          # pragma: no cover - env guard
         return pil_image

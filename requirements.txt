@@ -58,6 +58,11 @@ Pillow==10.4.0
 pdfplumber==0.11.4
 pypdf==5.1.0
 pdf2image==1.17.0
+# Rasterises chapter pages for figure cropping. REQUIRED, not optional:
+# extract_figures() raises without it, ingestion catches that and indexes the
+# chapter with zero figures, and nothing surfaces the reason — so a missing
+# pin here looks exactly like "this book has no diagrams".
+pypdfium2==5.5.0
 
 # ── NLP / ML ──────────────────────────────────────────────────────────────────
 torch==2.12.0+cpu
