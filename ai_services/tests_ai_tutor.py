@@ -5,7 +5,8 @@ helpers and media selection.
 Drives the real HTTP path (TenantAuthMiddleware → ai_tutor.ai_tutor_chat) with
 the LLM, searches and Gemini image check mocked, so it runs offline.
 """
-from types import SimpleNamespace
+from contextlib import contextmanager
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase, SimpleTestCase
@@ -320,28 +321,50 @@ class MediaTests(SimpleTestCase):
         ranked = tutor_media.rank_videos(videos, tutor_media.topic_terms("explain photosynthesis"), 3)
         self.assertEqual([v["videoId"] for v in ranked], ["edu", "short", "long"])
 
-    def test_verify_images_keeps_only_approved(self):
-        images = [{"title": f"img{i}", "thumbnailUrl": f"https://t/{i}"} for i in range(1, 4)]
-        fake_gc = SimpleNamespace(
-            is_available=lambda: True, DEFAULT_MODEL="gemini",
-            generate_with_rotation=lambda **kw: SimpleNamespace(text='{"approved": [3, 1, 9, 3]}'),
+    @contextmanager
+    def _fake_gemini(self, generate):
+        """Stand-ins for google.genai and our gemini_client, so these tests run the
+        same with or without the real SDK (CI installs requirements.ci.txt, which
+        leaves google-genai out)."""
+        fake_types = SimpleNamespace(
+            Part=SimpleNamespace(from_bytes=lambda data, mime_type: ("part", mime_type)),
+            GenerateContentConfig=lambda **kw: kw,
+            ThinkingConfig=lambda **kw: kw,
         )
+        fake_genai = ModuleType("google.genai")
+        fake_genai.types = fake_types
+        fake_gc = SimpleNamespace(is_available=lambda: True, DEFAULT_MODEL="gemini",
+                                  generate_with_rotation=generate)
         with patch.object(tutor_media, "_download", return_value=(b"x", "image/png")), \
              patch("ai_services.core.gemini_client", fake_gc, create=True), \
-             patch.dict("sys.modules", {"ai_services.core.gemini_client": fake_gc}):
+             patch.dict("sys.modules", {"google.genai": fake_genai,
+                                        "ai_services.core.gemini_client": fake_gc}):
+            yield
+
+    def test_verify_images_keeps_only_approved(self):
+        images = [{"title": f"img{i}", "thumbnailUrl": f"https://t/{i}"} for i in range(1, 4)]
+        calls = []
+
+        def generate(**kw):
+            calls.append(kw)
+            return SimpleNamespace(text='{"approved": [3, 1, 9, 3]}')
+
+        with self._fake_gemini(generate):
             chosen = tutor_media.verify_images(images, "photosynthesis", "Class 7")
         self.assertEqual([i["title"] for i in chosen], ["img3", "img1"])
+        self.assertEqual(len(calls), 1)  # one Gemini call for all images
 
     def test_verify_images_shows_none_when_check_fails(self):
         images = [{"title": "img", "thumbnailUrl": "https://t/1"}]
-        fake_gc = SimpleNamespace(
-            is_available=lambda: True, DEFAULT_MODEL="gemini",
-            generate_with_rotation=lambda **kw: (_ for _ in ()).throw(RuntimeError("quota")),
-        )
-        with patch.object(tutor_media, "_download", return_value=(b"x", "image/png")), \
-             patch("ai_services.core.gemini_client", fake_gc, create=True), \
-             patch.dict("sys.modules", {"ai_services.core.gemini_client": fake_gc}):
+        calls = []
+
+        def generate(**kw):
+            calls.append(kw)
+            raise RuntimeError("quota")
+
+        with self._fake_gemini(generate):
             self.assertEqual(tutor_media.verify_images(images, "photosynthesis"), [])
+        self.assertEqual(len(calls), 1)  # the check really ran and failed
 
 
 class SearchSafetyTests(SimpleTestCase):
