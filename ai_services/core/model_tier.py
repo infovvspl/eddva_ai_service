@@ -35,6 +35,7 @@ FEATURE_TIER_MAP = {
     "doubt_resolve":      ModelTier.BALANCED,   # needs good reasoning
     "tutor_session":      ModelTier.BALANCED,   # conversational quality matters
     "tutor_continue":     ModelTier.BALANCED,   # must maintain context
+    "ai_tutor":           ModelTier.BALANCED,   # student chatbot; grounded answers
     "content_recommend":  ModelTier.FAST,       # simple recommendation
     "stt_notes":          ModelTier.POWER,      # comprehensive note generation
     "feedback_generate":  ModelTier.BALANCED,   # motivational + analytical

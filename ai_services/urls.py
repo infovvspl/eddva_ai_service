@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     feedback, notes, content, test, career,
-    personalization, admin_api, bridge, evaluate, ppt, textbook, diagram,
+    personalization, admin_api, bridge, evaluate, ppt, textbook, diagram, ai_tutor,
 )
 
 urlpatterns = [
@@ -17,6 +17,10 @@ urlpatterns = [
     # AI #2 — AI Tutor
     path("tutor/session", bridge.start_tutor_session),
     path("tutor/continue", bridge.continue_tutor_session),
+
+    # AI Tutor (school student chatbot) — course-first answers with web fallback
+    path("ai-tutor/chat", ai_tutor.ai_tutor_chat),
+    path("ai-tutor/media", ai_tutor.ai_tutor_media),
 
     # AI #6 — Content Recommendation
     path("recommend/content", bridge.recommend_content),

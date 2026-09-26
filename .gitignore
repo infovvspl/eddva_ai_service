@@ -15,3 +15,4 @@ db.sqlite3
 # Generated media — belongs in S3, not git
 /data/generated_note_images/
 *.pyc
+venv/
