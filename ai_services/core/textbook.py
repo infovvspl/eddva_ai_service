@@ -19,6 +19,7 @@ in this service (ai_services.core.cache), so ingestion progress is a short-lived
 key there — not persisted business data, just a few minutes' TTL scoped to one
 run, and it costs nothing when Redis is unavailable (see below).
 """
+import base64
 import io
 import json
 import logging
@@ -103,6 +104,12 @@ _MAX_PDF_BYTES = _MAX_PDF_MB * 1024 * 1024
 # runs out at roughly 45 pages. Batching keeps page count from being a ceiling at
 # all: a long scan costs more requests rather than silently losing its tail.
 _OCR_PAGES_PER_BATCH = 20
+
+#: Budget for the cropped figures carried back in one ingest response, as
+#: base64. This service is stateless, so the images travel to the backend in the
+#: response body rather than being written to storage here; 24MB holds well over
+#: a hundred typical crops while keeping the response far below any proxy limit.
+_MAX_FIGURE_PAYLOAD_BYTES = 24 * 1024 * 1024
 _OCR_MAX_OUTPUT_TOKENS = 30000
 
 
@@ -383,12 +390,185 @@ def ocr_pdf_pages(data: bytes, progress_key: "str | None" = None) -> "list[dict]
     return pages
 
 
-def ingest_pdf(source: "str | bytes", allow_ocr: bool = True, progress_key: "str | None" = None) -> dict:
+_FIGURE_DESCRIBE_PROMPT = (
+    "You are cataloguing diagrams cropped from a school textbook chapter so a "
+    "teacher's question-paper generator can pick the right one later.\n\n"
+    "For EACH image, in order, write one factual sentence naming what the "
+    "diagram shows and the topic it belongs to. Name the objects and labels "
+    "actually visible. Do NOT explain the concept, do not add commentary, and "
+    "do not guess at anything the image does not show. If an image is not a "
+    "diagram at all (a logo, a border, a blank area), write exactly: NOT_A_FIGURE\n\n"
+    'Reply with JSON only: {"descriptions": ["...", "..."]} — one entry per '
+    "image, in the same order you received them."
+)
+
+#: Images per description call. Batched because a chapter can carry 40 figures
+#: and one vision call each would dominate the cost of indexing it.
+_FIGURE_DESCRIBE_BATCH = 6
+
+#: Description happens once, at ingest. Everything downstream then matches
+#: figures by TEXT, so generating a paper costs no vision call at all.
+_FIGURE_DESCRIPTIONS_ENABLED = os.getenv("TEXTBOOK_FIGURE_DESCRIPTIONS", "1") not in ("0", "false", "False")
+
+
+def describe_figures(figures: list) -> int:
+    """Fill in `description` for figures the book did not caption.
+
+    Roughly two thirds of the figures in the test corpus carry no "Fig. N"
+    caption, and an uncaptioned figure is invisible to the paper generator:
+    the model chooses a figure by reading its text, never by seeing it. One
+    vision pass here, at ingest, is what makes those figures selectable — and
+    it happens once per chapter rather than once per generated paper.
+
+    Best-effort and never raises. A figure that comes back undescribed is
+    simply one the generator will not choose.
+    """
+    if not _FIGURE_DESCRIPTIONS_ENABLED:
+        return 0
+    pending = [f for f in figures if not (f.get("caption") or "").strip()]
+    if not pending:
+        return 0
+
+    try:
+        from google.genai import types
+        from ai_services.core.gemini_keys import get_rotated_gemini_keys, resolve_gemini_model
+        from ai_services.core.gemini_client import gemini_generate, is_available
+    except Exception as exc:
+        logger.warning("Figure description unavailable: %s", exc)
+        return 0
+    if not is_available():
+        return 0
+
+    model = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+    described = 0
+    for start in range(0, len(pending), _FIGURE_DESCRIBE_BATCH):
+        batch = pending[start:start + _FIGURE_DESCRIBE_BATCH]
+        images = []
+        for figure in batch:
+            uri = figure.get("image_base64") or ""
+            comma = uri.find(",")
+            if comma < 0:
+                images.append(None)
+                continue
+            try:
+                images.append(base64.b64decode(uri[comma + 1:]))
+            except Exception:
+                images.append(None)
+        usable = [(f, b) for f, b in zip(batch, images) if b]
+        if not usable:
+            continue
+
+        contents = [_FIGURE_DESCRIBE_PROMPT]
+        for _figure, blob in usable:
+            contents.append(types.Part.from_bytes(data=blob, mime_type="image/png"))
+
+        payload = None
+        for _key_index, api_key in get_rotated_gemini_keys():
+            try:
+                response = gemini_generate(
+                    api_key,
+                    model=resolve_gemini_model(api_key, model),
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        temperature=0.0,
+                        max_output_tokens=900,
+                        response_mime_type="application/json",
+                    ),
+                )
+                payload = json.loads(getattr(response, "text", "") or "{}")
+                break
+            except Exception as exc:
+                logger.warning("Figure description batch failed: %s", exc)
+                continue
+        if not isinstance(payload, dict):
+            continue
+
+        descriptions = payload.get("descriptions")
+        if not isinstance(descriptions, list):
+            continue
+        for (figure, _blob), text in zip(usable, descriptions):
+            text = str(text or "").strip()
+            # The model's own signal that the crop is page furniture rather
+            # than a diagram. Left undescribed, so nothing will select it.
+            if not text or text.upper().startswith("NOT_A_FIGURE"):
+                continue
+            figure["description"] = text
+            described += 1
+
+    logger.info("Described %d/%d uncaptioned figures", described, len(pending))
+    return described
+
+
+def _collect_figures(data: bytes, method: str) -> "tuple[list, dict]":
+    """Crop the chapter's diagrams, within a payload budget. Never raises.
+
+    Skipped entirely for a scanned chapter: with no text layer there are no
+    captions to name a figure and no drawing objects to find one, so the only
+    thing on offer would be crops of a page photograph. A wrong diagram on an
+    exam paper is worse than no diagram, so that case emits nothing.
+
+    Figures are returned to the backend as base64 PNGs because this service is
+    stateless — it owns neither the school database nor its object storage — so
+    the whole set has to fit in one HTTP response. Past the budget the rest are
+    dropped rather than truncated, and the report says how many.
+    """
+    if method != "text_layer":
+        return [], {"skipped": "scanned_chapter"}
+
+    try:
+        from ai_services.core.textbook_figures import extract_figures
+    except Exception as exc:
+        logger.warning("Figure extraction unavailable: %s", exc)
+        return [], {"skipped": "unavailable", "error": str(exc)[:200]}
+
+    try:
+        result = extract_figures(data)
+    except Exception as exc:
+        # Ingestion must still succeed: passages are the point, figures a bonus.
+        logger.warning("Figure extraction failed: %s", exc)
+        return [], {"skipped": "failed", "error": str(exc)[:200]}
+
+    kept, budget, dropped = [], 0, 0
+    for figure in result.get("figures", []):
+        size = len(figure.get("image_base64") or "")
+        if budget + size > _MAX_FIGURE_PAYLOAD_BYTES:
+            dropped += 1
+            continue
+        budget += size
+        kept.append(figure)
+
+    # Described AFTER the size budget, so no vision call is spent on a figure
+    # that is about to be dropped from the response anyway.
+    try:
+        described = describe_figures(kept)
+    except Exception as exc:
+        logger.warning("Figure description pass failed: %s", exc)
+        described = 0
+
+    report = dict(result.get("report") or {})
+    report["returned"] = len(kept)
+    report["dropped_for_size"] = dropped
+    report["payload_bytes"] = budget
+    report["described"] = described
+    return kept, report
+
+
+def ingest_pdf(
+    source: "str | bytes",
+    allow_ocr: bool = True,
+    progress_key: "str | None" = None,
+    want_figures: bool = True,
+) -> dict:
     """Extract + chunk a chapter PDF. Returns passages plus a quality report.
 
     The report exists so a human can tell a clean digital textbook from a scan
     that produced nothing — a silently empty ingest would otherwise look
     identical to a book with no relevant content.
+
+    `want_figures` also crops the chapter's diagrams (see textbook_figures).
+    They ride along on this call because the PDF is already downloaded and
+    already open here; fetching it a second time later would cost the whole
+    download again for the same bytes.
     """
     # Downloaded through the same guarded path as everything else. This used to
     # fetch the body directly and hand raw bytes to extract_pdf_pages, which
@@ -430,6 +610,10 @@ def ingest_pdf(source: "str | bytes", allow_ocr: bool = True, progress_key: "str
     elif truncated or empty_pages > len(pages) * 0.5:
         quality = "partial"
 
+    figures, figure_report = ([], {"skipped": "not_requested"})
+    if want_figures:
+        figures, figure_report = _collect_figures(data, method)
+
     return {
         "pages": len(pages),
         "chunks": chunks,
@@ -440,4 +624,6 @@ def ingest_pdf(source: "str | bytes", allow_ocr: bool = True, progress_key: "str
         "method": method,
         "truncated": truncated,
         "needs_ocr": quality in ("no_text", "unreadable"),
+        "figures": figures,
+        "figure_report": figure_report,
     }

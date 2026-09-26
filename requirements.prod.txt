@@ -21,6 +21,9 @@ pdfplumber==0.11.4
 # lazily, and ingestion falls back to a single pass without it.
 pypdf==5.1.0
 pdf2image==1.17.0
+# Rasterises chapter pages for figure cropping; extract_figures() raises
+# without it and the chapter is then indexed with no figures at all.
+pypdfium2==5.5.0
 Pillow==10.4.0
 easyocr
 opencv-python-headless==4.8.1.78
