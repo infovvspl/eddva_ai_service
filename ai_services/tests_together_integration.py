@@ -843,3 +843,44 @@ class TogetherStreamingTests(_EventsPatched):
             with self.assertRaises(NonRetryableProviderError) as cm:
                 TogetherAdapter().complete(max_spec, ProviderCall("s", "u", "cfg/max", json_mode=False))
         self.assertIn("TOGETHER_MODEL_QWEN37_MAX_STREAMING=true", str(cm.exception))
+
+
+class TogetherPricingTests(SimpleTestCase):
+    """Together list prices (per 1M tokens, from Together's /v1/models on 2026-09-28)
+    so the super-admin usage page can show real spend instead of "—". A model with
+    no configured price stays unpriced: recording it as $0 would read as free."""
+
+    def _cost(self, model, tin=0, tout=0):
+        from ai_services.core.usage_logger import calculate_cost
+
+        return calculate_cost(model, tin, tout)
+
+    def test_input_and_output_are_priced_separately(self):
+        self.assertAlmostEqual(self._cost("together:zai-org/GLM-5.3-Flash", 1_000_000, 0), 0.15)
+        self.assertAlmostEqual(self._cost("together:zai-org/GLM-5.3-Flash", 0, 1_000_000), 0.50)
+
+    def test_together_rates_are_not_taken_from_the_groq_table(self):
+        # "qwen/qwen3-32b" is $0.29/1M on Groq; Qwen3.8-Flash on Together is $0.09.
+        self.assertAlmostEqual(self._cost("together:Qwen/Qwen3.8-Flash", 1_000_000, 0), 0.09)
+
+    def test_model_ids_match_case_insensitively(self):
+        self.assertEqual(
+            self._cost("together:ZAI-ORG/glm-5.3-FLASH", 1_000_000, 0),
+            self._cost("together:zai-org/GLM-5.3-Flash", 1_000_000, 0),
+        )
+
+    def test_an_unknown_together_model_stays_unpriced(self):
+        self.assertIsNone(self._cost("together:cfg/not-a-real-model", 1000, 1000))
+
+    def test_env_overrides_a_rate_without_a_code_change(self):
+        with patch.dict(os.environ, {"AI_TOGETHER_PRICING": json.dumps(
+                {"zai-org/GLM-5.3-Flash": {"input": 1.0, "output": 2.0}})}):
+            self.assertAlmostEqual(self._cost("together:zai-org/GLM-5.3-Flash", 1_000_000, 0), 1.0)
+
+    def test_invalid_pricing_json_falls_back_to_the_built_in_rates(self):
+        with patch.dict(os.environ, {"AI_TOGETHER_PRICING": "{not json"}):
+            self.assertAlmostEqual(self._cost("together:zai-org/GLM-5.3-Flash", 1_000_000, 0), 0.15)
+
+    def test_a_real_generation_costs_what_the_provider_charges(self):
+        # The 2026-09-28 grounded PPT: 5287 prompt + 1150 completion tokens on GLM.
+        self.assertAlmostEqual(self._cost("together:zai-org/GLM-5.3-Flash", 5287, 1150), 0.001368, places=6)

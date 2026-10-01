@@ -215,6 +215,34 @@ def _log_usage_to_db(institute, institute_id: str, feature: str, result: dict, c
 
 
 
+def _worth_caching(payload) -> bool:
+    """Whether an AI result carries enough content to be worth serving again.
+
+    A cached empty answer is worse than no cache: on 2026-09-30 a memorization
+    request produced {"items": []}, that empty payload was stored, and every
+    later request matching the same prompt was served the empty result instantly
+    with HTTP 200 and _meta.source="cache" — a silent failure that looks healthy.
+    Caching is an optimisation; it must never preserve a result that taught the
+    student nothing. A miss just costs one more call.
+    """
+    if payload is None:
+        return False
+    if isinstance(payload, str):
+        return bool(payload.strip())
+    if isinstance(payload, (list, tuple, set)):
+        return any(_worth_caching(v) for v in payload)
+    if isinstance(payload, dict):
+        # Metadata the service attaches itself is not content.
+        content = {k: v for k, v in payload.items()
+                   if not str(k).startswith("_") and str(k) not in ("meta", "institute", "vertical")}
+        if not content:
+            return False
+        if "error" in content:
+            return False
+        return any(_worth_caching(v) for v in content.values())
+    return True       # numbers, booleans: a deliberate value
+
+
 def _cache_scope(vertical: str, board: str) -> str:
     """
     Cache namespace. School answers are board-specific (a CBSE answer must never be
@@ -312,7 +340,7 @@ def ai_call_text(
         text = result["content"] if isinstance(result["content"], str) else str(result["content"])
         response_data = wrap_fn(text)
 
-        if not skip_cache:
+        if not skip_cache and _worth_caching(response_data):
             _cache.set(institute_id, feature, user_prompt, response_data, _cache_scope(vertical, board))
         # Tokens are booked in usage_logger.log_usage, reached via
         # _log_usage_to_db below — booking here as well double-counted
@@ -443,7 +471,7 @@ def _do_ai_call(institute, institute_id, feature, user_prompt, temperature, skip
         return Response({"error": str(e)}, status=502)
 
     # 6. Tenant- + vertical-scoped cache store
-    if not skip_cache and isinstance(result["content"], dict):
+    if not skip_cache and isinstance(result["content"], dict) and _worth_caching(result["content"]):
         _cache.set(institute_id, feature, user_prompt, result["content"], _cache_scope(vertical, board))
 
     # 7. Record usage (Redis for real-time + DB for billing)

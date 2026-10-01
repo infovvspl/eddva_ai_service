@@ -21,6 +21,7 @@ configuration change, never a code change.
     <model env>_GROUNDING           true | false | unknown
     <model env>_CONTEXT_TOKENS      positive integer | unknown
     <model env>_STREAMING           true (model only accepts streaming) | false | unknown
+    <model env>_REASONING_EFFORT    none | low | medium | high — sent with every request
 
   Local-development model override (server-side only, OFF by default):
     AI_MODEL_OVERRIDE_ENABLED       must be "true"
@@ -340,6 +341,10 @@ _META_ENV_SUFFIXES = {
     "CONTEXT_TOKENS": "context_tokens",
 }
 
+# Not a ModelSpec field: this is sent with the request. A reasoning model can
+# otherwise spend its whole output budget thinking and return empty content.
+_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high"})
+
 
 def _apply_together_env_metadata(models: dict, env: Mapping[str, str], warnings: list) -> None:
     """<model env>_<FIELD> lets an operator record what they have verified about
@@ -376,8 +381,18 @@ def _apply_together_env_metadata(models: dict, env: Mapping[str, str], warnings:
                     updates[fname] = None
                 else:
                     warnings.append(f"{name}: must be true, false or unknown; ignored")
-        if updates:
-            models[model_id] = replace(spec, metadata_source="config", **updates)
+        effort_name = f"{spec.model_env}_REASONING_EFFORT"
+        effort = (env.get(effort_name) or "").strip().lower()
+        extra = spec.extra
+        if effort:
+            if effort in _REASONING_EFFORTS:
+                params = dict((spec.extra or {}).get("request_params") or {})
+                params["reasoning_effort"] = effort
+                extra = dict(spec.extra or {}, request_params=params)
+            else:
+                warnings.append(f"{effort_name}: must be one of {sorted(_REASONING_EFFORTS)}; ignored")
+        if updates or extra is not spec.extra:
+            models[model_id] = replace(spec, metadata_source="config", extra=extra, **updates)
 
 
 def _apply_policy_fields(policy: RoutePolicy, fields: dict, models: dict, where: str, warnings: list) -> RoutePolicy:

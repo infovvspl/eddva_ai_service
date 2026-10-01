@@ -249,7 +249,12 @@ class TogetherAdapter:
         )
 
     def _post_completion(self, body: dict, key: str, model: str, timeout: float, streaming_hint: str):
-        """One non-streaming request. Returns (status, raw_text, usage_or_None, reported_model)."""
+        """One non-streaming request.
+
+        Returns (status, raw_text, usage_or_None, reported_model, finish_reason).
+        finish_reason is needed to tell "the model said nothing" from "the model
+        ran out of output budget before it said anything".
+        """
         import httpx
 
         try:
@@ -283,7 +288,11 @@ class TogetherAdapter:
             ) from None
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
         reported = data.get("model") if isinstance(data.get("model"), str) else None
-        return resp.status_code, raw, usage, reported
+        try:
+            finish = data["choices"][0].get("finish_reason")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            finish = None
+        return resp.status_code, raw, usage, reported, finish
 
     def _stream_completion(self, body: dict, key: str, model: str, timeout: float, streaming_hint: str):
         """One streaming request, assembled into a complete answer.
@@ -300,6 +309,7 @@ class TogetherAdapter:
         usage = None
         reported = None
         status = None
+        finish = None
         try:
             with httpx.stream(
                 "POST", f"{self.base_url()}/chat/completions", json=body, headers=self._headers(key), timeout=timeout,
@@ -346,6 +356,8 @@ class TogetherAdapter:
                         delta = (choice or {}).get("delta") or {}
                         if isinstance(delta.get("content"), str):
                             parts.append(delta["content"])
+                        if (choice or {}).get("finish_reason"):
+                            finish = choice["finish_reason"]
         except httpx.TimeoutException:
             self._event("timeout", model, None, key)
             raise RetryableProviderError(
@@ -358,7 +370,7 @@ class TogetherAdapter:
                 f"Together network error ({exc.__class__.__name__}) for model {model}",
                 provider="together", model=model, kind="network",
             ) from None
-        return status, "".join(parts), usage, reported
+        return status, "".join(parts), usage, reported, finish
 
     def complete(self, spec: ModelSpec, call: ProviderCall) -> dict:
         from ai_services.core.llm_client import _extract_json, strip_think_tags
@@ -398,6 +410,13 @@ class TogetherAdapter:
         }
         if call.json_mode and spec.structured_output == STRUCTURED_NATIVE:
             body["response_format"] = {"type": "json_object"}
+        # Per-model request parameters an operator has recorded, e.g.
+        # <model env>_REASONING_EFFORT. A reasoning model left on its default
+        # effort can spend the WHOLE output budget thinking and return empty
+        # content (see the budget check below). setdefault, so a recorded
+        # parameter can never overwrite what this adapter sets itself.
+        for _pname, _pvalue in ((spec.extra or {}).get("request_params") or {}).items():
+            body.setdefault(_pname, _pvalue)
 
         streamed = spec.streaming is True
         streaming_hint = (
@@ -406,9 +425,11 @@ class TogetherAdapter:
         )
         started = time.perf_counter()
         if streamed:
-            status_code, raw, usage, reported = self._stream_completion(body, key, model, timeout, streaming_hint)
+            status_code, raw, usage, reported, finish = self._stream_completion(
+                body, key, model, timeout, streaming_hint)
         else:
-            status_code, raw, usage, reported = self._post_completion(body, key, model, timeout, streaming_hint)
+            status_code, raw, usage, reported, finish = self._post_completion(
+                body, key, model, timeout, streaming_hint)
         latency_ms = (time.perf_counter() - started) * 1000
 
         tokens_reported = bool(usage) and ("prompt_tokens" in usage or "completion_tokens" in usage)
@@ -419,6 +440,22 @@ class TogetherAdapter:
             # provider-reported usage and must not be read as "free".
             logger.warning(
                 "Together model %s returned no token usage; recorded as 0 with tokens_reported=false", model,
+            )
+
+        # An empty body with finish_reason="length" is not "the model returned
+        # nothing": it spent the entire budget before writing any answer. GLM-5.3-Flash
+        # on a 12k-token source used all 8000 tokens as reasoning and returned empty
+        # content after ~60s, which was reported as an empty response and hid the cause.
+        # Checked before JSON parsing, or a JSON call blames malformed output instead.
+        if not (raw or "").strip() and str(finish or "").lower() == "length":
+            reasoning_tokens = int(
+                ((usage or {}).get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+            )
+            hint = f"; lower it with {spec.model_env}_REASONING_EFFORT=low" if spec.model_env else ""
+            raise NonRetryableProviderError(
+                f"Together model {model} used its entire {call.max_tokens}-token output budget "
+                f"before writing any answer ({reasoning_tokens} of those tokens were reasoning){hint}",
+                provider="together", model=model, status_code=status_code, kind="budget_exhausted",
             )
 
         if call.json_mode:

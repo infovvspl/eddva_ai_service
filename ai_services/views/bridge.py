@@ -3279,9 +3279,70 @@ _SOLVER_SCOPE_RULE = (
     "- Always answer the question the student actually asked, using whichever subject "
     "it genuinely belongs to.\n"
     "- NEVER say you can only help with one subject, and NEVER refuse to answer an "
-    "academic question. A refusal is a failed response.\n"
+    "academic question because of its subject. A subject refusal is a failed response.\n"
+    "- This is about SUBJECT scope only. Correcting a wrong fact inside the question is "
+    "not a refusal — it is required. See CHECK THE QUESTION'S FACTS below.\n"
     "- Keep the JSON output schema above exactly as specified.\n"
 )
+
+
+# Tested on 2026-09-30 against 18 false-premise questions (CBSE Class 8 Science):
+# 10 produced confident fabrications — an invented "BIS IS 1445:2009" calorific
+# value, a non-existent "Bharat unit" attributed to the NCERT textbook, a fake
+# "Kutch Intensity Index" reading, an invented tiger reserve with a declaration
+# year, and two cases where a reversed premise ("rolling friction is greater than
+# sliding friction") was accepted and explained. The scope rule above, written to
+# stop subject-misroute refusals, was telling the model that not answering is
+# always failure — so it answered, and invented the supporting detail.
+_FALSE_PREMISE_RULE = (
+    "\n\nCHECK THE QUESTION'S FACTS BEFORE ANSWERING:\n"
+    "A question may contain a claim that is wrong or made up. Students copy such claims "
+    "from rumours, bad notes or their own guesses, and a confident wrong answer is worse "
+    "for them than being corrected.\n"
+    "- If the question asserts a policy, standard, scheme, law, unit, statistic, year, "
+    "discovery, inventor or technical term that is false or that you cannot verify, SAY SO "
+    "plainly in your answer, then teach the correct fact instead.\n"
+    "- NEVER invent a standard number, unit name, official figure, percentage, date, "
+    "organisation or piece of terminology in order to satisfy the question.\n"
+    "- NEVER attribute a claim to NCERT, CBSE, a textbook, BIS or any authority unless you "
+    "are certain it is theirs. Saying 'the textbook states' about something you are not sure "
+    "of is a serious error.\n"
+    "- If the question states a fact backwards (for example reversing which of two things is "
+    "greater), correct the direction first and then explain the real science. Do not build an "
+    "explanation on the reversed claim.\n"
+    "- Doing this is NOT refusing. Answer the corrected question fully, in the same JSON schema.\n"
+    "\n"
+    "REQUIRED FIELD \"premise_check\" (inside \"brief\"):\n"
+    "Prose instructions alone did not change this behaviour in testing, so the check is now "
+    "part of the schema you must fill:\n"
+    "- Set \"premise_check\" to exactly \"ok\" ONLY when every factual claim in the question is "
+    "true and you are sure of it.\n"
+    "- Otherwise write a short description of what is wrong there instead, for example "
+    "\"no BIS standard fixes this value\" or \"rolling friction is smaller than sliding friction, "
+    "not greater\".\n"
+    "- Whenever it is not \"ok\", the FIRST line of the answer must state the correction before "
+    "anything else, and the false claim must never be repeated as fact.\n"
+)
+
+
+def _class_level_rule(class_name: str) -> str:
+    """Tell the model who is asking, so the answer is pitched at their class.
+
+    Measured on 2026-09-30 across CBSE Class 8 Science doubts: answers were
+    correct but routinely years above the student — Rayleigh scattering for "why
+    can't we see stars by day", Van der Waals forces and asperities for "is a
+    polished surface frictionless", rhinovirus/adenovirus and cell-wall synthesis
+    inhibition for "will an antibiotic cure a cold".
+    """
+    label = class_name.strip()
+    return (
+        f"\n\nPITCH THE ANSWER AT {label.upper()}:\n"
+        f"The student is in {label}. Explain at that level, in the vocabulary that class's "
+        "textbook uses, and keep the depth a student of that class is examined on.\n"
+        "- Do not bring in material from higher classes to sound thorough.\n"
+        "- If a complete answer genuinely needs an idea from a later class, name it in one "
+        "short phrase, say it is studied in higher classes, and answer using what this class knows.\n"
+    )
 
 
 def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed", vertical: str = "coaching", board: str = "") -> str:
@@ -3311,7 +3372,8 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             '{\n'
             '  "brief": {\n'
             '    "answer": "Correct Answer: <Option>\\nJustification: <1-2 lines>.",\n'
-            '    "question_nature": "mcq"\n'
+            '    "question_nature": "mcq",\n'
+            '    "premise_check": "ok"\n'
             '  },\n'
             '  "detailed": {\n'
             '    "solution": "Correct Answer: <Option>\\nJustification: <2-3 lines with **bold** keywords>.",\n'
@@ -3342,7 +3404,8 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             '{\n'
             '  "brief": {\n'
             '    "answer": "Step 1: [Plain Text Explanation].\\n$Math Equation$\\nFinal Answer: [Summary].",\n'
-            '    "question_nature": "numerical"\n'
+            '    "question_nature": "numerical",\n'
+            '    "premise_check": "ok"\n'
             '  },\n'
             '  "detailed": {\n'
             '    "solution": "Step 1: [Plain Text Header]\\n$Detailed Equation$\\nStep 2: ...",\n'
@@ -3367,7 +3430,8 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             '{\n'
             '  "brief": {\n'
             '    "answer": "**(i) Header**\\n• Point...\\n\\n**(ii) Header**\\n• Point... (Continue for all sub-parts i, ii, iii, iv...)",\n'
-            '    "question_nature": "theory"\n'
+            '    "question_nature": "theory",\n'
+            '    "premise_check": "ok"\n'
             '  },\n'
             '  "detailed": {\n'
             '    "solution": "**(i) Header**\\n• Deep point...\\n\\n**(ii) Header**\\n• Deep point... (Provide all sub-parts requested in the question)",\n'
@@ -3658,7 +3722,16 @@ def resolve_doubt(request):
 
     print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model} | Vertical: {vertical} | Language: {language}")
     board = getattr(request, "board", "")
-    solver_system = _build_solver_system_prompt(subject, qtype, mode, vertical, board) + _SOLVER_SCOPE_RULE
+    solver_system = (_build_solver_system_prompt(subject, qtype, mode, vertical, board)
+                     + _SOLVER_SCOPE_RULE + _FALSE_PREMISE_RULE)
+
+    # The caller already sends the student's class in studentContext, but only the
+    # vision prompt ever used it: text doubts were answered with no idea who was
+    # asking. A Class 8 student asking why sodium is more reactive than magnesium
+    # was given electron configurations and ionisation enthalpies in kJ/mol.
+    _class_name = str(student_ctx.get("className") or data.get("className") or "").strip()
+    if _class_name:
+        solver_system += _class_level_rule(_class_name)
 
     if is_odia:
         solver_system += (
@@ -3841,6 +3914,7 @@ def resolve_doubt(request):
     for k, v in detailed_obj.items(): detailed_obj[k] = _safe_str(v)
 
     _normalize_doubt_answer(brief_obj, detailed_obj)
+    _surface_premise_warning(brief_obj, detailed_obj, question_text, institute_id)
 
     try:
         _doubt_model = solve_result.get('model', 'unknown')
@@ -3885,6 +3959,38 @@ def resolve_doubt(request):
 
 # Template placeholder values a model copies verbatim ("verification": "None").
 _ANSWER_PLACEHOLDERS = {"none", "n/a", "na", "null", "nil", "-"}
+
+
+# Values the model may use to mean "the question is fine". Anything else is
+# treated as a reported problem with the question.
+_PREMISE_OK = {"ok", "okay", "true", "valid", "correct", "none", "n/a", "na", "-", ""}
+
+
+def _surface_premise_warning(brief_obj: dict, detailed_obj: dict, question: str,
+                             institute_id=None) -> bool:
+    """Put the model's premise_check in front of the student, and log it.
+
+    The field is worthless if it is filled in and then dropped on the floor: the
+    student would still read a confident answer to a false question. When the
+    model reports a problem, the note is prepended to both answer shapes so
+    whichever field the UI renders shows the correction first.
+    """
+    raw = brief_obj.pop("premise_check", None)
+    detailed_obj.pop("premise_check", None)
+    note = str(raw or "").strip()
+    if not note or note.strip(" .").lower() in _PREMISE_OK:
+        return False
+
+    logger.warning("Doubt premise flagged by the model: %s | question=%r",
+                   note[:200], (question or "")[:120])
+    banner = f"**Note about the question:** {note.rstrip('.')}.\n\n"
+    for obj, keys in ((brief_obj, ("answer", "final_answer")),
+                      (detailed_obj, ("solution", "explanation"))):
+        for k in keys:
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip() and not v.lstrip().startswith("**Note about the question:**"):
+                obj[k] = banner + v
+    return True
 
 
 def _normalize_doubt_answer(brief_obj: dict, detailed_obj: dict) -> None:
