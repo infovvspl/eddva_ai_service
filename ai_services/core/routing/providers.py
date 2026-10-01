@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -245,7 +246,7 @@ class TogetherAdapter:
         hint = streaming_hint if ("streaming_required" in text or "supports streaming" in text.lower()) else ""
         raise error_for_status(
             status, f"Together {status} for model {model}: {scrub(text[:300], key)}{hint}",
-            provider="together", model=model,
+            provider="together", model=model, retry_after_ms=retry_after_ms,
         )
 
     def _post_completion(self, body: dict, key: str, model: str, timeout: float, streaming_hint: str):
@@ -372,6 +373,72 @@ class TogetherAdapter:
             ) from None
         return status, "".join(parts), usage, reported, finish
 
+    # Together's rate limits are dynamic, set per organization and per model, and
+    # they grow with sustained successful traffic. A new account therefore gets a
+    # low ceiling, and a burst looks like abuse: a 170-call test run on
+    # 2026-09-30 collapsed into 429s, while the same calls paced 3s apart all
+    # succeeded. Without this, a 429 reaches the student as a 502.
+    #
+    # Deliberately NOT retried: timeouts (the budget is already spent, and a
+    # retry doubles the wait a human is sitting through) and every 4xx except
+    # 429 (deterministic - the same request fails the same way).
+    _RETRY_KINDS = frozenset({"rate_limited", "server_error", "network"})
+
+    @staticmethod
+    def _retry_attempts() -> int:
+        """Extra attempts after the first. Bounded, and 0 disables retrying."""
+        try:
+            return max(0, min(5, int(os.getenv("TOGETHER_RETRY_ATTEMPTS", "2"))))
+        except (TypeError, ValueError):
+            return 2
+
+    def _backoff_s(self, exc, attempt: int) -> float:
+        """Honour the provider's own Retry-After, else exponential with jitter."""
+        if getattr(exc, "retry_after_ms", None):
+            return min(30.0, exc.retry_after_ms / 1000.0)
+        return min(30.0, (2 ** attempt) + random.uniform(0, 0.5))
+
+    def _request_with_retry(self, body: dict, key: str, model: str, timeout: float,
+                            streaming_hint: str, streamed: bool):
+        """One provider call, retried on a transient failure within the budget.
+
+        The whole sequence stays inside `timeout`: a retry is only started if the
+        remaining budget can still fit it, so retrying never extends how long a
+        caller waits beyond the deadline it asked for.
+        """
+        send = self._stream_completion if streamed else self._post_completion
+        deadline = time.monotonic() + timeout
+        attempts = self._retry_attempts()
+        last: Optional[BaseException] = None
+        for attempt in range(attempts + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                return send(body, key, model, min(timeout, remaining), streaming_hint)
+            except ProviderError as exc:
+                last = exc
+                if exc.kind not in self._RETRY_KINDS or attempt >= attempts:
+                    raise
+                wait = self._backoff_s(exc, attempt)
+                if time.monotonic() + wait >= deadline:
+                    logger.warning(
+                        "Together %s for %s; no budget left to retry (%.1fs remaining)",
+                        exc.kind, model, deadline - time.monotonic(),
+                    )
+                    raise
+                logger.warning(
+                    "Together %s for %s (attempt %d/%d) — retrying in %.1fs",
+                    exc.kind, model, attempt + 1, attempts + 1, wait,
+                )
+                time.sleep(wait)
+        if last:
+            raise last
+        raise RetryableProviderError(
+            f"Together call for {model} exhausted its time budget before any attempt",
+            provider="together", model=model, kind="timeout",
+        )
+
     def complete(self, spec: ModelSpec, call: ProviderCall) -> dict:
         from ai_services.core.llm_client import _extract_json, strip_think_tags
 
@@ -424,12 +491,8 @@ class TogetherAdapter:
             if spec.model_env else ""
         )
         started = time.perf_counter()
-        if streamed:
-            status_code, raw, usage, reported, finish = self._stream_completion(
-                body, key, model, timeout, streaming_hint)
-        else:
-            status_code, raw, usage, reported, finish = self._post_completion(
-                body, key, model, timeout, streaming_hint)
+        status_code, raw, usage, reported, finish = self._request_with_retry(
+            body, key, model, timeout, streaming_hint, streamed)
         latency_ms = (time.perf_counter() - started) * 1000
 
         tokens_reported = bool(usage) and ("prompt_tokens" in usage or "completion_tokens" in usage)

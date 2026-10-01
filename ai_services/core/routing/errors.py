@@ -47,11 +47,16 @@ class ProviderError(RoutingError):
         model: Optional[str] = None,
         status_code: Optional[int] = None,
         kind: Optional[str] = None,
+        retry_after_ms: Optional[int] = None,
     ):
         super().__init__(message)
         self.provider = provider
         self.model = model
         self.status_code = status_code
+        # What the provider itself asked us to wait, from its Retry-After header.
+        # Guessing a backoff when the provider has told us the number is how a
+        # rate limit turns into a longer rate limit.
+        self.retry_after_ms = retry_after_ms
         if kind:
             self.kind = kind
 
@@ -119,7 +124,8 @@ def classify_status(status_code: Optional[int]) -> tuple[bool, str]:
 
 
 def error_for_status(
-    status_code: int, message: str, *, provider: str, model: Optional[str]
+    status_code: int, message: str, *, provider: str, model: Optional[str],
+    retry_after_ms: Optional[int] = None,
 ) -> ProviderError:
     retryable, kind = classify_status(status_code)
     if retryable:
@@ -128,4 +134,5 @@ def error_for_status(
         cls = ProviderConfigError
     else:
         cls = NonRetryableProviderError
-    return cls(message, provider=provider, model=model, status_code=status_code, kind=kind)
+    return cls(message, provider=provider, model=model, status_code=status_code, kind=kind,
+               retry_after_ms=retry_after_ms)

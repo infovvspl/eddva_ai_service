@@ -210,11 +210,35 @@ class TogetherAdapterTests(_EventsPatched):
             else:
                 self.assertFalse(cm.exception.retryable)
 
-    def test_exactly_one_http_attempt_even_on_retryable_failure(self):
-        with self.assertRaises(RetryableProviderError):
-            _, post = self._call(_Resp(503, text="busy"))
-        with patch.dict(os.environ, {"TOGETHER_API_KEY": KEY}), patch("httpx.post", return_value=_Resp(503)) as post:
+    def test_retryable_failures_are_retried_a_bounded_number_of_times(self):
+        """This used to assert exactly one attempt, to rule out retry amplification.
+
+        That contract changed deliberately on 2026-10-01: Together's rate limits
+        are dynamic, and a 429 with no retry reaches the student as a 502. The
+        guarantee is now BOUNDED retries rather than none - the amplification
+        risk is held by the bound, by the kinds retried, and by the deadline.
+        """
+        with patch.dict(os.environ, {"TOGETHER_API_KEY": KEY, "TOGETHER_RETRY_ATTEMPTS": "2"}), \
+             patch("httpx.post", return_value=_Resp(503)) as post, \
+             patch("time.sleep"):
             with self.assertRaises(RetryableProviderError):
+                TogetherAdapter().complete(self.SPEC, ProviderCall("s", "u", QWEN, json_mode=False))
+        self.assertEqual(post.call_count, 3)          # first attempt + 2 retries
+
+    def test_retrying_can_be_turned_off_entirely(self):
+        with patch.dict(os.environ, {"TOGETHER_API_KEY": KEY, "TOGETHER_RETRY_ATTEMPTS": "0"}), \
+             patch("httpx.post", return_value=_Resp(503)) as post, \
+             patch("time.sleep"):
+            with self.assertRaises(RetryableProviderError):
+                TogetherAdapter().complete(self.SPEC, ProviderCall("s", "u", QWEN, json_mode=False))
+        self.assertEqual(post.call_count, 1)
+
+    def test_a_deterministic_failure_is_still_attempted_only_once(self):
+        # 400 must never be retried: the same request fails the same way.
+        with patch.dict(os.environ, {"TOGETHER_API_KEY": KEY, "TOGETHER_RETRY_ATTEMPTS": "2"}), \
+             patch("httpx.post", return_value=_Resp(400, text="bad")) as post, \
+             patch("time.sleep"):
+            with self.assertRaises(NonRetryableProviderError):
                 TogetherAdapter().complete(self.SPEC, ProviderCall("s", "u", QWEN, json_mode=False))
         self.assertEqual(post.call_count, 1)
 
@@ -829,7 +853,11 @@ class TogetherStreamingTests(_EventsPatched):
 
         stream = _Stream(lines=_sse({"choices": [{"delta": {"content": "a"}}]},
                                     {"choices": [{"delta": {"content": "b"}}]}))
-        clock = itertools.chain([0.0, 0.0], itertools.repeat(999.0))
+        # Four zeros, not two: the retry wrapper reads the clock twice (to set and
+        # then check its own deadline) before the stream reads it to set its own.
+        # Without these the stream would compute its deadline from 999.0 and never
+        # consider itself late.
+        clock = itertools.chain([0.0, 0.0, 0.0, 0.0], itertools.repeat(999.0))
         with patch("ai_services.core.routing.providers.time.monotonic", side_effect=lambda: next(clock)):
             with self.assertRaises(RetryableProviderError) as cm:
                 self._run(stream, timeout_s=30)
