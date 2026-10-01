@@ -5614,6 +5614,17 @@ _CONTENT_TYPE_PROMPTS = {
         "For each formula: write it clearly, name every variable, give a one-line use-case hint. "
         "Group formulas by sub-topic. Use LaTeX notation where appropriate (e.g. $F = ma$)."
     ),
+    "formula_sheet": (
+        "Generate a formula sheet only. Do not write notes, an introduction, or explanatory paragraphs. "
+        "List every key formula for this topic, grouped under sub-topic Markdown ## headings. "
+        "For each formula: write it on its own line, name every variable used in it directly underneath, "
+        "and give a one-line hint on when/why to use it.\n\n"
+        "CRITICAL MATH NOTATION: For all formulas, equations, exponents, and variables, always use valid "
+        "KaTeX/LaTeX Markdown. Exponents must use carets (e.g., $x^2$, $x^3$), and every mathematical "
+        "expression must be wrapped in single dollar signs (e.g. $F = ma$, $3\\sqrt{5}$). Never output raw "
+        "math or variables without dollar signs, never use raw exponents like x2 or x3, and never use the "
+        "Unicode square-root symbol — use \\sqrt instead."
+    ),
     "summary": (
         "Generate a crisp, exam-ready summary of this topic in Markdown. "
         "Use bullet points and short paragraphs. Cover every exam-important concept."

@@ -471,8 +471,14 @@ def describe_figures(figures: list) -> int:
                     contents=contents,
                     config=types.GenerateContentConfig(
                         temperature=0.0,
-                        max_output_tokens=900,
+                        max_output_tokens=1536,
                         response_mime_type="application/json",
+                        # Gemini 2.5 charges its internal reasoning against
+                        # max_output_tokens; without this the model can burn the
+                        # whole budget on invisible thinking tokens and truncate
+                        # the JSON mid-string (json.loads then raises). See the
+                        # same fix in gemini_client.py's complete_text/complete_json.
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
                 payload = json.loads(getattr(response, "text", "") or "{}")
