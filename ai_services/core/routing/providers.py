@@ -411,7 +411,9 @@ class TogetherAdapter:
         attempts = self._retry_attempts()
         last: Optional[BaseException] = None
         for attempt in range(attempts + 1):
-            remaining = deadline - time.monotonic()
+            # The first attempt owns the whole budget; only a retry runs on what
+            # is left (re-deriving it here would shave clock jitter off `timeout`).
+            remaining = timeout if attempt == 0 else deadline - time.monotonic()
             if remaining <= 0:
                 break
             try:
