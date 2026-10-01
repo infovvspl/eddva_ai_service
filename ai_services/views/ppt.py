@@ -26,6 +26,7 @@ from ai_services.core.boards import board_instruction
 from ai_services.core.serpapi_images import search_google_images
 from ai_services.core.usage_logger import log_usage
 from .base import get_llm, metered
+from ai_services.core.routing import telemetry_model_from_error
 
 logger = logging.getLogger("ai_services.ppt")
 
@@ -710,6 +711,36 @@ def _repair_latex_escapes(text: str) -> str:
     return _MATH_SPAN_RE.sub(fix_span, text)
 
 
+# Field names from the slide schema shown in the prompt. A model occasionally
+# echoes one of them into "bullets" instead of (or as well as) filling the field:
+# on 2026-09-29 GLM-5.3-Flash ended every content slide of a grounded Class 10
+# English deck with a literal "pages" bullet, while its "pages" array was correctly
+# populated. On the teacher's slide that renders as a stray one-word line.
+_SCHEMA_ECHO_BULLETS = {
+    "pages", "bullets", "title", "subtitle", "type", "slidenumber",
+    "speakernotes", "imagesearchterm",
+}
+
+
+def _drop_schema_echo_bullets(slides: list) -> list:
+    """Remove bullets that are nothing but a schema field name."""
+    dropped = 0
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        bullets = slide.get("bullets")
+        if not isinstance(bullets, list):
+            continue
+        kept = [b for b in bullets
+                if str(b).strip().strip(":").strip().lower() not in _SCHEMA_ECHO_BULLETS]
+        if len(kept) != len(bullets):
+            dropped += len(bullets) - len(kept)
+            slide["bullets"] = kept
+    if dropped:
+        logger.warning("PPT: dropped %d bullet(s) that were only a schema field name", dropped)
+    return slides
+
+
 def _repair_slide_latex(slide: dict) -> dict:
     """Apply _repair_latex_escapes to every rendered text field of a slide."""
     if not isinstance(slide, dict):
@@ -760,6 +791,9 @@ def _log(institute_id, vertical, model, result=None, success=True, error=None):
 _MODEL = "openai/gpt-oss-120b"
 
 _MAX_SLIDES = 25
+# The smallest deck the endpoint will build. A title-only deck teaches nothing,
+# so 1 is still refused; 2 gives a content slide plus a summary.
+_MIN_SLIDES = 2
 
 # Output budget, constrained by Groq's per-key tokens-per-minute ceiling.
 #
@@ -842,6 +876,21 @@ def _classify_gemini_failure(exc: Exception) -> str:
     return "gemini_error"              # malformed JSON, empty response, transport
 
 
+def _classify_grounded_failure(exc: Exception) -> str:
+    """Reason code for the teacher's badge.
+
+    Gemini failures keep their precise codes. A failure of any other provider
+    maps to the provider-neutral "unavailable": the frontend's gemini_* messages
+    tell the teacher to check the Gemini quota or key, which would be wrong
+    advice when Together served the call.
+    """
+    from ai_services.core.routing import ProviderError
+
+    if isinstance(exc, ProviderError) and exc.provider and exc.provider != "gemini":
+        return "unavailable"
+    return _classify_gemini_failure(getattr(exc, "__cause__", None) or exc)
+
+
 def _fmt_ms(ms):
     """Milliseconds -> seconds with one decimal, or None when unavailable."""
     return None if ms is None else round(ms / 1000.0, 1)
@@ -861,12 +910,19 @@ def _generate_grounded(
     from ai_services.core import gemini_client as _gc
     from ai_services.core import grounding as _gr
 
-    if not _gc.is_available():
-        # No key present or the SDK is not installed on this host. This is the
-        # blanket failure that turns EVERY grounded deck into general knowledge.
+    # Routed like generate_topic_content: the grounded policy's Together model
+    # when configured and verified, otherwise Gemini exactly as before.
+    llm = get_llm()
+    _route = dict(model=_gc.DEFAULT_MODEL, provider="gemini", capability="grounded",
+                  feature="ppt_generate", json_mode=True, requires_grounding=True)
+    if not llm.can_route(**_route):
+        # No grounded LLM on this host: no verified grounded Together model and
+        # no Gemini key / SDK. This is the blanket failure that turns EVERY
+        # grounded deck into general knowledge.
         logger.warning(
-            "Grounded PPT skipped: Gemini unavailable (no key or google-genai "
-            "missing) — deck for %r will be general knowledge despite %d passages",
+            "Grounded PPT skipped: no grounded LLM available (Together grounded model not "
+            "configured and Gemini unavailable) — deck for %r will be general knowledge "
+            "despite %d passages",
             ctx.get("chapterName") or topic, len(passages),
         )
         return None, "gemini_unavailable"
@@ -912,10 +968,15 @@ def _generate_grounded(
     _prompt_chars = len(_system_prompt) + len(_user_prompt)
     _t_llm_start = time.perf_counter()
     try:
-        result = _gc.complete_json(
+        result = llm.complete(
             system_prompt=_system_prompt,
             user_prompt=_user_prompt,
-            max_output_tokens=_out_tokens,
+            temperature=0.3,
+            max_tokens=_out_tokens,
+            institute_id=institute_id,
+            legacy_prompt_shaping=False,
+            min_context_tokens=_prompt_chars // 3 + _out_tokens,
+            **_route,
         )
     except Exception as exc:
         logger.warning(
@@ -924,12 +985,12 @@ def _generate_grounded(
             _select_s, time.perf_counter() - _t_llm_start, _prompt_chars,
             len(selection["passages"]), len(passages), slide_count, _out_tokens,
         )
-        reason = _classify_gemini_failure(exc)
+        reason = _classify_grounded_failure(exc)
         logger.warning(
             "Grounded PPT fell back (%s) for %r: %s",
             reason, ctx.get("chapterName") or topic, exc,
         )
-        _log(institute_id, vertical, "gemini", success=False, error=exc)
+        _log(institute_id, vertical, telemetry_model_from_error(exc, "gemini"), success=False, error=exc)
         return None, reason
 
     _log(institute_id, vertical, result.get("model", "gemini"), result=result)
@@ -952,7 +1013,7 @@ def _generate_grounded(
             slides,
         ))
     _images_s = time.perf_counter() - _t_img_start
-    data["slides"] = [{**s, **img} for s, img in zip(slides, images)]
+    data["slides"] = _drop_schema_echo_bullets([{**s, **img} for s, img in zip(slides, images)])
 
     # One line that answers "where did the 100 seconds go?". ai_usage_events
     # stores only _llm_s, so retrieval and image time were previously invisible.
@@ -1019,7 +1080,11 @@ def generate_presentation(request):
     if not topic:
         return Response({"error": "topic is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    slide_count = max(3, min(_MAX_SLIDES, int(request.data.get("slideCount") or 5)))
+    # Floor of 2, not 3: a two-slide deck (one content slide + a summary) is a
+    # legitimate request — used for quick topic recaps and for cheap test runs.
+    # A request for 2 was previously raised to 3 silently, so the caller could
+    # not tell that its slide count had been overridden.
+    slide_count = max(_MIN_SLIDES, min(_MAX_SLIDES, int(request.data.get("slideCount") or 5)))
     language = (request.data.get("language") or "English").strip()
     institute_id = getattr(request, "institute_id", None)
     vertical = getattr(request, "vertical", None) or request.headers.get("X-Vertical") or request.headers.get("x-vertical") or "school"
@@ -1077,7 +1142,11 @@ def generate_presentation(request):
         # Keep the deck exactly as long as the plan (+ title + summary). A scope with
         # genuinely less material yields a shorter, honest deck rather than one padded
         # out to the requested length with filler slides.
-        slide_count = len(sub_areas) + 2
+        #
+        # min(): the plan may only SHORTEN the deck, never lengthen it. With a floor of
+        # 2 slides the plan always holds at least one sub-area, which would otherwise
+        # turn a 2-slide request into 3 — silently overriding the caller again.
+        slide_count = min(slide_count, len(sub_areas) + 2)
 
     system_prompt = board_instruction(board) + _build_generate_prompt(
         slide_count, language, topic, ctx, sub_areas
@@ -1119,10 +1188,12 @@ def generate_presentation(request):
             max_tokens=_gen_max_tokens,
             json_mode=True,
             institute_id=institute_id,
+            feature="ppt_generate",
+            capability="content",
         )
     except Exception as exc:
         logger.warning("PPT generate failed: %s", exc)
-        _log(institute_id, vertical, _MODEL, success=False, error=exc)
+        _log(institute_id, vertical, telemetry_model_from_error(exc, _MODEL), success=False, error=exc)
         return Response(
             {"error": "Failed to generate slide content. Please try again."},
             status=status.HTTP_502_BAD_GATEWAY,
@@ -1134,7 +1205,7 @@ def generate_presentation(request):
     if err:
         return Response({"error": err}, status=status.HTTP_502_BAD_GATEWAY)
 
-    slides = [_repair_slide_latex(s) for s in (data.get("slides") or [])]
+    slides = _drop_schema_echo_bullets([_repair_slide_latex(s) for s in (data.get("slides") or [])])
     # Fetched concurrently: sequentially this cost 1s of sleep plus a download per
     # slide, which at 25 slides ran up against the caller's request timeout.
     with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
@@ -1213,10 +1284,12 @@ def regenerate_slide(request):
             max_tokens=2048,
             json_mode=True,
             institute_id=institute_id,
+            feature="ppt_generate",
+            capability="content",
         )
     except Exception as exc:
         logger.error("PPT regenerate-slide LLM error: %s", exc)
-        _log(institute_id, vertical, _MODEL, success=False, error=exc)
+        _log(institute_id, vertical, telemetry_model_from_error(exc, _MODEL), success=False, error=exc)
         return Response(
             {"error": "Failed to regenerate slide. Please try again."},
             status=status.HTTP_502_BAD_GATEWAY,

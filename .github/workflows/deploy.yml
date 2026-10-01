@@ -17,6 +17,16 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
+          # Production's own Together key — deliberately a different secret name
+          # from TOGETHER_API_KEY_DEV so the two can never be confused.
+          TOGETHER_API_KEY: ${{ secrets.PROD_TOGETHER_API_KEY }}
+          TOGETHER_MODEL_GPT_OSS_120B: ${{ vars.TOGETHER_MODEL_GPT_OSS_120B || secrets.TOGETHER_MODEL_GPT_OSS_120B }}
+          TOGETHER_MODEL_DEEPSEEK_V4_FLASH: ${{ vars.TOGETHER_MODEL_DEEPSEEK_V4_FLASH || secrets.TOGETHER_MODEL_DEEPSEEK_V4_FLASH }}
+          TOGETHER_MODEL_GLM53_FLASH: ${{ vars.TOGETHER_MODEL_GLM53_FLASH || secrets.TOGETHER_MODEL_GLM53_FLASH }}
+          AI_ROUTER_ENABLED: ${{ vars.PROD_AI_ROUTER_ENABLED || secrets.PROD_AI_ROUTER_ENABLED }}
+          AI_ROUTER_FALLBACK_ENABLED: ${{ vars.PROD_AI_ROUTER_FALLBACK_ENABLED || secrets.PROD_AI_ROUTER_FALLBACK_ENABLED }}
+          AI_ROUTE_CONTENT_PRIMARY: ${{ vars.PROD_AI_ROUTE_CONTENT_PRIMARY || secrets.PROD_AI_ROUTE_CONTENT_PRIMARY }}
+          AI_ROUTE_GROUNDED_PRIMARY: ${{ vars.PROD_AI_ROUTE_GROUNDED_PRIMARY || secrets.PROD_AI_ROUTE_GROUNDED_PRIMARY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -47,7 +57,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 20m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,SARVAM_API_KEY_1,SARVAM_API_KEY_2,SARVAM_API_KEY_3,DJANGO_SECRET_KEY,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,INTERNAL_API_KEY,PROD_REDIS_URL,GROQ_API_KEYS,PROD_NESTJS_URL
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,SARVAM_API_KEY_1,SARVAM_API_KEY_2,SARVAM_API_KEY_3,DJANGO_SECRET_KEY,AI_API_KEY,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,INTERNAL_API_KEY,PROD_REDIS_URL,GROQ_API_KEYS,PROD_NESTJS_URL,TOGETHER_API_KEY,TOGETHER_MODEL_GPT_OSS_120B,TOGETHER_MODEL_DEEPSEEK_V4_FLASH,TOGETHER_MODEL_GLM53_FLASH,AI_ROUTER_ENABLED,AI_ROUTER_FALLBACK_ENABLED,AI_ROUTE_CONTENT_PRIMARY,AI_ROUTE_GROUNDED_PRIMARY
           script: |
             set -e
             AI_DIR=/home/ubuntu/eddva_ai_service
@@ -77,6 +87,44 @@ jobs:
             printf 'SARVAM_API_KEY_1=%s\n'      "$SARVAM_API_KEY_1"    >> .env
             printf 'SARVAM_API_KEY_2=%s\n'      "$SARVAM_API_KEY_2"    >> .env
             printf 'SARVAM_API_KEY_3=%s\n'      "$SARVAM_API_KEY_3"    >> .env
+
+            # ── Together (model router) ────────────────────────────────────
+            # PRODUCTION uses its OWN Together key, never the dev one: a shared
+            # key means dev traffic rate-limits production (429s were observed
+            # from a single client), and spend cannot be split per environment.
+            #
+            # Safe when unset: with no key and no model ids the router logs
+            # model_id_not_configured(...) and falls through to Groq/Gemini,
+            # so this block is a no-op until the secret exists.
+            printf 'TOGETHER_API_KEY=%s\n'      "$TOGETHER_API_KEY"    >> .env
+            if [ -z "$TOGETHER_API_KEY" ]; then
+              echo "NOTE: no Together key for PRODUCTION — routing stays on Groq/Gemini"
+            fi
+            printf 'TOGETHER_MODEL_GPT_OSS_120B=%s\n' "$TOGETHER_MODEL_GPT_OSS_120B" >> .env
+            printf 'TOGETHER_MODEL_GPT_OSS_120B_CONTEXT_TOKENS=131072\n' >> .env
+            printf 'TOGETHER_MODEL_GPT_OSS_120B_STRUCTURED_OUTPUT=native\n' >> .env
+            printf 'TOGETHER_MODEL_DEEPSEEK_V4_FLASH=%s\n' "$TOGETHER_MODEL_DEEPSEEK_V4_FLASH" >> .env
+            printf 'TOGETHER_MODEL_DEEPSEEK_V4_FLASH_CONTEXT_TOKENS=1048576\n' >> .env
+            printf 'TOGETHER_MODEL_DEEPSEEK_V4_FLASH_STRUCTURED_OUTPUT=native\n' >> .env
+            printf 'TOGETHER_MODEL_GLM53_FLASH=%s\n' "$TOGETHER_MODEL_GLM53_FLASH" >> .env
+            printf 'TOGETHER_MODEL_GLM53_FLASH_CONTEXT_TOKENS=1048575\n' >> .env
+            printf 'TOGETHER_MODEL_GLM53_FLASH_STRUCTURED_OUTPUT=native\n' >> .env
+            printf 'TOGETHER_MODEL_GLM53_FLASH_GROUNDING=true\n' >> .env
+            printf 'TOGETHER_MODEL_GLM53_FLASH_REASONING_EFFORT=low\n' >> .env
+
+            # Both default to false: a production deploy must never move traffic
+            # to a new provider by itself. Turn the router on deliberately, only
+            # after dev has run on it. Fallback to Groq is worth enabling here —
+            # a Together 503 currently reaches the user as a 502.
+            printf 'AI_ROUTER_ENABLED=%s\n' "${AI_ROUTER_ENABLED:-false}" >> .env
+            printf 'AI_ROUTER_FALLBACK_ENABLED=%s\n' "${AI_ROUTER_FALLBACK_ENABLED:-false}" >> .env
+            if [ -n "$AI_ROUTE_CONTENT_PRIMARY" ]; then
+              printf 'AI_ROUTE_CONTENT_PRIMARY=%s\n' "$AI_ROUTE_CONTENT_PRIMARY" >> .env
+            fi
+            if [ -n "$AI_ROUTE_GROUNDED_PRIMARY" ]; then
+              printf 'AI_ROUTE_GROUNDED_PRIMARY=%s\n' "$AI_ROUTE_GROUNDED_PRIMARY" >> .env
+            fi
+
             printf 'DJANGO_SECRET_KEY=%s\n'     "$DJANGO_SECRET_KEY"   >> .env
             printf 'AI_API_KEY=%s\n'            "$AI_API_KEY_VALUE"    >> .env
             printf 'DJANGO_DEBUG=false\n'                              >> .env

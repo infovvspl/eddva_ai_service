@@ -1,0 +1,623 @@
+[
+ {
+  "id": "doubt.resolve",
+  "path": "/doubt/resolve",
+  "status": 200,
+  "seconds": 11.0,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "1170+1205"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"subject\": \"biology\", \"type\": \"conceptual\", \"model_used\": \"together:openai/gpt-oss-120b\", \"answer\": \"**(i) Definition**\\n\\u2022 Photosynthesis is the process by which green plants, algae and some bacteria convert light energy into chemical energy.\\n\\u2022 It occurs mainly in the **chloroplasts** of leaf cells where the pigment **chlorophyll** captures sunlight.\\n\\u2022 The overall reaction uses *"
+ },
+ {
+  "id": "tutor.session",
+  "path": "/tutor/session",
+  "status": 200,
+  "seconds": 5.4,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "659+250"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"response\": \"Hi there! \\ud83d\\udc4b How can I help you today? Let me know which subject or concept you\\u2019re curious about, and we can explore it together. \\ud83d\\ude0a\", \"hints\": [], \"concept_check\": \"\", \"encouragement\": \"\", \"session_notes\": \"\", \"_meta\": {\"source\": \"llm\", \"model\": \"together:openai/gpt-oss-120b\", \"latency_ms\": 5437, \"institute\": \"c259cd4e-b018-45e2-8e46-52a497ca49a1\"}}"
+ },
+ {
+  "id": "tutor.continue",
+  "path": "/tutor/continue",
+  "status": 200,
+  "seconds": 5.7,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "1050+319"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"response\": \"Leaves look green because they contain a pigment called **chlorophyll**. Sunlight is made of many colours (like a rainbow). Chlorophyll absorbs most of the red and blue colours to use them for **photosynthesis**, the process that makes food for the plant. The green colour is not absorbed well, so it is reflected back to our eyes, and we see the leaf as green. In simple words, the lea"
+ },
+ {
+  "id": "recommend.content",
+  "path": "/recommend/content",
+  "status": 200,
+  "seconds": 7.7,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "deepseek-ai/DeepSeek-V4-Flash-0731"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "tokens": "529+374"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"recommendations\": \"{\\n    \\\"recommendations\\\": [\\n        {\\n            \\\"title\\\": \\\"NCERT Textbook Chapter-wise Notes (All Subjects)\\\",\\n            \\\"type\\\": \\\"notes\\\",\\n            \\\"reason\\\": \\\"Since no weak topics are identified, start with a solid revision of NCERT concepts to build a strong foundation.\\\",\\n            \\\"priority\\\": \\\"high\\\"\\n        },\\n        {\\n            \\\"title\\\": "
+ },
+ {
+  "id": "stt.notes_from_text",
+  "path": "/stt/notes-from-text",
+  "status": 200,
+  "seconds": 16.4,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "deepseek-ai/DeepSeek-V4-Flash-0731",
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "tokens": "378+247"
+   },
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "1057+1163"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"notes\": \"## Photosynthesis Overview  \\n\\nPhotosynthesis is the **process by which green plants, algae, and some bacteria convert light energy into chemical energy** stored in organic molecules.  \\n\\n- **Carbon dioxide (CO\\u2082)** is taken from the atmosphere through stomata.  \\n- **Water (H\\u2082O)** is absorbed from the soil by the root system.  \\n- **Chlorophyll**, the green pigment located i"
+ },
+ {
+  "id": "stt.extract_image_terms",
+  "path": "/stt/extract-image-terms",
+  "status": 200,
+  "seconds": 1.8,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "deepseek-ai/DeepSeek-V4-Flash-0731"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "tokens": "275+57"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"sections\": [{\"heading\": \"## Photosynthesis\", \"searchTerm\": \"photosynthesis diagram chloroplast sunlight oxygen release\", \"caption\": \"A labeled diagram showing how chlorophyll in chloroplasts traps sunlight and produces oxygen, helping students visualize the overall process of photosynthesis.\"}]}"
+ },
+ {
+  "id": "feedback.generate",
+  "path": "/feedback/generate",
+  "status": 200,
+  "seconds": 4.8,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "575+375"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"feedbackText\": \"{\\n    \\\"feedbackText\\\": \\\"Thank you for completing the test! Even without detailed scores, it's clear you are putting in effort and staying engaged with your studies. Keep up the good work and use this opportunity to reflect on the areas you feel most confident about and those that need a little more practice.\\\",\\n    \\\"highlights\\\": [\\n        \\\"Consistent effort in attempting "
+ },
+ {
+  "id": "notes.analyze",
+  "path": "/notes/analyze",
+  "status": 200,
+  "seconds": 9.4,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "605+830"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"quality_score\": 7, \"weak_topics\": [], \"analysis\": \"{\\n    \\\"quality_score\\\": 32.5,\\n    \\\"weak_topics\\\": [\\n        {\\n            \\\"topic\\\": \\\"Site of photosynthesis\\\",\\n            \\\"issue\\\": \\\"Only mentions 'leaves' without specifying chloroplasts, thylakoids, or mesophyll cells where the process actually occurs.\\\",\\n            \\\"severity\\\": \\\"medium\\\"\\n        },\\n        {\\n            \\\"t"
+ },
+ {
+  "id": "resume.analyze",
+  "path": "/resume/analyze",
+  "status": 403,
+  "seconds": 0.0,
+  "verdict": "ENDPOINT ERROR",
+  "providers": [],
+  "models": [],
+  "calls": [],
+  "route_errors": [],
+  "error": "{\"error\":\"Feature 'resume_analyze' is not available for the 'school' vertical\"}",
+  "sample": null
+ },
+ {
+  "id": "teacher.recording_analysis",
+  "path": "/teacher/analyze-recording",
+  "status": 200,
+  "seconds": 0.0,
+  "verdict": "NO LLM CALL",
+  "providers": [],
+  "models": [],
+  "calls": [],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"overallScore\": 5, \"summary\": \"The teacher introduced photosynthesis with a concise overview but the lesson lacked depth, examples, and student interaction. While the language was simple, the coverage was superficial.\", \"clarity\": {\"score\": 6, \"feedback\": \"Key steps of photosynthesis were stated clearly, but the sequence was abrupt and lacked connective explanations.\"}, \"pacing\": {\"score\": 4, \"fe"
+ },
+ {
+  "id": "interview.start",
+  "path": "/interview/start",
+  "status": 403,
+  "seconds": 0.0,
+  "verdict": "ENDPOINT ERROR",
+  "providers": [],
+  "models": [],
+  "calls": [],
+  "route_errors": [],
+  "error": "{\"error\":\"Feature 'interview_prep' is not available for the 'school' vertical\"}",
+  "sample": null
+ },
+ {
+  "id": "plan.generate",
+  "path": "/plan/generate",
+  "status": 200,
+  "seconds": 3.0,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "785+225"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"error\": \"I\\u2019m sorry, but I can\\u2019t help with that.\", \"_meta\": {\"source\": \"llm\", \"model\": \"together:openai/gpt-oss-120b\", \"latency_ms\": 3003, \"tokens\": 1010, \"institute\": \"c259cd4e-b018-45e2-8e46-52a497ca49a1\", \"vertical\": \"school\"}}"
+ },
+ {
+  "id": "syllabus.generate",
+  "path": "/syllabus/generate",
+  "status": 200,
+  "seconds": 19.2,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "661+1690"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"subjects\": [{\"subjectName\": \"Science\", \"chapters\": [{\"chapterName\": \"Crop Production and Management\", \"topics\": [{\"topicName\": \"Importance of crops\"}, {\"topicName\": \"Types of crops \\u2013 food, fibre, medicinal\"}, {\"topicName\": \"Crop rotation and mixed cropping\"}, {\"topicName\": \"Methods of irrigation\"}, {\"topicName\": \"Organic and inorganic fertilizers\"}, {\"topicName\": \"Pest control \\u2013 biolog"
+ },
+ {
+  "id": "quiz.generate",
+  "path": "/quiz/generate",
+  "status": 200,
+  "seconds": 10.1,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "935+978"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"questions\": [{\"id\": \"q1\", \"questionText\": \"What do green plants make for themselves?\", \"options\": [{\"label\": \"A\", \"text\": \"Protein\"}, {\"label\": \"B\", \"text\": \"Food\"}, {\"label\": \"C\", \"text\": \"Minerals\"}, {\"label\": \"D\", \"text\": \"Heat\"}], \"correctOption\": \"B\", \"triggerAtPercent\": 10, \"segmentTitle\": \"Food Production\", \"explanation\": \"The notes state that \\\"Green plants make their own food.\\\"\"}, {\"id"
+ },
+ {
+  "id": "memorization.generate",
+  "path": "/memorization/generate",
+  "status": 200,
+  "seconds": 0.0,
+  "verdict": "NO LLM CALL",
+  "providers": [],
+  "models": [],
+  "calls": [],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"items\": [], \"_cache_meta\": {\"cached_at\": 1790777960.3492515, \"tokens\": 0, \"cost_usd\": 0.0, \"institute_id\": \"c259cd4e-b018-45e2-8e46-52a497ca49a1\", \"feature\": \"ai_memorization_retention\", \"vertical\": \"school-cbse\"}, \"_meta\": {\"source\": \"cache\", \"model\": \"cached\", \"institute\": \"c259cd4e-b018-45e2-8e46-52a497ca49a1\", \"vertical\": \"school\"}}"
+ },
+ {
+  "id": "content.generate",
+  "path": "/content/generate",
+  "status": 200,
+  "seconds": 24.1,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "374+1717"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"content\": \"{\\n# Photosynthesis \\u2013 Class\\u202f10 Board Notes\\n\\n---\\n\\n## 1. Introduction  \\nPhotosynthesis is the process by which green plants, algae and some bacteria convert **solar energy** into **chemical energy** stored as glucose. It occurs mainly in the **chloroplasts** of leaf cells. The overall reaction can be written as  \\n\\n$$\\n6\\\\;CO_2 + 6\\\\;H_2O \\\\xrightarrow{\\\\text{light}} C_6"
+ },
+ {
+  "id": "grading.rubrics",
+  "path": "/grading/subjective-rubric-batch",
+  "status": 200,
+  "seconds": 7.1,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "734+520"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"rubrics\": [{\"questionId\": \"q1\", \"criteria\": [{\"text\": \"States that photosynthesis occurs in the chloroplasts of green plants.\", \"marks\": 1.0}, {\"text\": \"Describes the reactants (carbon dioxide and water) and the role of sunlight as the energy source.\", \"marks\": 2.0}, {\"text\": \"Provides the overall balanced equation and mentions the products (glucose and oxygen).\", \"marks\": 2.0}], \"keyConcepts\": "
+ },
+ {
+  "id": "grading.answer",
+  "path": "/grading/subjective-answer",
+  "status": 200,
+  "seconds": 25.5,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "1126+899"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"criteria\": [{\"criterion\": \"Correctly defines photosynthesis as the process by which plants make their own food using sunlight, water and carbon dioxide\", \"maxMarks\": 1.0, \"awardedMarks\": 1.0, \"justification\": \"Student states that plants make food using sunlight, water and carbon dioxide, which matches the definition.\"}, {\"criterion\": \"Mentions the role of chlorophyll (or chloroplast) in capturin"
+ },
+ {
+  "id": "ppt.generate",
+  "path": "/ppt/generate",
+  "status": 200,
+  "seconds": 40.2,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "629+869"
+   },
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "2549+2290"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"success\": true, \"data\": {\"title\": \"Photosynthesis: Nature's Food Factory\", \"slides\": [{\"slideNumber\": 1, \"type\": \"title\", \"title\": \"Photosynthesis \\u2013 The Green Engine\", \"subtitle\": \"Understanding how plants transform sunlight into food and oxygen for all living beings.\", \"bullets\": [], \"speakerNotes\": \"Introduce the topic by asking students where the food they eat originally comes from. High"
+ },
+ {
+  "id": "evaluate.batch",
+  "path": "/evaluate/batch",
+  "status": 200,
+  "seconds": 14.0,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "607+504"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"evaluations\": [{\"id\": \"1\", \"is_accurate\": false, \"score\": 1, \"feedback\": \"The entry does not contain a valid question, options, answer, or explanation, and difficulty is unknown. It cannot be used for assessment.\", \"corrections\": [\"Provide a clear question statement.\", \"Add appropriate answer options (if MCQ) or answer format.\", \"Specify the correct answer.\", \"Include an explanation for the answ"
+ },
+ {
+  "id": "feedback.analyze",
+  "path": "/feedback/analyze/",
+  "status": 200,
+  "seconds": 4.4,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "614+280"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"score\": 0, \"feedback\": \"{\\n    \\\"score\\\": 67,\\n    \\\"feedback\\\": \\\"You correctly identified that plants use sunlight and water to make food, which shows a good understanding of two essential components of photosynthesis. However, the answer is incomplete because it does not mention chlorophyll, the green pigment that captures sunlight. Including all three elements will give you full credit.\\\",\\n"
+ },
+ {
+  "id": "content.suggest",
+  "path": "/content/suggest/",
+  "status": 405,
+  "seconds": 0.0,
+  "verdict": "ENDPOINT ERROR",
+  "providers": [],
+  "models": [],
+  "calls": [],
+  "route_errors": [],
+  "error": "{\"detail\":\"Method \\\"POST\\\" not allowed.\"}",
+  "sample": null
+ },
+ {
+  "id": "test.generate",
+  "path": "/test/generate/",
+  "status": 200,
+  "seconds": 22.8,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "1018+826"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"questions\": [{\"id\": 1, \"question\": \"Which pigment in the chloroplast absorbs light most efficiently at a wavelength of about 660 nm?\", \"explanation\": \"Chlorophyll a has its absorption peak around 660 nm (red light) and is the primary pigment that captures light energy for photosynthesis.\", \"options\": [\"Chlorophyll a\", \"Chlorophyll b\", \"Carotene\", \"Xanthophyll\"], \"answer\": \"A\"}, {\"id\": 2, \"questi"
+ },
+ {
+  "id": "career.guidance",
+  "path": "/career/guidance",
+  "status": 200,
+  "seconds": 29.0,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "1073+2389"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"report\": {\"topCareers\": [{\"careerId\": \"C001\", \"title\": \"Clinical Psychologist\", \"fitScore\": 62, \"reasoning\": \"The student's Investigative and Social interests align with a career that blends research, analysis, and helping people. Even without current marks, the combination of curiosity and empathy points to psychology as a strong fit.\", \"focusAreas\": [\"Understanding human behavior\", \"Research m"
+ },
+ {
+  "id": "career.generate",
+  "path": "/career/generate/",
+  "status": 200,
+  "seconds": 10.6,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "579+854"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"career_path\": \"{\\n    \\\"career_path\\\": \\\"Doctor (MBBS)\\\",\\n    \\\"timeline_months\\\": 12,\\n    \\\"roadmap\\\": [\\n        {\\n            \\\"phase\\\": \\\"Foundation & Concept Building\\\",\\n            \\\"duration_weeks\\\": 12,\\n            \\\"goals\\\": [\\n                \\\"Strengthen basics in Physics, Chemistry and Biology\\\",\\n                \\\"Develop regular study habit and time\\u2011management skills\\\"\\n "
+ },
+ {
+  "id": "personalization.study_plan",
+  "path": "/personalization/generate/",
+  "status": 200,
+  "seconds": 8.8,
+  "verdict": "TOGETHER OK",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "586+690"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"daily_schedule\": \"{\\n    \\\"student_id\\\": \\\"test-student-1\\\",\\n    \\\"learning_style\\\": \\\"visual\\\",\\n    \\\"daily_schedule\\\": [\\n        {\\n            \\\"time_slot\\\": \\\"18:00-18:30\\\",\\n            \\\"subject\\\": \\\"Science\\\",\\n            \\\"activity\\\": \\\"Watch a short NCERT video on plant cell structure and label the diagram\\\",\\n            \\\"duration_minutes\\\": 30\\n        },\\n        {\\n            "
+ },
+ {
+  "id": "diagram.render",
+  "path": "/diagram/render",
+  "status": 200,
+  "seconds": 13.3,
+  "verdict": "INFO (together)",
+  "providers": [
+   "together"
+  ],
+  "models": [
+   "openai/gpt-oss-120b"
+  ],
+  "calls": [
+   {
+    "provider": "together",
+    "model": "openai/gpt-oss-120b",
+    "tokens": "446+778"
+   }
+  ],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"success\": true, \"data\": {\"imageBase64\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAA7EAAALACAYAAABFKvWJAAAAOnRFWHRTb2Z0d2FyZQBNYXRwbG90bGliIHZlcnNpb24zLjEwLjksIGh0dHBzOi8vbWF0cGxvdGxpYi5vcmcvJkbTWQAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAi+RJREFUeJzs3XdYFFf//vF7KYqiIFiwoEY0wd6NGns3sbdY2FjSk+dJMb2XJ4kppveYotHF3rvGFnuLDSsaUYMNsaAiSNvfH/6YL4QFQYFhl/fruvZy5szZ2c+iAveeM2csdrvdLgAAAAAAnICb2QUAAAAAAJBdhFgAAAA"
+ },
+ {
+  "id": "translate.sarvam",
+  "path": "/translate",
+  "status": 502,
+  "seconds": 0.8,
+  "verdict": "ENDPOINT ERROR",
+  "providers": [],
+  "models": [],
+  "calls": [],
+  "route_errors": [],
+  "error": "{\"error\":\"Sarvam API error 402: {\\\"error\\\":{\\\"message\\\":\\\"No credits available.\\\",\\\"code\\\":\\\"insufficient_quota_error\\\",\\\"request_id\\\":\\\"20260930_376267c8-ec4f-4e65-bcc8-64aedbd49bcf\\\"}}\"}",
+  "sample": null
+ },
+ {
+  "id": "ppt.search_image",
+  "path": "/ppt/search-image",
+  "status": 200,
+  "seconds": 6.6,
+  "verdict": "CORRECTLY NOT TOGETHER",
+  "providers": [],
+  "models": [],
+  "calls": [],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"success\": true, \"imageUrl\": \"https://i.etsystatic.com/29318579/r/il/999e6d/4321587013/il_fullxfull.4321587013_reld.jpg\", \"imageBase64\": \"data:image/webp;base64,UklGRihsAgBXRUJQVlA4IBxsAgBQLAedASogBlAEPkUgjUUioiGSmcUYKAREpu/nZ8J9J/mdgToF+PWZ+qf+H0bvyOuk07/VeWT9kfUH/izD3yjnd/6/psGV8z6ynxm2ZhTax34PAJkJeL//X0RuNs/B6F/9N6Idqq/MPMb9K3fR/UPQb/Jf6F1pvP/VD5C/Z/4b9zP77////p5SMg+Z/y3+E/yn/F/u/7w/M/xr2Q+kfv"
+ },
+ {
+  "id": "search.images",
+  "path": "/search/educational-images",
+  "status": 200,
+  "seconds": 2.4,
+  "verdict": "CORRECTLY NOT TOGETHER",
+  "providers": [],
+  "models": [],
+  "calls": [],
+  "route_errors": [],
+  "error": null,
+  "sample": "{\"images\": [{\"imageUrl\": \"https://sciencenotes.org/wp-content/uploads/2025/11/Photosynthesis-Diagram.png\", \"thumbnailUrl\": \"https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQxJTQRdsHYmgLqOsT1eCEMoJ_6DxdneEHP8iZau7OOAQ&s=10\", \"title\": \"Photosynthesis - Definition, Formula, Process, Diagram\", \"source\": \"Science Notes and Projects\", \"sourcePage\": \"https://sciencenotes.org/photosynthesis-definiti"
+ }
+]

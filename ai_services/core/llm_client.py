@@ -104,6 +104,20 @@ _JSON_MODE_TUTOR_SUFFIX = (
 )
 
 
+def build_effective_system_prompt(
+    system_prompt: str, json_mode: bool, json_mode_suffix: Optional[str] = None
+) -> str:
+    """The exact system prompt LLMClient has always sent to Groq.
+
+    Shared with the router's other provider adapters so that a fallback
+    provider receives the same instructions the primary did.
+    """
+    effective = _ANTI_HALLUCINATION_PREFIX + system_prompt
+    if json_mode:
+        effective += (json_mode_suffix if json_mode_suffix is not None else _JSON_MODE_SUFFIX)
+    return effective
+
+
 def _extract_json(raw: str) -> str:
     import re
     # 1. Aggressively remove <think> blocks (including unclosed ones)
@@ -268,15 +282,158 @@ class LLMClient:
         json_mode: bool = True,
         institute_id: Optional[str] = None,
         json_mode_suffix: Optional[str] = None,
+        feature: Optional[str] = None,
+        capability: Optional[str] = None,
+        provider: str = "groq",
+        legacy_prompt_shaping: bool = True,
+        requires_grounding: bool = False,
+        min_context_tokens: Optional[int] = None,
     ) -> dict:
+        """Run one completion through the EDVA model router.
+
+        The router is Together-first: each capability's Together model serves the
+        request when it is configured and meets the request's requirements.
+        Otherwise ``provider``/``model`` — the call site's existing choice — is
+        used unchanged (a plan-time decision, not a failover), so an environment
+        without Together configuration behaves exactly as before.
+
+        ``legacy_prompt_shaping=False`` sends ``system_prompt`` exactly as given
+        (grounded prompts were never shaped for Gemini and must not be now).
+        ``requires_grounding`` / ``min_context_tokens`` are hard requirements a
+        routed model must satisfy. AI_ROUTER_ENABLED=false bypasses the router.
+        """
+        from ai_services.core import routing
+
+        # A missing Groq model has always meant GROQ_MODEL. Pin it explicitly so
+        # the legacy route can never become something else.
+        pinned_model = model or (GROQ_MODEL if provider == "groq" else model)
+        if not routing.router_enabled():
+            return self._complete_legacy(
+                provider=provider, system_prompt=system_prompt, user_prompt=user_prompt,
+                model=pinned_model, temperature=temperature, max_tokens=max_tokens,
+                json_mode=json_mode, institute_id=institute_id, json_mode_suffix=json_mode_suffix,
+                legacy_prompt_shaping=legacy_prompt_shaping,
+            )
+        return routing.get_router().execute(routing.AIRequest(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=pinned_model,
+            provider=provider,
+            feature=feature,
+            capability=capability,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            json_mode_suffix=json_mode_suffix,
+            institute_id=institute_id,
+            legacy_prompt_shaping=legacy_prompt_shaping,
+            requires_grounding=requires_grounding,
+            min_context_tokens=min_context_tokens,
+        ))
+
+    def _complete_legacy(
+        self, *, provider: str, system_prompt: str, user_prompt: str, model: str,
+        temperature: float, max_tokens: int, json_mode: bool, institute_id: Optional[str],
+        json_mode_suffix: Optional[str], legacy_prompt_shaping: bool,
+    ) -> dict:
+        """The pre-router execution path for a call site's own provider (kill switch)."""
+        if provider == "groq":
+            return self._complete_groq(
+                system_prompt=system_prompt, user_prompt=user_prompt, model=model,
+                temperature=temperature, max_tokens=max_tokens, json_mode=json_mode,
+                institute_id=institute_id, json_mode_suffix=json_mode_suffix,
+                legacy_prompt_shaping=legacy_prompt_shaping,
+            )
+        if provider == "gemini":
+            from ai_services.core.routing.providers import GeminiAdapter, ProviderCall
+            from ai_services.core.routing.registry import ModelSpec
+
+            spec = ModelSpec(id=f"gemini/{model}", provider="gemini", provider_model_id=model,
+                             capabilities=frozenset())
+            return GeminiAdapter().complete(spec, ProviderCall(
+                system_prompt=system_prompt, user_prompt=user_prompt, model_id=model,
+                temperature=temperature, max_tokens=max_tokens, json_mode=json_mode,
+                json_mode_suffix=json_mode_suffix, institute_id=institute_id,
+                legacy_prompt_shaping=legacy_prompt_shaping,
+            ))
+        from ai_services.core.routing.errors import ProviderConfigError
+
+        raise ProviderConfigError(f"No legacy execution path for provider {provider!r}",
+                                  provider=provider, model=model)
+
+    def can_route(
+        self, *, capability: str, model: str, provider: str = "groq", json_mode: bool = True,
+        requires_grounding: bool = False, min_context_tokens: Optional[int] = None,
+        feature: Optional[str] = None,
+    ) -> bool:
+        """Whether a request of this shape has an available provider right now.
+
+        For call sites that must decide before doing expensive work (grounded
+        generation used ``gemini_client.is_available()`` for this). Makes no
+        provider call.
+        """
+        from ai_services.core import routing
+
+        def _legacy_available() -> bool:
+            if provider == "gemini":
+                from ai_services.core import gemini_client
+
+                return gemini_client.is_available()
+            return bool(GROQ_API_KEYS) if provider == "groq" else False
+
+        if not routing.router_enabled():
+            return _legacy_available()
+        router = routing.get_router()
+        try:
+            plan = router.plan(routing.AIRequest(
+                system_prompt="", user_prompt="", model=model, provider=provider, capability=capability,
+                feature=feature, json_mode=json_mode, requires_grounding=requires_grounding,
+                min_context_tokens=min_context_tokens,
+            ))
+        except routing.RoutingError:
+            return False
+        primary = plan.candidates[0]
+        if primary.source == "legacy" or primary.spec.provider == provider:
+            return _legacy_available() if primary.spec.provider == provider else False
+        adapter = router.adapters.get(primary.spec.provider)
+        return bool(adapter and adapter.is_configured())
+
+    def _complete_groq(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int = 3500,
+        json_mode: bool = True,
+        institute_id: Optional[str] = None,
+        json_mode_suffix: Optional[str] = None,
+        legacy_prompt_shaping: bool = True,
+    ) -> dict:
+        """Groq execution with multi-key rotation: the pre-router body of
+        complete(), unchanged except that failures raise typed routing errors
+        (all RuntimeError subclasses, same messages) so the router can tell a
+        transient failure from a deterministic one."""
         from groq import Groq, RateLimitError as GroqRateLimitError
+        from ai_services.core.routing.errors import (
+            NonRetryableProviderError,
+            ProviderConfigError,
+            RetryableProviderError,
+        )
 
         if not GROQ_API_KEYS:
-            raise RuntimeError("No GROQ_API_KEY configured -- set at least one in .env")
+            raise ProviderConfigError(
+                "No GROQ_API_KEY configured -- set at least one in .env", provider="groq", model=model,
+            )
 
-        effective_system = _ANTI_HALLUCINATION_PREFIX + system_prompt
-        if json_mode:
-            effective_system += (json_mode_suffix if json_mode_suffix is not None else _JSON_MODE_SUFFIX)
+        # The shaping prefix ends "START YOUR RESPONSE DIRECTLY WITH '{'", which is
+        # right for JSON calls and wrong for anything else that must be exact —
+        # code generation wrapped Python in braces. Callers can opt out.
+        effective_system = (
+            build_effective_system_prompt(system_prompt, json_mode, json_mode_suffix)
+            if legacy_prompt_shaping else system_prompt
+        )
 
         effective_model = _resolve_model(model)
 
@@ -367,7 +524,10 @@ class LLMClient:
         for round_num in range(3):
             keys_this_round = _active_keys()
             if not keys_this_round:
-                raise RuntimeError("No active GROQ keys left. Check invalid/restricted keys in .env")
+                raise ProviderConfigError(
+                    "No active GROQ keys left. Check invalid/restricted keys in .env",
+                    provider="groq", model=effective_model,
+                )
 
             n = len(keys_this_round)
             offset = start_offset % n
@@ -461,7 +621,10 @@ class LLMClient:
                             "LLM key %d/%d request too large for model %s -- not retrying (%s)",
                             actual_key_num, n, effective_model, last_error,
                         )
-                        raise RuntimeError(f"LLM request too large for model {effective_model}: {last_error}") from exc
+                        raise NonRetryableProviderError(
+                            f"LLM request too large for model {effective_model}: {last_error}",
+                            provider="groq", model=effective_model, status_code=413, kind="request_too_large",
+                        ) from exc
                     if _is_deterministic_request_error(last_error):
                         # Same reasoning as 413: identical request -> identical
                         # rejection on every key. One attempt is all the information
@@ -487,9 +650,10 @@ class LLMClient:
                             )
                         except Exception:
                             pass
-                        raise RuntimeError(
+                        raise NonRetryableProviderError(
                             f"LLM deterministic request failure for model {effective_model} "
-                            f"(json_validate_failed): {last_error}"
+                            f"(json_validate_failed): {last_error}",
+                            provider="groq", model=effective_model, status_code=400, kind="structured_output",
                         ) from exc
                     logger.error(
                         "LLM key %d/%d error (%s) -- rotating to next key",
@@ -518,9 +682,19 @@ class LLMClient:
                 )
                 time.sleep(wait_s)
 
-        raise RuntimeError(
+        exhausted_msg = (
             f"LLM call failed after 3 rounds across all {len(GROQ_API_KEYS)} keys "
             f"(check dead/exhausted keys in .env): {last_error}"
+        )
+        if last_error == "JSON parse failure":
+            # The final attempt produced unparseable JSON: an output-contract
+            # failure, not provider capacity. Another provider must not be asked
+            # to repeat a deterministic structured-output failure.
+            raise NonRetryableProviderError(
+                exhausted_msg, provider="groq", model=effective_model, kind="structured_output",
+            )
+        raise RetryableProviderError(
+            exhausted_msg, provider="groq", model=effective_model, kind="exhausted",
         )
 
     def parallel_complete_many(

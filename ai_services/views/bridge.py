@@ -69,6 +69,7 @@ from ai_services.core.llm_client import _JSON_MODE_TUTOR_SUFFIX
 from ai_services.core.usage_logger import log_usage
 from ai_services.core.serpapi_images import search_google_images
 from .base import ai_call, ai_call_text, get_llm, metered
+from ai_services.core.routing import telemetry_model_from_error, telemetry_model_from_results
 
 
 
@@ -1783,6 +1784,8 @@ def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institu
         max_tokens=safe_max_tokens,
         json_mode=False,
         institute_id=institute_id,
+        feature="ai_lecture_notes",
+        capability="content",
     )
     return llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
 
@@ -1893,6 +1896,8 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
         max_tokens=merge_max_tokens,
         json_mode=False,
         institute_id=institute_id,
+        feature="ai_lecture_notes",
+        capability="content",
     )
     return llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
 
@@ -2795,6 +2800,8 @@ def _polish_notes_markdown(notes: str, topic_id: str, language: str, institute_i
             max_tokens=_safe_max_tokens(system_prompt + user_prompt, int(os.getenv("NOTES_POLISH_MAX_TOKENS", "4096"))),
             json_mode=False,
             institute_id=institute_id,
+            feature="ai_lecture_notes",
+            capability="content",
         )
         polished = llm_result["content"] if isinstance(llm_result["content"], str) else str(llm_result["content"])
         polished = _convert_html_sub_sup(_downgrade_h1_headings(polished.strip()))
@@ -2898,6 +2905,35 @@ def _detect_subject_by_keyword(question: str):
 
 
 
+
+
+# Question types that need the symbolic scientific solver. Everything else is
+# answered directly by the LLM.
+_SOLVER_QTYPES = ("numerical", "derivation")
+_SOLVER_SUBJECTS = ("physics", "chemistry", "mathematics", "math", "science")
+
+_COMPUTE_VERBS = re.compile(
+    r"\b(calculate|compute|evaluate|solve|simplify|factori[sz]e|expand|integrate|differentiate|"
+    r"derive|prove|show that|verify that|find|determine|convert|work out|"
+    r"how (?:much|many|far|long|fast|high)|what is the value)\b"
+)
+_COMPUTE_EXPR = re.compile(
+    r"\d\s*[-+*/\u00d7\u00f7%^]\s*[\d(]"            # 3 + 4, 12/5, 2^3
+    r"|[a-z0-9)]\s*[=^]\s*[-\d(a-z]"                  # x = 5, 2x = y, a^2
+    r"|[a-z]\s*[+*]\s*\d"                            # x + 3
+    r"|[\u221a\u222b\u2211\u03c0]"                  # √ ∫ ∑ π
+    r"|\b(?:sin|cos|tan|log|ln)\s*\("
+    r"|\d+(?:\.\d+)?\s*(?:m/s|km/h|km|kg|cm|mm|ml|mol|\u00b0c?|m|s|g|n|j|w|v|l)\b"
+)
+# Context the doubt flow appends to a student's question; not part of the question.
+_DOUBT_CONTEXT_SUFFIX = re.compile(r"\(at segment timestamp:[^)]*\)|lecture:.*$", re.I | re.S)
+
+
+def _looks_computational(question: str) -> bool:
+    """Whether a doubt asks for a calculation, proof or derivation — i.e. whether
+    the symbolic solver can add anything — judged from the question itself."""
+    q = _DOUBT_CONTEXT_SUFFIX.sub(" ", (question or "").lower())
+    return bool(_COMPUTE_VERBS.search(q) or _COMPUTE_EXPR.search(q))
 
 
 def _detect_type_by_keyword(question: str) -> str:
@@ -3243,9 +3279,70 @@ _SOLVER_SCOPE_RULE = (
     "- Always answer the question the student actually asked, using whichever subject "
     "it genuinely belongs to.\n"
     "- NEVER say you can only help with one subject, and NEVER refuse to answer an "
-    "academic question. A refusal is a failed response.\n"
+    "academic question because of its subject. A subject refusal is a failed response.\n"
+    "- This is about SUBJECT scope only. Correcting a wrong fact inside the question is "
+    "not a refusal — it is required. See CHECK THE QUESTION'S FACTS below.\n"
     "- Keep the JSON output schema above exactly as specified.\n"
 )
+
+
+# Tested on 2026-09-30 against 18 false-premise questions (CBSE Class 8 Science):
+# 10 produced confident fabrications — an invented "BIS IS 1445:2009" calorific
+# value, a non-existent "Bharat unit" attributed to the NCERT textbook, a fake
+# "Kutch Intensity Index" reading, an invented tiger reserve with a declaration
+# year, and two cases where a reversed premise ("rolling friction is greater than
+# sliding friction") was accepted and explained. The scope rule above, written to
+# stop subject-misroute refusals, was telling the model that not answering is
+# always failure — so it answered, and invented the supporting detail.
+_FALSE_PREMISE_RULE = (
+    "\n\nCHECK THE QUESTION'S FACTS BEFORE ANSWERING:\n"
+    "A question may contain a claim that is wrong or made up. Students copy such claims "
+    "from rumours, bad notes or their own guesses, and a confident wrong answer is worse "
+    "for them than being corrected.\n"
+    "- If the question asserts a policy, standard, scheme, law, unit, statistic, year, "
+    "discovery, inventor or technical term that is false or that you cannot verify, SAY SO "
+    "plainly in your answer, then teach the correct fact instead.\n"
+    "- NEVER invent a standard number, unit name, official figure, percentage, date, "
+    "organisation or piece of terminology in order to satisfy the question.\n"
+    "- NEVER attribute a claim to NCERT, CBSE, a textbook, BIS or any authority unless you "
+    "are certain it is theirs. Saying 'the textbook states' about something you are not sure "
+    "of is a serious error.\n"
+    "- If the question states a fact backwards (for example reversing which of two things is "
+    "greater), correct the direction first and then explain the real science. Do not build an "
+    "explanation on the reversed claim.\n"
+    "- Doing this is NOT refusing. Answer the corrected question fully, in the same JSON schema.\n"
+    "\n"
+    "REQUIRED FIELD \"premise_check\" (inside \"brief\"):\n"
+    "Prose instructions alone did not change this behaviour in testing, so the check is now "
+    "part of the schema you must fill:\n"
+    "- Set \"premise_check\" to exactly \"ok\" ONLY when every factual claim in the question is "
+    "true and you are sure of it.\n"
+    "- Otherwise write a short description of what is wrong there instead, for example "
+    "\"no BIS standard fixes this value\" or \"rolling friction is smaller than sliding friction, "
+    "not greater\".\n"
+    "- Whenever it is not \"ok\", the FIRST line of the answer must state the correction before "
+    "anything else, and the false claim must never be repeated as fact.\n"
+)
+
+
+def _class_level_rule(class_name: str) -> str:
+    """Tell the model who is asking, so the answer is pitched at their class.
+
+    Measured on 2026-09-30 across CBSE Class 8 Science doubts: answers were
+    correct but routinely years above the student — Rayleigh scattering for "why
+    can't we see stars by day", Van der Waals forces and asperities for "is a
+    polished surface frictionless", rhinovirus/adenovirus and cell-wall synthesis
+    inhibition for "will an antibiotic cure a cold".
+    """
+    label = class_name.strip()
+    return (
+        f"\n\nPITCH THE ANSWER AT {label.upper()}:\n"
+        f"The student is in {label}. Explain at that level, in the vocabulary that class's "
+        "textbook uses, and keep the depth a student of that class is examined on.\n"
+        "- Do not bring in material from higher classes to sound thorough.\n"
+        "- If a complete answer genuinely needs an idea from a later class, name it in one "
+        "short phrase, say it is studied in higher classes, and answer using what this class knows.\n"
+    )
 
 
 def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed", vertical: str = "coaching", board: str = "") -> str:
@@ -3275,7 +3372,8 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             '{\n'
             '  "brief": {\n'
             '    "answer": "Correct Answer: <Option>\\nJustification: <1-2 lines>.",\n'
-            '    "question_nature": "mcq"\n'
+            '    "question_nature": "mcq",\n'
+            '    "premise_check": "ok"\n'
             '  },\n'
             '  "detailed": {\n'
             '    "solution": "Correct Answer: <Option>\\nJustification: <2-3 lines with **bold** keywords>.",\n'
@@ -3306,7 +3404,8 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             '{\n'
             '  "brief": {\n'
             '    "answer": "Step 1: [Plain Text Explanation].\\n$Math Equation$\\nFinal Answer: [Summary].",\n'
-            '    "question_nature": "numerical"\n'
+            '    "question_nature": "numerical",\n'
+            '    "premise_check": "ok"\n'
             '  },\n'
             '  "detailed": {\n'
             '    "solution": "Step 1: [Plain Text Header]\\n$Detailed Equation$\\nStep 2: ...",\n'
@@ -3331,7 +3430,8 @@ def _build_solver_system_prompt(subject: str, qtype: str, mode: str = "detailed"
             '{\n'
             '  "brief": {\n'
             '    "answer": "**(i) Header**\\n• Point...\\n\\n**(ii) Header**\\n• Point... (Continue for all sub-parts i, ii, iii, iv...)",\n'
-            '    "question_nature": "theory"\n'
+            '    "question_nature": "theory",\n'
+            '    "premise_check": "ok"\n'
             '  },\n'
             '  "detailed": {\n'
             '    "solution": "**(i) Header**\\n• Deep point...\\n\\n**(ii) Header**\\n• Deep point... (Provide all sub-parts requested in the question)",\n'
@@ -3579,6 +3679,18 @@ def resolve_doubt(request):
 
 
 
+    # A subject label says nothing about whether THIS question needs computing:
+    # "Mathematics" always mapped to "derivation", so "What are whole numbers?"
+    # generated Python, ran it in a sandbox and made four LLM calls (~15s) to state
+    # a definition. For text questions, decide from the question itself. Image
+    # doubts keep their classification (the text is a description of the image).
+    if subject in _SOLVER_SUBJECTS and not image_description:
+        _computational = _looks_computational(question_text)
+        if qtype in _SOLVER_QTYPES and not _computational:
+            qtype = "conceptual"
+        elif qtype not in _SOLVER_QTYPES and qtype != "mcq" and _computational:
+            qtype = "numerical"
+
     # ── Step 2: Route to correct model, build prompt, solve ───────────────────
     vertical = getattr(request, "vertical", "coaching")
     language = (data.get("language") or "").strip().lower()
@@ -3610,7 +3722,16 @@ def resolve_doubt(request):
 
     print(f"[DOUBT RESOLVER] Subject: {subject} | Type: {qtype} | Model: {model} | Vertical: {vertical} | Language: {language}")
     board = getattr(request, "board", "")
-    solver_system = _build_solver_system_prompt(subject, qtype, mode, vertical, board) + _SOLVER_SCOPE_RULE
+    solver_system = (_build_solver_system_prompt(subject, qtype, mode, vertical, board)
+                     + _SOLVER_SCOPE_RULE + _FALSE_PREMISE_RULE)
+
+    # The caller already sends the student's class in studentContext, but only the
+    # vision prompt ever used it: text doubts were answered with no idea who was
+    # asking. A Class 8 student asking why sodium is more reactive than magnesium
+    # was given electron configurations and ionisation enthalpies in kJ/mol.
+    _class_name = str(student_ctx.get("className") or data.get("className") or "").strip()
+    if _class_name:
+        solver_system += _class_level_rule(_class_name)
 
     if is_odia:
         solver_system += (
@@ -3637,7 +3758,7 @@ def resolve_doubt(request):
     try:
         if use_gemini:
             raise NotImplementedError("Scientific solver not supported for regional languages")
-        if subject in ("physics", "chemistry", "mathematics", "math", "science"):
+        if subject in _SOLVER_SUBJECTS and qtype in _SOLVER_QTYPES:
             from asgiref.sync import async_to_sync
             from ai_services.solver.scientific_solver import scientific_solver
 
@@ -3646,13 +3767,23 @@ def resolve_doubt(request):
             # JEE/NEET formula sheets, so it is used for coaching only — a Class 1-12
             # answer must not be grounded with IIT-JEE formulae.
             scientific_res = async_to_sync(scientific_solver.solve)(combined_question, mode, vertical)
+            _solver_usage = (scientific_res or {}).pop("_usage", None) or {}
             if scientific_res and ("brief" in scientific_res or "detailed" in scientific_res):
                 parsed = scientific_res
-                solve_result = {"model": "scientific_solver"}
+                solve_result = {
+                    "model": "scientific_solver",
+                    "tokens_input": int(_solver_usage.get("tokens_input") or 0),
+                    "tokens_output": int(_solver_usage.get("tokens_output") or 0),
+                    # The model the solver's LLM calls actually ran on, for telemetry.
+                    "provider_model": _solver_usage.get("model"),
+                }
             else:
                 raise RuntimeError("scientific_solver returned empty/invalid response")
         else:
-            raise NotImplementedError("Subject not mapped to scientific solver")
+            raise NotImplementedError(
+                "Not a computational question; scientific solver not needed"
+                if subject in _SOLVER_SUBJECTS else "Subject not mapped to scientific solver"
+            )
     except Exception as solver_err:
         logger.warning("[DOUBT RESOLVER] Scientific solver bypassed/failed (%s). Using LLM.", solver_err)
         try:
@@ -3782,6 +3913,9 @@ def resolve_doubt(request):
     for k, v in brief_obj.items(): brief_obj[k] = _safe_str(v)
     for k, v in detailed_obj.items(): detailed_obj[k] = _safe_str(v)
 
+    _normalize_doubt_answer(brief_obj, detailed_obj)
+    _surface_premise_warning(brief_obj, detailed_obj, question_text, institute_id)
+
     try:
         _doubt_model = solve_result.get('model', 'unknown')
         log_usage(
@@ -3789,7 +3923,8 @@ def resolve_doubt(request):
             institute_type='school',
             feature_id='doubt_resolver',
             feature_category='student',
-            model_used=_doubt_model if _doubt_model != 'scientific_solver' else 'openai/gpt-oss-120b',
+            model_used=_doubt_model if _doubt_model != 'scientific_solver'
+            else (solve_result.get('provider_model') or 'openai/gpt-oss-120b'),
             tokens_input=solve_result.get('tokens_input', 0),
             tokens_output=solve_result.get('tokens_output', 0),
             latency_ms=int((time.time() - _start_time) * 1000),
@@ -3820,6 +3955,63 @@ def resolve_doubt(request):
 
 
 
+
+
+# Template placeholder values a model copies verbatim ("verification": "None").
+_ANSWER_PLACEHOLDERS = {"none", "n/a", "na", "null", "nil", "-"}
+
+
+# Values the model may use to mean "the question is fine". Anything else is
+# treated as a reported problem with the question.
+_PREMISE_OK = {"ok", "okay", "true", "valid", "correct", "none", "n/a", "na", "-", ""}
+
+
+def _surface_premise_warning(brief_obj: dict, detailed_obj: dict, question: str,
+                             institute_id=None) -> bool:
+    """Put the model's premise_check in front of the student, and log it.
+
+    The field is worthless if it is filled in and then dropped on the floor: the
+    student would still read a confident answer to a false question. When the
+    model reports a problem, the note is prepended to both answer shapes so
+    whichever field the UI renders shows the correction first.
+    """
+    raw = brief_obj.pop("premise_check", None)
+    detailed_obj.pop("premise_check", None)
+    note = str(raw or "").strip()
+    if not note or note.strip(" .").lower() in _PREMISE_OK:
+        return False
+
+    logger.warning("Doubt premise flagged by the model: %s | question=%r",
+                   note[:200], (question or "")[:120])
+    banner = f"**Note about the question:** {note.rstrip('.')}.\n\n"
+    for obj, keys in ((brief_obj, ("answer", "final_answer")),
+                      (detailed_obj, ("solution", "explanation"))):
+        for k in keys:
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip() and not v.lstrip().startswith("**Note about the question:**"):
+                obj[k] = banner + v
+    return True
+
+
+def _normalize_doubt_answer(brief_obj: dict, detailed_obj: dict) -> None:
+    """Make an answer readable by every doubt page, in place.
+
+    Two shapes are in circulation: the LLM prompts write brief.answer /
+    detailed.solution, the scientific solver writes brief.final_answer /
+    detailed.explanation, and the school doubt pages read the solver's names — so
+    every non-solver answer rendered an empty Brief and Detailed view. Each name
+    is filled from the other, and the prompt template's "None" placeholders are
+    blanked instead of being shown as content.
+    """
+    for obj in (brief_obj, detailed_obj):
+        for key, value in list(obj.items()):
+            if isinstance(value, str) and value.strip().lower() in _ANSWER_PLACEHOLDERS:
+                obj[key] = ""
+    for obj, a, b in ((detailed_obj, "solution", "explanation"), (brief_obj, "answer", "final_answer")):
+        if obj.get(a) and not obj.get(b):
+            obj[b] = obj[a]
+        elif obj.get(b) and not obj.get(a):
+            obj[a] = obj[b]
 
 
 _DOUBT_VISION_PROMPT = (
@@ -5455,7 +5647,7 @@ def generate_quiz_questions(request):
                 institute_type='school',
                 feature_id='in_video_quiz_generator',
                 feature_category='teacher',
-                model_used='openai/gpt-oss-120b',
+                model_used=telemetry_model_from_results(results, 'openai/gpt-oss-120b'),
                 tokens_input=int(len(source_text) / 4),
                 tokens_output=0,
                 latency_ms=int((time.time() - _start_time) * 1000),
@@ -6523,7 +6715,7 @@ def generate_subjective_rubrics(request):
                 institute_type=vertical if vertical in ("school", "coaching") else "coaching",
                 feature_id="subjective_rubric_generation",
                 feature_category="teacher",
-                model_used="openai/gpt-oss-120b",
+                model_used=telemetry_model_from_error(exc, "openai/gpt-oss-120b"),
                 latency_ms=int((time.time() - _start_time) * 1000),
                 success=False,
                 error_message=str(exc)[:500],
@@ -6655,7 +6847,7 @@ def grade_subjective_answer(request):
                 institute_type=vertical if vertical in ("school", "coaching") else "coaching",
                 feature_id="subjective_answer_grading",
                 feature_category="teacher",
-                model_used="openai/gpt-oss-120b",
+                model_used=telemetry_model_from_error(exc, "openai/gpt-oss-120b"),
                 latency_ms=int((time.time() - _start_time) * 1000),
                 success=False,
                 error_message=str(exc)[:500],
@@ -7206,19 +7398,32 @@ def generate_topic_content(request):
     if grounded_block:
         user_prompt += grounded_block
 
-    # Grounded output runs on Gemini. Groq's llama-3.3-70b did not hold to
-    # "use only this source" across a prompt this long — it returned fluent but
-    # uncited general-knowledge content with none of the book's own markers —
-    # and a chapter plus instructions also crowds Groq's 12k TPM ceiling.
+    # Grounded output never runs on Groq: llama-3.3-70b did not hold to "use only
+    # this source" across a prompt this long, and a chapter plus instructions
+    # crowds Groq's 12k TPM ceiling. The call is routed (capability "grounded"):
+    # the grounded policy's Together model when it is configured and verified for
+    # grounding and context size, otherwise Gemini exactly as before — same
+    # prompts, temperature, output budget and unshaped system prompt. Retrieval,
+    # ranking, citations, the source rules above and the ungrounded fallback
+    # below are EDVA's own and unchanged.
     if grounded:
         try:
             from ai_services.core import gemini_client as _gc
-            if _gc.is_available():
-                _g = _gc.complete_text(
+            _grounded_llm = get_llm()
+            _grounded_route = dict(
+                model=_gc.DEFAULT_MODEL, provider="gemini", capability="grounded",
+                feature="content_generate", json_mode=False, requires_grounding=True,
+                min_context_tokens=(len(system_prompt) + len(user_prompt)) // 3 + 8000,
+            )
+            if _grounded_llm.can_route(**_grounded_route):
+                _g = _grounded_llm.complete(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     temperature=0.3,
-                    max_output_tokens=8000,
+                    max_tokens=8000,
+                    institute_id=institute_id,
+                    legacy_prompt_shaping=False,
+                    **_grounded_route,
                 )
                 _c = _normalize_generated_math_markdown(_g["content"])
                 if content_type == "pyq":
@@ -7244,7 +7449,7 @@ def generate_topic_content(request):
             # block in place made every one of the 20 keys return 413 and the
             # teacher got a 500 instead of an ungrounded document.
             logger.warning(
-                "Grounded generation via Gemini failed (%s) — retrying on Groq "
+                "Grounded generation failed (%s) — retrying ungrounded "
                 "without the source block", exc,
             )
             grounded = False
@@ -7262,6 +7467,8 @@ def generate_topic_content(request):
             max_tokens=8192 if content_type in {"dpp", "pyq"} else 4096,
             json_mode=False,
             institute_id=institute_id,
+            feature="content_generate",
+            capability="content",
         )
     except RuntimeError as e:
         try:
@@ -7270,7 +7477,7 @@ def generate_topic_content(request):
                 institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
                 feature_id=f'content_{content_type}' if content_type else 'content_generate',
                 feature_category='content',
-                model_used='openai/gpt-oss-120b',
+                model_used=telemetry_model_from_error(e, 'openai/gpt-oss-120b'),
                 latency_ms=int((time.time() - _start_time) * 1000),
                 success=False,
                 error_message=str(e)[:500],
@@ -7298,6 +7505,8 @@ def generate_topic_content(request):
                 max_tokens=8192,
                 json_mode=False,
                 institute_id=institute_id,
+                feature="content_generate",
+                capability="content",
             )
         except RuntimeError as e:
             try:
@@ -7306,7 +7515,7 @@ def generate_topic_content(request):
                     institute_type=vertical if vertical in ('school', 'coaching') else 'coaching',
                     feature_id=f'content_{content_type}' if content_type else 'content_generate',
                     feature_category='content',
-                    model_used='openai/gpt-oss-120b',
+                    model_used=telemetry_model_from_error(e, 'openai/gpt-oss-120b'),
                     latency_ms=int((time.time() - _start_time) * 1000),
                     success=False,
                     error_message=f"MCQ retry failed: {str(e)[:500]}",
@@ -7476,7 +7685,7 @@ def generate_notes_from_transcript(request):
                 institute_type='school',
                 feature_id='ai_lecture_notes',
                 feature_category='teacher',
-                model_used='openai/gpt-oss-120b',
+                model_used=telemetry_model_from_error(exc, 'openai/gpt-oss-120b'),
                 tokens_input=int(len(transcript) / 4),
                 tokens_output=0,
                 latency_ms=int((time.time() - _start_time) * 1000),
@@ -7798,7 +8007,7 @@ def generate_notes_from_youtube(request):
                 institute_type='school',
                 feature_id='ai_lecture_notes',
                 feature_category='teacher',
-                model_used='openai/gpt-oss-120b',
+                model_used=telemetry_model_from_error(exc, 'openai/gpt-oss-120b'),
                 tokens_input=int(len(transcript) / 4),
                 tokens_output=0,
                 latency_ms=int((time.time() - _start_time) * 1000),

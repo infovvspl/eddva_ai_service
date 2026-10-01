@@ -1,4 +1,5 @@
 import httpx
+import json
 import logging
 import os
 import threading
@@ -46,7 +47,69 @@ MODEL_COSTS = {
     'sarvam-stt':                      {'input': 0.04,  'output': 0.0},
 }
 
-def calculate_cost(model: str, tokens_input: int, tokens_output: int) -> float:
+# Together list prices per 1M tokens, read from Together's own /v1/models on
+# 2026-09-28. Keys are the provider model ids, lowercased for lookup. Prices
+# change: AI_TOGETHER_PRICING (JSON: {"<model id>": {"input": x, "output": y}})
+# overrides or extends this without a code change. A Together model that is in
+# neither table stays unpriced (None) rather than being recorded as free.
+TOGETHER_MODEL_COSTS = {
+    'openai/gpt-oss-120b':                 {'input': 0.15, 'output': 0.60},
+    'qwen/qwen3.8-flash':                  {'input': 0.09, 'output': 0.282},
+    'zai-org/glm-5.3-flash':               {'input': 0.15, 'output': 0.50},
+    'deepseek-ai/deepseek-v4-flash-0731':  {'input': 0.14, 'output': 0.28},
+    'qwen/qwen3.7-max':                    {'input': 1.50, 'output': 4.50},
+}
+
+
+def _together_rates(provider_model_id: str):
+    """Rates for a Together model id, or None when it has no configured price."""
+    key = (provider_model_id or "").strip().lower()
+    if not key:
+        return None
+    raw = os.getenv("AI_TOGETHER_PRICING")
+    if raw:
+        try:
+            overrides = json.loads(raw)
+            hit = {str(k).lower(): v for k, v in overrides.items()}.get(key)
+            if isinstance(hit, dict) and "input" in hit and "output" in hit:
+                return {"input": float(hit["input"]), "output": float(hit["output"])}
+        except (ValueError, TypeError):
+            logger.warning("AI_TOGETHER_PRICING is not valid JSON; using built-in Together rates")
+    return TOGETHER_MODEL_COSTS.get(key)
+
+
+def _is_unpriced_router_provider(model) -> bool:
+    """A "<provider>:<model id>" id from the model router for a provider with no
+    configured price (e.g. "together:..."). Reporting no estimate is honest;
+    reporting $0 is not. NestJS stores a missing estimatedCost as NULL.
+
+    Ids like "mayura:v1" are unaffected: only a known router provider prefix counts.
+    """
+    if not model or ":" not in str(model):
+        return False
+    try:
+        from ai_services.core.routing.registry import KNOWN_PROVIDERS, UNQUALIFIED_TELEMETRY_PROVIDERS
+    except Exception:
+        return False
+    prefix = str(model).split(":", 1)[0]
+    return prefix in KNOWN_PROVIDERS and prefix not in UNQUALIFIED_TELEMETRY_PROVIDERS
+
+
+def calculate_cost(model: str, tokens_input: int, tokens_output: int) -> "float | None":
+    # Routed Together ids ("together:zai-org/GLM-5.3-Flash") carry their own price
+    # table: the bare model id means something different on Together than it does
+    # on Groq (gpt-oss-120b is billed by each of them separately).
+    if str(model or "").startswith("together:"):
+        rates = _together_rates(str(model).split(":", 1)[1])
+        if not rates:
+            return None
+        return round(
+            (tokens_input / 1_000_000) * rates['input'] +
+            (tokens_output / 1_000_000) * rates['output'],
+            6
+        )
+    if _is_unpriced_router_provider(model):
+        return None
     rates = MODEL_COSTS.get(model, MODEL_COSTS.get(model.split('/')[-1], None))
     if not rates:
         return 0.0
@@ -102,7 +165,7 @@ def log_ai_usage_sync(
         try:
             resp = httpx.post(url, json=payload, headers=headers, timeout=10.0)
             resp.raise_for_status()
-            logger.debug("AI usage logged: feature=%s model=%s cost=$%.6f", feature_id, model_used, cost)
+            logger.debug("AI usage logged: feature=%s model=%s cost=%s", feature_id, model_used, cost)
             return
         except Exception as e:
             last_err = e

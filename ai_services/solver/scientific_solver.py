@@ -191,7 +191,15 @@ class ScientificSolver:
             if line.strip().startswith(tail_markers):
                 break
             cleaned_lines.append(line)
-        return "\n".join(cleaned_lines).strip()
+        code = "\n".join(cleaned_lines).strip()
+        # A model told to start its reply with '{' wraps the code in braces. The
+        # leading brace is dropped by the start-marker scan above; drop the lone
+        # closing one too, but only when that is what makes the code parse.
+        if code.endswith("}") and self._code_is_valid_python(code):
+            trimmed = code[:-1].rstrip()
+            if trimmed and not self._code_is_valid_python(trimmed):
+                code = trimmed
+        return code
 
     def _code_is_valid_python(self, code: str) -> Optional[str]:
         try:
@@ -348,13 +356,30 @@ class ScientificSolver:
         )
         
         user_prompt = f"Question: {question}\n\nWrite the Python code to solve this."
-        
+
+        # Token totals across every LLM call the solver makes, so the doubt's
+        # usage row is not recorded as 0+0.
+        usage = {"tokens_input": 0, "tokens_output": 0, "model": None}
+
+        def _account(resp):
+            if not isinstance(resp, dict):
+                return
+            u = resp.get("usage") or {}
+            usage["tokens_input"] += int(resp.get("tokens_input") or u.get("prompt_tokens") or 0)
+            usage["tokens_output"] += int(resp.get("tokens_output") or u.get("completion_tokens") or 0)
+            usage["model"] = resp.get("model") or usage["model"]
+
+        # legacy_prompt_shaping=False: the shared prefix tells the model to start
+        # with '{', which made it wrap generated Python in braces ("unmatched '}'").
         llm_resp = self.llm.complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             model="openai/gpt-oss-120b",
-            json_mode=False
+            json_mode=False,
+            legacy_prompt_shaping=False,
+            feature="doubt_resolver",
         )
+        _account(llm_resp)
         
         code = self._clean_generated_code(llm_resp["content"])
         syntax_error = self._code_is_valid_python(code)
@@ -379,7 +404,10 @@ class ScientificSolver:
                 model="openai/gpt-oss-120b",
                 temperature=0.0,
                 json_mode=False,
+                legacy_prompt_shaping=False,
+                feature="doubt_resolver",
             )
+            _account(retry_resp)
             code = self._clean_generated_code(retry_resp["content"])
             syntax_error = self._code_is_valid_python(code)
 
@@ -392,6 +420,7 @@ class ScientificSolver:
                 "success": False,
                 "error": f"Generated solver code was invalid Python: {syntax_error}",
                 "model": "scientific_solver",
+                "_usage": usage,
             }
 
         # Step 2: Execute Code
@@ -403,6 +432,7 @@ class ScientificSolver:
                 "success": False,
                 "error": exec_res["error"],
                 "model": "scientific_solver",
+                "_usage": usage,
             }
         
         # Step 3: Split Synthesis (Parallel Brief/Detailed generation)
@@ -467,6 +497,8 @@ class ScientificSolver:
             json_mode=True
         )
         
+        for _r in results:
+            _account(_r)
         brief_resp = results[0]["content"]
         detailed_resp = results[1]["content"]
         
@@ -492,6 +524,7 @@ class ScientificSolver:
             return text
 
         content = replace_placeholders(content)
+        content["_usage"] = usage
         return content
 
 scientific_solver = ScientificSolver()

@@ -112,6 +112,13 @@ class RotationBehaviourTests(unittest.TestCase):
 
         keys = [f"k{i}" for i in range(n_keys)]
         with patch.object(groq_mod, "Groq", FakeGroq),              patch.object(groq_mod, "RateLimitError", FakeRateLimit),              patch.object(lc, "GROQ_API_KEYS", keys),              patch.object(lc, "_DISABLED_GROQ_KEYS", set()),              patch.object(lc.time, "sleep", lambda *_a, **_k: None):
+            # These tests drive Groq key rotation through LLMClient.complete().
+            # Pin the router to a config with no Together models so the call takes
+            # the Groq route whatever the developer's .env contains; otherwise a
+            # locally configured Together key would serve the call for real.
+            from ai_services.core import routing
+            routing.reset_router(routing.ModelRouter(routing.load_config({})))
+            self.addCleanup(routing.reset_router)
             client = lc.LLMClient()
             try:
                 client.complete(system_prompt="s", user_prompt="u", model="openai/gpt-oss-20b",

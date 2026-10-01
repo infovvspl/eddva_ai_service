@@ -145,14 +145,16 @@ class SolverPromptScopeTests(SimpleTestCase):
         self.assertIn("JSON output schema above exactly", _SOLVER_SCOPE_RULE)
 
     def test_scope_rule_is_applied_to_every_solver_call(self):
+        # The assignment spans several lines since the false-premise rule was added,
+        # so match the whole statement rather than one line of it.
         src = _function_body("resolve_doubt")
         self.assertIn("_build_solver_system_prompt(", src)
-        for line in src.splitlines():
-            if "solver_system = _build_solver_system_prompt(" in line:
-                self.assertIn("_SOLVER_SCOPE_RULE", line)
-                break
-        else:  # pragma: no cover - guards against a silent rename
-            self.fail("solver_system assignment not found in resolve_doubt")
+        start = src.find("solver_system = ")
+        self.assertNotEqual(start, -1, "solver_system assignment not found in resolve_doubt")
+        statement = src[start:src.find("\n\n", start)]
+        self.assertIn("_build_solver_system_prompt(", statement)
+        self.assertIn("_SOLVER_SCOPE_RULE", statement)
+        self.assertIn("_FALSE_PREMISE_RULE", statement)
 
 
 class ProvidedSubjectMappingTests(SimpleTestCase):
