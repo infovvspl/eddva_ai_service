@@ -23,13 +23,17 @@ jobs:
           # spend is attributable per environment. Unset = router stays on
           # Groq/Gemini, which is the safe default.
           TOGETHER_API_KEY: ${{ secrets.DEV_TOGETHER_API_KEY }}
-          TOGETHER_MODEL_GPT_OSS_120B: ${{ vars.TOGETHER_MODEL_GPT_OSS_120B }}
-          TOGETHER_MODEL_DEEPSEEK_V4_FLASH: ${{ vars.TOGETHER_MODEL_DEEPSEEK_V4_FLASH }}
-          TOGETHER_MODEL_GLM53_FLASH: ${{ vars.TOGETHER_MODEL_GLM53_FLASH }}
-          AI_ROUTER_ENABLED: ${{ vars.DEV_AI_ROUTER_ENABLED }}
-          AI_ROUTER_FALLBACK_ENABLED: ${{ vars.DEV_AI_ROUTER_FALLBACK_ENABLED }}
-          AI_ROUTE_CONTENT_PRIMARY: ${{ vars.DEV_AI_ROUTE_CONTENT_PRIMARY }}
-          AI_ROUTE_GROUNDED_PRIMARY: ${{ vars.DEV_AI_ROUTE_GROUNDED_PRIMARY }}
+          TOGETHER_MODEL_GPT_OSS_120B: ${{ vars.TOGETHER_MODEL_GPT_OSS_120B || secrets.TOGETHER_MODEL_GPT_OSS_120B }}
+          TOGETHER_MODEL_DEEPSEEK_V4_FLASH: ${{ vars.TOGETHER_MODEL_DEEPSEEK_V4_FLASH || secrets.TOGETHER_MODEL_DEEPSEEK_V4_FLASH }}
+          TOGETHER_MODEL_GLM53_FLASH: ${{ vars.TOGETHER_MODEL_GLM53_FLASH || secrets.TOGETHER_MODEL_GLM53_FLASH }}
+          AI_ROUTER_ENABLED: ${{ vars.DEV_AI_ROUTER_ENABLED || secrets.DEV_AI_ROUTER_ENABLED }}
+          AI_ROUTER_FALLBACK_ENABLED: ${{ vars.DEV_AI_ROUTER_FALLBACK_ENABLED || secrets.DEV_AI_ROUTER_FALLBACK_ENABLED }}
+          AI_ROUTE_REASONING_PRIMARY: ${{ vars.DEV_AI_ROUTE_REASONING_PRIMARY || secrets.DEV_AI_ROUTE_REASONING_PRIMARY }}
+          AI_ROUTE_CONTENT_PRIMARY: ${{ vars.DEV_AI_ROUTE_CONTENT_PRIMARY || secrets.DEV_AI_ROUTE_CONTENT_PRIMARY }}
+          AI_ROUTE_LIGHTWEIGHT_PRIMARY: ${{ vars.DEV_AI_ROUTE_LIGHTWEIGHT_PRIMARY || secrets.DEV_AI_ROUTE_LIGHTWEIGHT_PRIMARY }}
+          AI_ROUTE_BULK_TEXT_PRIMARY: ${{ vars.DEV_AI_ROUTE_BULK_TEXT_PRIMARY || secrets.DEV_AI_ROUTE_BULK_TEXT_PRIMARY }}
+          AI_ROUTE_PREMIUM_PRIMARY: ${{ vars.DEV_AI_ROUTE_PREMIUM_PRIMARY || secrets.DEV_AI_ROUTE_PREMIUM_PRIMARY }}
+          AI_ROUTE_GROUNDED_PRIMARY: ${{ vars.DEV_AI_ROUTE_GROUNDED_PRIMARY || secrets.DEV_AI_ROUTE_GROUNDED_PRIMARY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -78,7 +82,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 25m
-          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,GEMINI_API_KEYS,GROQ_VISION_MODELS,SERPER_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL,GROQ_API_KEYS,DEV_NESTJS_URL,TOGETHER_API_KEY,TOGETHER_MODEL_GPT_OSS_120B,TOGETHER_MODEL_DEEPSEEK_V4_FLASH,TOGETHER_MODEL_GLM53_FLASH,AI_ROUTER_ENABLED,AI_ROUTER_FALLBACK_ENABLED,AI_ROUTE_CONTENT_PRIMARY,AI_ROUTE_GROUNDED_PRIMARY
+          envs: GH_PAT,GROQ_API_KEY,GEMINI_API_KEY,GEMINI_API_KEYS,GROQ_VISION_MODELS,SERPER_API_KEY,SERPAPI_KEY,SARVAM_API_KEY,DJANGO_SECRET_KEY,ALLOWED_HOSTS,AI_API_KEY,WHISPER_MODEL,WHISPER_DEVICE,WHISPER_COMPUTE_TYPE,DJANGO_DEBUG,DB_ENGINE,DB_NAME,DB_USER,DB_PASSWORD,DB_HOST,DB_PORT,CORS_ALLOWED_ORIGINS,DEV_REDIS_URL,GROQ_API_KEYS,DEV_NESTJS_URL,TOGETHER_API_KEY,TOGETHER_MODEL_GPT_OSS_120B,TOGETHER_MODEL_DEEPSEEK_V4_FLASH,TOGETHER_MODEL_GLM53_FLASH,AI_ROUTER_ENABLED,AI_ROUTER_FALLBACK_ENABLED,AI_ROUTE_REASONING_PRIMARY,AI_ROUTE_CONTENT_PRIMARY,AI_ROUTE_LIGHTWEIGHT_PRIMARY,AI_ROUTE_BULK_TEXT_PRIMARY,AI_ROUTE_PREMIUM_PRIMARY,AI_ROUTE_GROUNDED_PRIMARY
           script: |
             set -e
             export NVM_DIR="$HOME/.nvm"
@@ -212,12 +216,18 @@ jobs:
             # false so a deploy never silently moves traffic to a new provider.
             printf 'AI_ROUTER_ENABLED=%s\n' "${AI_ROUTER_ENABLED:-false}" >> .env
             printf 'AI_ROUTER_FALLBACK_ENABLED=%s\n' "${AI_ROUTER_FALLBACK_ENABLED:-false}" >> .env
-            if [ -n "$AI_ROUTE_CONTENT_PRIMARY" ]; then
-              printf 'AI_ROUTE_CONTENT_PRIMARY=%s\n' "$AI_ROUTE_CONTENT_PRIMARY" >> .env
-            fi
-            if [ -n "$AI_ROUTE_GROUNDED_PRIMARY" ]; then
-              printf 'AI_ROUTE_GROUNDED_PRIMARY=%s\n' "$AI_ROUTE_GROUNDED_PRIMARY" >> .env
-            fi
+            # Per-capability primaries. Needed to keep every capability on
+            # Together: the stock defaults for content and premium point at
+            # Qwen3.8-Flash and Qwen3.7-Max, and an id that is not configured is
+            # skipped as model_id_not_configured(...) — which sends that
+            # capability back to Groq without anything looking wrong.
+            for _cap in REASONING CONTENT LIGHTWEIGHT BULK_TEXT PREMIUM GROUNDED; do
+              _var="AI_ROUTE_${_cap}_PRIMARY"
+              eval "_val=\${$_var}"
+              if [ -n "$_val" ]; then
+                printf '%s=%s\n' "$_var" "$_val" >> .env
+              fi
+            done
 
             printf 'DJANGO_SECRET_KEY=%s\n' "$DJANGO_SECRET_KEY" >> .env
             printf 'ALLOWED_HOSTS=%s\n' "$ALLOWED_HOSTS_VALUE" >> .env
