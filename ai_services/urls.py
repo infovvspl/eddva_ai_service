@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     feedback, notes, content, test, career,
     personalization, admin_api, bridge, evaluate, ppt, textbook, diagram, ai_tutor,
+    competitive,
 )
 
 urlpatterns = [
@@ -93,6 +94,10 @@ urlpatterns = [
     # Textbook ingestion (chapter PDF -> page-tagged passages for grounded generation)
     path("textbook/ingest", textbook.ingest_textbook),
     path("textbook/ingest-progress", textbook.ingest_progress),
+
+    # Competitive Exam Prep — PYQ / question-bank PDF -> structured questions
+    path("competitive/extract-questions", competitive.extract_competitive_questions),
+    path("competitive/extract-progress", competitive.extract_progress),
 
     # Batch Question Evaluator (QA for AI-generated questions)
     path("evaluate/batch", evaluate.evaluate_batch),
