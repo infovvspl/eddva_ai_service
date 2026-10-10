@@ -27,6 +27,7 @@ from ai_services.core.serpapi_images import search_google_images
 from ai_services.core.usage_logger import log_usage
 from .base import get_llm, metered
 from ai_services.core.routing import telemetry_model_from_error
+from ai_services.core.ppt_v2.flags import IMAGE, V2, ppt_version
 
 logger = logging.getLogger("ai_services.ppt")
 
@@ -599,7 +600,8 @@ def _caption_is_relevant(caption: str, strong: "set[str]", broad: "set[str]") ->
     return len(broad & cap) >= 2
 
 
-def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None" = None) -> dict:
+def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None" = None,
+                           accept=None) -> dict:
     """Search Serper and return the first downloadable, ON-TOPIC image as base64.
 
     Results are ranked by source before anything is downloaded, so a teaching
@@ -608,12 +610,25 @@ def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None
     so a slightly-off search can't put an unrelated picture on the slide. If no
     query yields a relevant image, the best downloadable one is used as a
     fallback rather than leaving the slide blank.
+
+    `accept` is an optional scorer, supplied by the V2 pipeline. When it is
+    None this behaves exactly as it always has. When given, two things
+    change, and both exist because a one-sided boolean relevance test put a
+    "photosynthesis AND respiration" diagram on an introductory
+    photosynthesis slide:
+
+      * candidates are SCORED rather than merely passed/failed, and the best
+        scoring one wins instead of the first acceptable one;
+      * an unacceptable image is not used at all. Returning the least-bad
+        result is how an unrelated picture reaches a slide; the caller falls
+        through to the next visual strategy instead.
     """
     queries = _search_queries(search_term, slide_title, ctx)
     strong = _keywords(search_term)
     broad = strong | _keywords(slide_title)
     first_url = None
     fallback: "dict | None" = None  # best downloadable image even if off-caption
+    scored_best = None  # (score, asset, verdict) — only used when `accept` is given
     downloads = 0  # bounded by _MAX_IMAGE_DOWNLOADS_PER_SLIDE across ALL queries
 
     for attempt, query in enumerate(queries, 1):
@@ -630,11 +645,20 @@ def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None
                 url = item.get("imageUrl")
                 if not url:
                     continue
-                relevant = _caption_is_relevant(item.get("title") or "", strong, broad)
-                # Skip off-topic results once we already hold a fallback — no need
-                # to download more of them.
-                if not relevant and fallback is not None:
-                    continue
+                caption = item.get("title") or ""
+                if accept is not None:
+                    verdict = accept(caption, url)
+                    relevant = bool(verdict and verdict.accepted)
+                    if not relevant:
+                        continue          # never downloaded, never used
+                    if scored_best is not None and verdict.score <= scored_best[0]:
+                        continue          # already hold something better
+                else:
+                    relevant = _caption_is_relevant(caption, strong, broad)
+                    # Skip off-topic results once we already hold a fallback — no
+                    # need to download more of them.
+                    if not relevant and fallback is not None:
+                        continue
                 if downloads >= _MAX_IMAGE_DOWNLOADS_PER_SLIDE:
                     # Spent this slide's download budget. Stop hunting and use
                     # whatever we already hold rather than stalling the pool.
@@ -642,6 +666,12 @@ def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None
                 downloads += 1
                 b64 = _download_image_as_base64(url)
                 if not b64:
+                    continue
+                if accept is not None:
+                    # Keep the best, keep looking: the first acceptable result
+                    # is not necessarily the most on-topic one.
+                    scored_best = (verdict.score, {"imageUrl": url, "imageBase64": b64},
+                                   verdict)
                     continue
                 if relevant:
                     if attempt > 1:
@@ -658,6 +688,24 @@ def _fetch_image_for_slide(search_term: str, slide_title: str, ctx: "dict | None
                 slide_title, _MAX_IMAGE_DOWNLOADS_PER_SLIDE,
             )
             break
+
+    if accept is not None:
+        if scored_best is not None:
+            logger.info("Slide image scored %.2f (%s) for %r (%s)",
+                        scored_best[0], scored_best[2].confidence, search_term,
+                        "; ".join(scored_best[2].reasons))
+            # The score travels with the asset: the caller's validation
+            # policy spends a vision call only on the ambiguous middle band,
+            # and it cannot tell which band this is without the number.
+            asset = dict(scored_best[1])
+            asset["relevanceScore"] = scored_best[0]
+            asset["relevanceConfidence"] = scored_best[2].confidence
+            return asset
+        # Nothing cleared the bar. Report nothing rather than something
+        # unrelated, so the fallback chain can try a diagram instead.
+        logger.info("No sufficiently relevant image for %r; deferring to the "
+                    "next visual strategy", search_term)
+        return {"imageUrl": None, "imageBase64": None}
 
     # No caption-relevant image anywhere — use the best downloadable one so the
     # slide isn't blank, then the raw best URL as a last resort (client proxies it).
@@ -785,12 +833,305 @@ def _log(institute_id, vertical, model, result=None, success=True, error=None):
     )
 
 
+def _log_v2(institute_id, vertical, feature_id, model, result=None,
+            success=True, error=None, latency_ms=0):
+    """Usage logging for the V2 stages.
+
+    Deliberately the same log_usage call the rest of the service uses — a
+    second telemetry system would mean the AI-usage dashboard silently
+    under-reports V2. The usage table has no column for slide number or
+    attempt, so those stay in the application log; provider is derived
+    downstream from the model id, as it already is for every other feature.
+    """
+    log_usage(
+        institute_id=institute_id,
+        institute_type=vertical or "school",
+        feature_id=feature_id,
+        feature_category="content_generation",
+        model_used=(result or {}).get("model", model) if result else model,
+        tokens_input=(result or {}).get("tokens_input", 0) if result else 0,
+        tokens_output=(result or {}).get("tokens_output", 0) if result else 0,
+        latency_ms=int((result or {}).get("latency_ms", latency_ms)) if result else latency_ms,
+        success=success,
+        error_message=str(error)[:300] if error else None,
+    )
+
+
+def _ppt_vision_ask(image, prompt):
+    """Ask the shared vision helper for a PPT visual-contract verdict.
+
+    Injected into core rather than imported by it, and only ever called for
+    the single image a slide actually chose - never per search candidate.
+
+    ``structured=True`` because the answer is JSON the validator must parse
+    whole. Without it the helper's transcription-sized output budget let the
+    model's own reasoning crowd out the answer, and a correct reading of a
+    generated image came back cut off mid-string.
+    """
+    from ai_services.views.bridge import _vision_text_from_image
+    return _vision_text_from_image(image, prompt, structured=True)
+
+
+def _image_usage_model() -> str:
+    """The provider-qualified model id recorded against image usage.
+
+    Read live rather than hard-coded: the image provider is configurable
+    now, and usage rows labelled "huggingface:" while Together is doing the
+    work would make the spend impossible to attribute.
+    """
+    try:
+        from ai_services.core.image_generation import image_generation_config
+        cfg = image_generation_config()
+        return "%s:%s" % (cfg.get("provider") or "image", cfg.get("model") or "")
+    except Exception:
+        return "image"
+
+
+# Why a V2 or image deck fell back to V1, in the teacher's terms.
+_FALLBACK_WHY = {
+    "llm_error": "the AI service was busy",
+    "malformed_json": "the AI service replied badly",
+    "slide_count": "the AI service replied badly",
+    "no_images": "no slide could be painted",
+}
+
+
+def _record_fallback(progress, reason):
+    """Remember on the job why the requested style was not produced."""
+    if progress is not None:
+        try:
+            progress.fallback_reason = reason or "unavailable"
+        except Exception:  # a progress object that refuses attributes is fine
+            pass
+
+
+def _mark_fallback(response, requested, reason):
+    """Tag a V1 deck that stands in for a requested V2 or image deck.
+
+    The studio shows the teacher that the style they chose could not be
+    made this time, instead of presenting the stand-in as what they asked for.
+    """
+    if requested not in (V2, IMAGE) or getattr(response, "status_code", 500) >= 400:
+        return response
+    data = (getattr(response, "data", None) or {}).get("data")
+    if not isinstance(data, dict):
+        return response
+    generation = data.setdefault("generation", {})
+    if generation.get("version") in (V2, IMAGE):
+        return response
+    generation.update(version="v1", requested=requested, fallback=True,
+                      fallbackReason=reason or "unavailable",
+                      fallbackWhy=_FALLBACK_WHY.get(reason or "", "of an unexpected problem"))
+    return response
+
+
+def _try_generate_v2(*, topic, slide_count, language, ctx, board, passages,
+                     institute_id, vertical, progress=None, auto_range=None,
+                     theme_key=""):
+    """Run the V2 pipeline. Returns a Response, or None to fall back to V1.
+
+    Falling back is a decision, not an accident: every return of None is
+    preceded by a log line carrying ppt_generation_version=v2 and a
+    fallback_reason, so a V2 deck that quietly came out as a V1 deck can still
+    be explained from the logs. Setting PPT_V2_FALLBACK_TO_V1=false turns the
+    fallback off and surfaces the failure instead, which is what you want
+    while debugging V2 itself.
+    """
+    from ai_services.core.cache import ResponseCache
+    from ai_services.core.ppt_v2.schema import VisualStrategy
+    from ai_services.core.ppt_v2.service import V2Error, generate_v2
+
+    def on_planner_usage(result, attempt):
+        _log_v2(institute_id, vertical, "ppt_v2_plan", _MODEL, result=result)
+
+    def on_asset(slide_number, strategy, ok, detail):
+        if strategy is not VisualStrategy.AI_GENERATED_IMAGE:
+            return
+        model = _image_usage_model()
+        _log_v2(institute_id, vertical, "ppt_v2_image", model,
+                success=ok, error=None if ok else detail)
+
+    vision_ask = _ppt_vision_ask
+
+    def on_vision_usage(ok=True, latency_ms=0, model="", error=None, passed=None):
+        _log_v2(institute_id, vertical, "ppt_v2_vision", model or "vision",
+                success=ok, error=error, latency_ms=latency_ms)
+
+    try:
+        result = generate_v2(
+            topic=topic, slide_count=slide_count, language=language, ctx=ctx,
+            board=board, board_rules=board_instruction(board), passages=passages,
+            institute_id=institute_id, vertical=vertical,
+            search_fn=_fetch_image_for_slide, cache=ResponseCache(),
+            on_planner_usage=on_planner_usage, on_asset=on_asset,
+            vision_ask=vision_ask, vision_model="vision", 
+            on_vision_usage=on_vision_usage, on_progress=progress,
+            on_event=getattr(progress, "event", None), auto_range=auto_range,
+            theme_key=theme_key,
+        )
+    except V2Error as exc:
+        logger.warning("ppt_generation_version=v2 fallback_reason=%s detail=%s",
+                       exc.reason, str(exc)[:200])
+        _record_fallback(progress, exc.reason)
+        if not _v2_fallback_allowed():
+            return Response(
+                {"error": "V2 presentation generation failed (%s)." % exc.reason},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return None
+    except Exception as exc:  # unexpected: never lose the teacher's deck over it
+        logger.exception("ppt_generation_version=v2 fallback_reason=unexpected_error")
+        _record_fallback(progress, "unexpected_error")
+        if not _v2_fallback_allowed():
+            return Response(
+                {"error": "V2 presentation generation failed."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return None
+
+    data = result.to_payload()
+    if passages:
+        data["source"] = {"grounded": result.grounded,
+                          "reason": None if result.grounded else "unavailable",
+                          "passagesAvailable": len(passages)}
+    return Response({"success": True, "data": data})
+
+
+def _try_generate_image_deck(*, topic, slide_count, language, ctx, board, passages,
+                             institute_id, vertical, progress=None, auto_range=None,
+                             theme_key=""):
+    """Every slide as one generated image. Returns a Response, or None for V1.
+
+    Same contract as _try_generate_v2: a failure is logged with a reason and
+    falls back to V1 unless PPT_V2_FALLBACK_TO_V1 is off.
+    """
+    from ai_services.core.ppt_v2.image_slides import generate_image_deck, slide_model
+    from ai_services.core.ppt_v2.planner import PlannerError
+
+    def on_planner_usage(result, attempt):
+        _log_v2(institute_id, vertical, "ppt_image_plan", _MODEL, result=result)
+
+    def on_image(slide_number, ok, error):
+        _log_v2(institute_id, vertical, "ppt_image_slide", "together:%s" % slide_model(),
+                success=ok, error=None if ok else error)
+
+    try:
+        data = generate_image_deck(
+            topic=topic, slide_count=slide_count, language=language, ctx=ctx,
+            board=board, board_rules=board_instruction(board), passages=passages,
+            institute_id=institute_id, on_planner_usage=on_planner_usage,
+            on_image=on_image, on_progress=progress,
+            on_event=getattr(progress, "event", None), auto_range=auto_range,
+            theme_key=theme_key,
+        )
+    except PlannerError as exc:
+        logger.warning("ppt_generation_version=image fallback_reason=%s detail=%s",
+                       exc.reason, str(exc)[:200])
+        _record_fallback(progress, exc.reason)
+        data = None
+    except Exception:
+        logger.exception("ppt_generation_version=image fallback_reason=unexpected_error")
+        _record_fallback(progress, "unexpected_error")
+        data = None
+    if data is None:
+        if not _v2_fallback_allowed():
+            return Response({"error": "Image-slide generation failed."},
+                            status=status.HTTP_502_BAD_GATEWAY)
+        return None
+    if not data["generation"]["imagesGenerated"]:
+        # Not one slide painted (the image provider is down, out of credit or
+        # refusing): the slides are planned and checked, so hand them back as
+        # standard slides. Writing a new V1 deck instead threw that work away
+        # and asked a second model again - and failed when that one did too.
+        logger.warning("ppt_generation_version=image fallback_reason=no_images detail=%s",
+                       data["slides"][0].get("slideImageError") if data["slides"] else "")
+        _record_fallback(progress, "no_images")
+        standard = _unpainted_as_standard(data, ctx)
+        if standard is None:
+            return None
+        if passages:
+            standard["source"] = {"grounded": bool(standard["generation"].get("grounded")),
+                                  "reason": None if standard["generation"].get("grounded") else "unavailable",
+                                  "passagesAvailable": len(passages)}
+        return Response({"success": True, "data": standard})
+    if passages:
+        data["source"] = {"grounded": bool(data["generation"].get("grounded")),
+                          "reason": None if data["generation"].get("grounded") else "unavailable",
+                          "passagesAvailable": len(passages)}
+    return Response({"success": True, "data": data})
+
+
+def _unpainted_as_standard(data, ctx):
+    """An image deck none of whose slides could be painted, as a standard deck.
+
+    Keeps the planned, checked words; each slide gets a picture from the image
+    search the standard generator uses. None when there are no usable slides.
+    """
+    planned = [s for s in (data.get("slides") or [])
+               if isinstance(s, dict) and (s.get("title") or s.get("bullets"))]
+    if not planned:
+        return None
+    scope = (ctx or {}).get("topicName") or (ctx or {}).get("chapterName") or ""
+    slides = []
+    for i, s in enumerate(planned):
+        title = s.get("title") or ""
+        slides.append({
+            "slideNumber": i + 1,
+            "type": s.get("type") or "content",
+            "title": title,
+            "subtitle": s.get("subtitle") or "",
+            "bullets": list(s.get("bullets") or []),
+            "speakerNotes": s.get("speakerNotes") or "",
+            "imageSearchTerm": " ".join(x for x in (title, scope, "diagram") if x),
+        })
+
+    def picture(slide):
+        try:
+            return _fetch_image_for_slide(slide["imageSearchTerm"], slide["title"], ctx) or {}
+        except Exception as exc:   # a slide without a picture is still a slide
+            logger.warning("ppt: picture for an unpainted slide failed (%s)", exc)
+            return {}
+
+    with ThreadPoolExecutor(max_workers=_IMAGE_WORKERS) as pool:
+        pictures = list(pool.map(picture, slides))
+    gen = data.get("generation") or {}
+    return {
+        "title": data.get("title") or "",
+        "slides": [{**slide, **pic} for slide, pic in zip(slides, pictures)],
+        "generation": {
+            "version": "v1", "requested": IMAGE, "fallback": True,
+            "fallbackReason": "no_images", "fallbackWhy": _FALLBACK_WHY["no_images"],
+            "fromPlan": True, "plannerModel": gen.get("plannerModel"),
+            "grounded": bool(gen.get("grounded")),
+        },
+    }
+
+
+def _v2_fallback_allowed() -> bool:
+    return (os.getenv("PPT_V2_FALLBACK_TO_V1", "true") or "").strip().lower()         in ("1", "true", "yes", "on")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Views
 # ─────────────────────────────────────────────────────────────────────────────
 _MODEL = "openai/gpt-oss-120b"
 
-_MAX_SLIDES = 25
+# Decks are capped at 10 slides (product decision, 2026-10-09; it was 15):
+# a painted slide takes 6-20s to paint, and a live 15-slide deck took 250s.
+# Keep in step with MAX_SLIDES in the backend and SLIDE_COUNT_MAX in the studio.
+_MAX_SLIDES = 10
+# Image (painted) decks are always this long; the studio does not offer a
+# count for them (product decision, 2026-10-09).
+IMAGE_DECK_SLIDES = 10
+
+
+def image_deck_slides() -> int:
+    """Slides in an image deck (PPT_IMAGE_DECK_SLIDES), never above _MAX_SLIDES."""
+    try:
+        n = int(os.getenv("PPT_IMAGE_DECK_SLIDES", "") or IMAGE_DECK_SLIDES)
+    except ValueError:
+        n = IMAGE_DECK_SLIDES
+    return max(_MIN_SLIDES, min(_MAX_SLIDES, n))
 # The smallest deck the endpoint will build. A title-only deck teaches nothing,
 # so 1 is still refused; 2 gives a content slide plus a summary.
 _MIN_SLIDES = 2
@@ -854,6 +1195,16 @@ _MAX_IMAGE_DOWNLOADS_PER_SLIDE = 4
 # it — so it must not spend that budget: the caller (NestJS) gives up at 240s,
 # and anything the planner burns is taken from the actual slide generation.
 _COVERAGE_DEADLINE_S = 25
+
+# Failures of one reply, not of the service: the standard writer tries once
+# more (see _generate_presentation).
+_REWRITE_KINDS = frozenset({"structured_output", "empty_response", "budget_exhausted", "unreadable"})
+
+
+class _Unreadable(RuntimeError):
+    """The model answered, but not with a deck we can read."""
+
+    kind = "unreadable"
 
 
 def _classify_gemini_failure(exc: Exception) -> str:
@@ -1066,6 +1417,210 @@ def _generate_grounded(
 @api_view(["POST"])
 @metered("ppt_generate")
 def generate_presentation(request):
+    """POST /ppt/generate - the whole deck in one request.
+
+    Kept for callers that have not moved to the job endpoints below; the deck
+    is the same, it just arrives all at once.
+    """
+    return _generate_presentation(request)
+
+
+def _deck_scope(data) -> dict:
+    """What a deck request will be written for, read the way the generator reads it.
+
+    ``kind`` is "topic" when the deck must stay inside one topic of its
+    chapter (see planner.focus_topic_for), "chapter", "subject", or "free"
+    when no curriculum scope came with the request at all.
+    """
+    from ai_services.core.ppt_v2.planner import focus_topic_for
+
+    def text(key):
+        value = data.get(key) if hasattr(data, "get") else None
+        return value.strip() if isinstance(value, str) else ""
+
+    scope = {k: text(k) for k in ("topic", "className", "subjectName", "chapterName", "topicName")}
+    scope["kind"] = ("topic" if focus_topic_for(scope) else "chapter" if scope["chapterName"]
+                     else "subject" if scope["subjectName"] else "free")
+    return scope
+
+
+def _scope_line(scope: dict) -> str:
+    """The first line of the activity feed: which deck is being made."""
+    where = " · ".join(x for x in (scope.get("chapterName") if scope["kind"] == "topic" else "",
+                                   scope.get("subjectName"), scope.get("className")) if x)
+    if scope["kind"] == "topic":
+        what = 'the topic "%s"' % scope["topicName"]
+    elif scope["kind"] == "chapter":
+        what = 'the chapter "%s"' % scope["chapterName"]
+    else:
+        what = '"%s"' % (scope.get("topic") or "your topic")
+    return "Creating a presentation on %s%s" % (what, " (%s)" % where if where else "")
+
+
+class _RequestSnapshot:
+    """What _generate_presentation reads from a request, detached from it.
+
+    A background job outlives its request, so it carries a copy: the body,
+    the headers, and the tenant attributes the middleware resolved.
+    """
+
+    def __init__(self, request):
+        self.data = dict(request.data)
+        self.headers = {k: v for k, v in request.headers.items()}
+        for attr in ("institute_id", "vertical", "board", "institute"):
+            setattr(self, attr, getattr(request, attr, None))
+
+    def spec(self) -> dict:
+        """The snapshot as plain data, for a worker process (see job_queue)."""
+        return {"data": self.data, "headers": self.headers,
+                "institute_id": str(self.institute_id or ""),
+                "vertical": self.vertical if isinstance(self.vertical, str) else None,
+                "board": self.board if isinstance(self.board, str) else None}
+
+    @classmethod
+    def from_spec(cls, spec: dict) -> "_RequestSnapshot":
+        snap = cls.__new__(cls)
+        snap.data = dict(spec.get("data") or {})
+        snap.headers = dict(spec.get("headers") or {})
+        snap.institute_id = spec.get("institute_id") or None
+        snap.vertical = spec.get("vertical")
+        snap.board = spec.get("board")
+        snap.institute = None          # the model object is only read by the request gate
+        return snap
+
+
+def run_queued_job(job_id: str, spec: dict) -> None:
+    """How a worker process runs a queued deck: the same path as a thread."""
+    from ai_services.core import request_context
+    from ai_services.core.ppt_v2 import jobs
+
+    snapshot = _RequestSnapshot.from_spec(spec)
+    headers = snapshot.headers
+    # Usage is attributed to the teacher who asked, as it is in the request.
+    request_context.set_context(
+        request_id=headers.get("X-Request-Id") or None,
+        user_id=headers.get("X-User-Id") or None,
+        user_role=headers.get("X-User-Role") or None,
+        institute_id=snapshot.institute_id, vertical=snapshot.vertical)
+    try:
+        jobs.execute(job_id, lambda progress: _cached_or_generated(snapshot, progress),
+                     str(snapshot.institute_id or ""))
+    finally:
+        request_context.clear()
+
+
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _cached_or_generated(snapshot, progress=None):
+    """A kept deck for an identical request, or a new one (kept when complete).
+
+    See core/ppt_v2/deck_cache. ``fresh`` in the body ("Make a fresh one")
+    skips the lookup; the new deck then replaces the kept one.
+    """
+    from ai_services.core.ppt_v2 import deck_cache
+
+    data = snapshot.data
+    board = (getattr(snapshot, "board", None) or snapshot.headers.get("X-Board")
+             or snapshot.headers.get("x-board") or "")
+    vertical = (getattr(snapshot, "vertical", None) or snapshot.headers.get("X-Vertical")
+                or snapshot.headers.get("x-vertical") or "school")
+    key = deck_cache.key_for(data, board=board, vertical=vertical,
+                             institute_id=getattr(snapshot, "institute_id", ""))
+    note = getattr(progress, "event", None)
+    if not _truthy(data.get("fresh")):
+        kept = deck_cache.get(key, max_slides=_MAX_SLIDES)
+        if kept is not None:
+            logger.info("ppt: served a kept deck (%s slides)", len(kept.get("slides") or []))
+            if note:
+                note("scope", _scope_line(_deck_scope(data)), "done")
+                note("cache", "Found a ready-made presentation for this exact request", "done")
+            return Response({"success": True, "data": kept})
+    response = _generate_presentation(snapshot, progress=progress)
+    response = _mark_fallback(response, getattr(snapshot, "ppt_version", None),
+                              getattr(progress, "fallback_reason", None))
+    body = getattr(response, "data", None)
+    if getattr(response, "status_code", 500) < 400 and isinstance(body, dict):
+        if deck_cache.put(key, body.get("data"), data.get("pptVersion")):
+            logger.info("ppt: kept the deck for identical requests")
+    return response
+
+
+@api_view(["POST"])
+@metered("ppt_generate")
+def generate_presentation_start(request):
+    """POST /ppt/generate/start - start a deck; poll /ppt/generate/status.
+
+    Returns 202 {success, jobId} at once. The deck is built in the background
+    and its status carries real progress and, from composition on, the slides
+    as far as they exist - so the studio can show them while pictures arrive,
+    and no long-held request can hit a server or proxy timeout.
+    """
+    from ai_services.core.ppt_v2 import jobs
+
+    if not (request.data.get("topic") or "").strip():
+        return Response({"error": "topic is required"}, status=status.HTTP_400_BAD_REQUEST)
+    snapshot = _RequestSnapshot(request)
+    institute_id = str(getattr(request, "institute_id", "") or "")
+    meta = request.data.get("clientMeta") if isinstance(request.data.get("clientMeta"), dict) else {}
+
+    def run(progress):
+        return _cached_or_generated(snapshot, progress)
+
+    job_id = jobs.start(run, institute_id=institute_id, meta=meta,
+                        scope=_deck_scope(request.data), spec=snapshot.spec())
+    if job_id is None:
+        return Response({"error": "Too many presentations are being generated for your "
+                                  "institute right now. Please try again in a minute."},
+                        status=429)
+    return Response({"success": True, "jobId": job_id}, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(["GET"])
+def generate_presentation_status(request):
+    """GET /ppt/generate/status?job_id= - progress, partial deck, then result.
+
+    A job is only ever shown to the institute that started it.
+    """
+    from ai_services.core.ppt_v2 import jobs
+
+    job_id = (request.query_params.get("job_id") or "").strip()
+    job = jobs.get(job_id) if job_id else None
+    institute_id = str(getattr(request, "institute_id", "") or "")
+    if not job or (job.get("instituteId") or "") != institute_id:
+        return Response({"error": "job not found"}, status=status.HTTP_404_NOT_FOUND)
+    job.pop("instituteId", None)
+    if job.get("status") == "queued":
+        from ai_services.core.ppt_v2 import job_queue
+        job["queuePosition"] = job_queue.queue_position(job_id)
+    if str(request.query_params.get("summary") or "").lower() in ("1", "true", "yes"):
+        # For lists of a teacher's decks, polled every few seconds: the progress
+        # only, without the deck so far or the finished deck.
+        return Response(_job_summary(job))
+    return Response(job)
+
+
+def _job_summary(job: dict) -> dict:
+    """A job's progress without its slides: what a "your decks" list shows."""
+    current = next((e.get("text") for e in reversed(job.get("activity") or [])
+                    if e.get("state") == "active"), None)
+    keep = ("jobId", "status", "stage", "done", "total", "queuePosition", "error",
+            "scope", "createdAt", "updatedAt", "startedAt")
+    out = {k: job[k] for k in keep if k in job}
+    out["activity"] = current
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    if data:
+        out["title"] = data.get("title")
+        out["slides"] = len(data.get("slides") or [])
+        gen = data.get("generation") if isinstance(data.get("generation"), dict) else {}
+        out["version"] = gen.get("version")
+        out["cached"] = bool(gen.get("cached"))
+    return out
+
+
+def _generate_presentation(request, progress=None):
     """
     POST /ppt/generate
 
@@ -1084,7 +1639,16 @@ def generate_presentation(request):
     # legitimate request — used for quick topic recaps and for cheap test runs.
     # A request for 2 was previously raised to 3 silently, so the caller could
     # not tell that its slide count had been overridden.
-    slide_count = max(_MIN_SLIDES, min(_MAX_SLIDES, int(request.data.get("slideCount") or 5)))
+    # "auto" lets the content decide the count (see planner.auto_slide_range);
+    # a number is honoured exactly as before, and so is a missing one (5).
+    auto_count = str(request.data.get("slideCount") or "").strip().lower() == "auto"
+    if auto_count:
+        slide_count = 5            # replaced below by the middle of the content's range
+    else:
+        slide_count = max(_MIN_SLIDES, min(_MAX_SLIDES, int(request.data.get("slideCount") or 5)))
+    if str(request.data.get("pptVersion") or "").strip().lower() == IMAGE:
+        # Every image deck is the same length, whatever was asked for.
+        auto_count, slide_count = False, image_deck_slides()
     language = (request.data.get("language") or "English").strip()
     institute_id = getattr(request, "institute_id", None)
     vertical = getattr(request, "vertical", None) or request.headers.get("X-Vertical") or request.headers.get("x-vertical") or "school"
@@ -1109,6 +1673,77 @@ def generate_presentation(request):
     # "General knowledge" (Gemini quota vs bad key vs unusable OCR) instead of a
     # generic, unactionable message.
     grounded_fallback_reason = None
+
+    auto_range = None
+    if auto_count:
+        from ai_services.core.ppt_v2.planner import auto_slide_range
+        topic_only = bool(ctx["topicName"]) and ctx["topicName"] != ctx["chapterName"]
+        auto_range = auto_slide_range(passages, topic, ctx["chapterName"], topic_only)
+        # The middle of the range: what the plain generator writes if V2 falls back.
+        slide_count = (auto_range[0] + auto_range[1]) // 2
+
+    # ── V2 switch ────────────────────────────────────────────────────────────
+    # V1 is the default and nothing below this block changed. V2 runs only when
+    # PPT_V2_ENABLED is on, and a V2 failure falls back to the V1 path below
+    # rather than failing the request (see _try_generate_v2 for why that is
+    # logged rather than silent). The deck key keeps a percentage rollout
+    # stable across retries of the same deck.
+    note = getattr(progress, "event", None)
+    if note:
+        # Said first, so a teacher who opened the wrong topic sees it at once
+        # rather than in the finished deck. "warn" when there is no scope.
+        scope = _deck_scope(request.data)
+        note("scope", _scope_line(scope), "warn" if scope["kind"] == "free" else "done")
+        pages = sorted({p.get("page_no") for p in passages
+                        if isinstance(p, dict) and p.get("page_no")})
+        if passages:
+            note("source", "Reading your textbook: %d passage%s%s" % (
+                len(passages), "" if len(passages) == 1 else "s",
+                (", pages %s–%s" % (pages[0], pages[-1]) if len(pages) > 1
+                 else ", page %s" % pages[0] if pages else "")), "done")
+        else:
+            note("source", "No indexed textbook for this chapter; following the %s syllabus"
+                 % (ctx["className"] or "class"), "warn")
+
+    version = ppt_version(requested=request.data.get("pptVersion"),
+                          deck_key="%s|%s|%s" % (ctx["className"], ctx["subjectName"],
+                                                 ctx["chapterName"] or topic))
+    try:
+        request.ppt_version = version     # read by the job, to tag a fallback deck
+    except Exception:
+        pass
+    # The teacher's studio theme ("Match the subject" sends none). Only a
+    # known palette key gets through; V1 decks are coloured by the studio.
+    from ai_services.core.ppt_v2.design import studio_theme_key
+    theme_key = studio_theme_key(request.data.get("deckTheme")) or ""
+    if version == IMAGE:
+        image_response = _try_generate_image_deck(
+            topic=topic, slide_count=slide_count, language=language, ctx=ctx,
+            board=board, passages=passages, institute_id=institute_id,
+            vertical=vertical, progress=progress, auto_range=auto_range,
+            theme_key=theme_key,
+        )
+        if image_response is not None:
+            return image_response
+    if version == V2:
+        v2_response = _try_generate_v2(
+            topic=topic, slide_count=slide_count, language=language, ctx=ctx,
+            board=board, passages=passages, institute_id=institute_id,
+            vertical=vertical, progress=progress, auto_range=auto_range,
+            theme_key=theme_key,
+        )
+        if v2_response is not None:
+            return v2_response
+
+    if version in (IMAGE, V2) and note:
+        why = _FALLBACK_WHY.get(getattr(progress, "fallback_reason", "") or "", "of an unexpected problem")
+        note("fallback", "%s could not be made this time, because %s; writing standard slides instead"
+             % ("Image slides" if version == IMAGE else "Designed slides", why), "warn")
+
+    if progress:
+        progress("writing")
+        if note:
+            note("write", "Writing the slides", "active")
     if passages:
         grounded, grounded_fallback_reason = _generate_grounded(
             passages=passages, ctx=ctx, topic=topic, slide_count=slide_count,
@@ -1179,18 +1814,41 @@ def generate_presentation(request):
             "PPT ungrounded: capping max_tokens to %d (prompt ~%d tok) to fit Groq TPM %d",
             _gen_max_tokens, (len(system_prompt) + len(user_prompt)) // 4, _GROQ_TPM_CEILING,
         )
-    try:
-        llm_result = llm.complete(
+
+    def write(temperature):
+        result = llm.complete(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             model=_MODEL,
-            temperature=0.6,
+            temperature=temperature,
             max_tokens=_gen_max_tokens,
             json_mode=True,
             institute_id=institute_id,
             feature="ppt_generate",
             capability="content",
         )
+        _log(institute_id, vertical, _MODEL, result=result)
+        parsed, problem = _parse_llm_json(result["content"], "ppt/generate")
+        if problem:
+            raise _Unreadable(problem)
+        return parsed
+
+    try:
+        try:
+            data = write(0.6)
+        except Exception as exc:
+            # A reply that failed the JSON check, came back empty or could not
+            # be read fails fast, and a cooler second try usually passes; this
+            # was the last step between a teacher and "Failed to generate".
+            # Rate limits and outages are not retried here: the client already
+            # rotated keys and providers.
+            if getattr(exc, "kind", "") not in _REWRITE_KINDS:
+                raise
+            logger.warning("PPT generate: %s reply (%s); writing once more, cooler",
+                           exc.kind, str(exc)[:120])
+            data = write(0.3)
+    except _Unreadable as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
     except Exception as exc:
         logger.warning("PPT generate failed: %s", exc)
         _log(institute_id, vertical, telemetry_model_from_error(exc, _MODEL), success=False, error=exc)
@@ -1198,12 +1856,6 @@ def generate_presentation(request):
             {"error": "Failed to generate slide content. Please try again."},
             status=status.HTTP_502_BAD_GATEWAY,
         )
-
-    _log(institute_id, vertical, _MODEL, result=llm_result)
-
-    data, err = _parse_llm_json(llm_result["content"], "ppt/generate")
-    if err:
-        return Response({"error": err}, status=status.HTTP_502_BAD_GATEWAY)
 
     slides = _drop_schema_echo_bullets([_repair_slide_latex(s) for s in (data.get("slides") or [])])
     # Fetched concurrently: sequentially this cost 1s of sleep plus a download per

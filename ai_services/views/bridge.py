@@ -4073,6 +4073,32 @@ _GRADING_VISION_PROMPT = (
 )
 
 
+_INDEX_PAGE_VISION_PROMPT = (
+    "The image is a photo or scan of a textbook's table of contents / index page. "
+    "Read its chapter and topic structure and output ONLY a JSON object — no markdown "
+    "fences, no commentary before or after — in exactly this shape:\n"
+    '{"chapters": [{"chapter": "<chapter title>", "topics": ["<topic 1>", "<topic 2>"]}]}\n\n'
+    "Rules:\n"
+    "- A CHAPTER is a top-level, usually numbered entry (e.g. \"1. Real Numbers\", "
+    "\"Chapter 3 — Motion\"). Strip the leading number/word \"Chapter\" from the title; "
+    "keep only the title text.\n"
+    "- A TOPIC is a sub-entry listed under a chapter (often sub-numbered like \"1.1\", "
+    "\"1.2\", or plainly indented beneath the chapter). Strip any leading numbering from "
+    "topic titles too.\n"
+    "- Ignore page numbers and the dotted/dashed leader lines connecting a title to its "
+    "page number — they carry no content.\n"
+    "- Ignore any grouping above chapter level (e.g. \"UNIT I\", \"PART A\", \"SECTION 1\") — "
+    "output only chapters and their topics, nothing else.\n"
+    "- Preserve the book's own order, top to bottom.\n"
+    "- If a chapter lists no sub-topics, give it an empty \"topics\" array — do not invent any.\n"
+    "- Never invent a chapter or topic that is not legible in the image. If a title is "
+    "partly unclear, give your best reading rather than skipping it.\n"
+    "- Keep titles in the language/script they are printed in; do not translate.\n"
+    "- If the image is not a table of contents / index page at all, output exactly "
+    '{"chapters": []}'
+)
+
+
 
 # Reused Groq client instances (keyed by API key) for vision
 _groq_vision_clients: dict = {}
@@ -4211,7 +4237,42 @@ def _image_to_bytes_and_mime(image_source: str) -> tuple[bytes, str]:
     return b"", "image/jpeg"
 
 
-def _call_gemini_vision(image_source: str, prompt: str) -> str:
+# A structured (JSON) vision answer is worthless when it is cut short: one
+# missing brace and the whole verdict is unparseable. On the Gemini 2.5+ family
+# thinking tokens are charged against max_output_tokens, so the 1024 cap that is
+# ample for a transcription left about 35 tokens of visible answer once the
+# model had reasoned about a richer picture. A live PPT run got back
+#   {"adv": [], "seen": ["green leaf", "sunlight", "carbon dioxide entering",
+#    "water rising stem"], "rel": ["sunlight falling leaf", "
+# - a correct reading of the image, truncated, and rejected as unparseable.
+_STRUCTURED_VISION_MAX_OUTPUT_TOKENS = 8192
+
+
+def _structured_vision_config(model: str) -> dict:
+    """Output budget for a vision call whose answer must parse as JSON.
+
+    The larger cap is model-agnostic: it gives thinking room AND answer room
+    on any model. Thinking is switched off only on 2.5 Flash, where a zero
+    budget is a documented, valid setting; Pro cannot disable thinking and
+    Gemini 3 uses a different control, so for those the cap alone has to do.
+    """
+    from google.genai import types
+
+    cfg = {"max_output_tokens": _STRUCTURED_VISION_MAX_OUTPUT_TOKENS}
+    if (model or "").startswith("gemini-2.5-flash"):
+        cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+    return cfg
+
+
+def _gemini_reply_truncated(response) -> bool:
+    try:
+        reason = response.candidates[0].finish_reason
+        return "MAX_TOKENS" in str(getattr(reason, "name", reason) or "")
+    except Exception:
+        return False
+
+
+def _call_gemini_vision(image_source: str, prompt: str, *, structured: bool = False) -> str:
     import os
     try:
         from google import genai
@@ -4256,15 +4317,21 @@ def _call_gemini_vision(image_source: str, prompt: str) -> str:
                 prompt,
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
             ]
+            config_kwargs = {"temperature": 0.0, "max_output_tokens": 1024}
+            if structured:
+                config_kwargs.update(_structured_vision_config(_use_model))
             response = gemini_generate(api_key,
                 model=_use_model,
                 contents=contents,
-                config=types.GenerateContentConfig(
-                    temperature=0.0,
-                    max_output_tokens=1024,
-                ),
+                config=types.GenerateContentConfig(**config_kwargs),
             )
             out = (response.text or "").strip()
+            if structured and _gemini_reply_truncated(response):
+                # Surfaced, not repaired: the caller's parser decides, and a
+                # truncated answer still fails it. This line is what tells the
+                # next investigation "budget", not "transport".
+                logger.warning("[VISION] Gemini reply hit max_output_tokens (%d chars "
+                               "visible, model=%s)", len(out), _use_model)
             if out:
                 logger.info("[VISION] Gemini vision model succeeded: %d chars", len(out))
                 return out
@@ -4282,14 +4349,104 @@ def _call_gemini_vision(image_source: str, prompt: str) -> str:
     return ""
 
 
-def _vision_text_from_image(image_url: str, user_prompt: str, language: str = "") -> str:
-    """Groq vision — tries Qwen 3.6 27B first, then Llama 3.2 Vision as fallback.
-    Returns '' on complete failure (caller adds EasyOCR or placeholder fallback)."""
+# Verified live against this account via POST .../v1/chat/completions
+# (2026-10-09) — Together ids are never guessed, only ever confirmed live, the
+# same rule providers.TogetherAdapter.list_model_records() already follows,
+# because a guessed Groq vision id already 404'd once (see GROQ_VISION_MODELS
+# below). The account's full vision-named catalog (Qwen3-VL, Qwen2.5-VL,
+# Llama-4-Scout/Maverick, Llama-3.2-Vision, Nemotron-Omni — 11 ids) all 400
+# with "non-serverless model", i.e. the catalog lists them but none actually
+# serve without first paying for a dedicated endpoint. The one that actually
+# answered a real table-of-contents image, zero setup required, is
+# zai-org/GLM-5.3-Flash — already this account's default "grounded" text
+# model (see AI_ROUTE_CONTENT_PRIMARY below), and it turns out to read images
+# too. Keep this to models this account can actually call without a dedicated
+# endpoint; re-verify the same way before adding another.
+DEFAULT_TOGETHER_VISION_MODELS = "zai-org/GLM-5.3-Flash"
+_TOGETHER_VISION_BASE_URL = "https://api.together.xyz/v1"
+
+# Models in this family default to a large reasoning-token budget that can
+# crowd out the actual answer on a text-generation call (see
+# TOGETHER_MODEL_GLM53_FLASH_REASONING_EFFORT above: unconstrained, a 12k-token
+# source burned 8000/8000 tokens on reasoning and returned empty). A live
+# vision test here confirmed "low" to be the same free win for an image call:
+# identical, fully rule-compliant JSON at 2.9s/107 completion tokens, vs.
+# 4.8s/423 tokens (316 of them reasoning) with it left unset.
+_TOGETHER_LOW_REASONING_MODEL_SUBSTRINGS = ("glm",)
+
+
+def _vision_text_from_together(effective_image: str, user_prompt: str, *, structured: bool = False) -> str:
+    """Together vision — this account's working vision provider (Groq's vision
+    models 404 here; see _vision_text_from_image). OpenAI-compatible
+    /chat/completions with an image_url content block, same message shape
+    Groq/OpenAI use. Tries each TOGETHER_VISION_MODELS entry in order; returns
+    '' on any failure so the caller's Groq/Gemini chain still runs."""
+    token = os.getenv("TOGETHER_API_KEY", "").strip()
+    if not token:
+        return ""
+    models = [
+        m.strip() for m in os.getenv("TOGETHER_VISION_MODELS", DEFAULT_TOGETHER_VISION_MODELS).split(",")
+        if m.strip()
+    ]
+    if not models:
+        return ""
+    max_tokens = _STRUCTURED_VISION_MAX_OUTPUT_TOKENS if structured else 4096
+    base_url = (os.getenv("TOGETHER_BASE_URL", "").strip() or _TOGETHER_VISION_BASE_URL).rstrip("/")
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    for model_name in models:
+        try:
+            logger.info("[VISION] Trying Together model=%s", model_name)
+            body = {
+                "model": model_name,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_prompt},
+                            {"type": "image_url", "image_url": {"url": effective_image}},
+                        ],
+                    }
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.0,
+            }
+            if any(s in model_name.lower() for s in _TOGETHER_LOW_REASONING_MODEL_SUBSTRINGS):
+                body["reasoning_effort"] = "low"
+            resp = _requests.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json=body,
+                timeout=30.0,
+            )
+            if resp.status_code >= 400:
+                logger.warning("[VISION] Together model=%s failed (%d): %s",
+                               model_name, resp.status_code, resp.text[:200])
+                continue
+            data = resp.json()
+            raw = ((data.get("choices") or [{}])[0].get("message", {}).get("content") or "").strip()
+            out = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE).strip()
+            extracted = _extract_transcription(out)
+            if extracted:
+                logger.info("[VISION] Together model=%s succeeded: %d chars", model_name, len(extracted))
+                return extracted
+            logger.warning("[VISION] Together model=%s returned empty content after cleaning", model_name)
+        except Exception as exc:
+            logger.warning("[VISION] Together model=%s errored: %s", model_name, str(exc)[:200])
+            continue
+    return ""
+
+
+def _vision_text_from_image(image_url: str, user_prompt: str, language: str = "",
+                            *, structured: bool = False) -> str:
+    """Together vision first (this account's working provider), then Groq,
+    then Gemini. Returns '' on complete failure (caller adds EasyOCR or
+    placeholder fallback)."""
     if not (image_url or "").strip():
         return ""
 
-    # Download HTTP(S) images to base64 so Groq doesn't need to reach S3/presigned URLs.
-    # Data URIs and already-base64 strings are passed as-is.
+    # Download HTTP(S) images to base64 so providers don't need to reach
+    # S3/presigned URLs. Data URIs and already-base64 strings are passed as-is.
     if image_url.startswith(("http://", "https://")):
         effective_image = _url_to_base64_data_uri(image_url)
         logger.info("[VISION] Converted URL to base64 data URI (%d bytes)", len(effective_image))
@@ -4300,23 +4457,29 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
     is_odia_image = str(language).strip().lower() in ("odia", "od", "or", "or-in", "od-in")
     if is_odia_image:
         logger.info("[VISION] Odia language requested — forcing Gemini Vision directly")
-        gemini_out = _call_gemini_vision(effective_image, user_prompt)
+        gemini_out = _call_gemini_vision(effective_image, user_prompt,
+                                          structured=structured)
         extracted_gemini = _extract_transcription(gemini_out)
         if extracted_gemini:
             return extracted_gemini
-        logger.warning("[VISION] Gemini Vision failed for Odia image. Trying Groq fallback.")
-
-    try:
-        from groq import Groq
-    except ImportError:
-        logger.warning("groq package not installed; vision OCR unavailable")
-        return ""
+        logger.warning("[VISION] Gemini Vision failed for Odia image. Trying Together/Groq fallback.")
 
     user_prompt = user_prompt + (
         "\n\nIMPORTANT: You MUST wrap your final transcribed answer/description inside "
         "<transcription> and </transcription> tags, with nothing else inside them. "
         "Example: <transcription>your final transcribed answer here</transcription>"
     )
+
+    together_out = _vision_text_from_together(effective_image, user_prompt, structured=structured)
+    if together_out:
+        return together_out
+    logger.info("[VISION] Together unavailable or failed; trying Groq...")
+
+    try:
+        from groq import Groq
+    except ImportError:
+        logger.warning("groq package not installed; vision OCR unavailable")
+        return ""
 
     keys = get_rotated_groq_keys()
     if not keys:
@@ -4329,12 +4492,20 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
     # models. Configurable: set GROQ_VISION_MODELS to a comma-separated list to
     # point at whatever the account serves, or an empty string to skip Groq and
     # go straight to the Gemini fallback below.
+    # Default: empty, which skips Groq and goes straight to Gemini.
+    #
+    # Measured on 2026-10-03: both Llama 4 vision IDs return 404 ("does not
+    # exist or you do not have access") on this account, so every validation
+    # spent four failed round-trips (~1.2s) before the Gemini fallback did
+    # the work successfully. The IDs are not invented here - set
+    # GROQ_VISION_MODELS to whatever the account actually serves and Groq is
+    # tried first again.
     vision_models = [
-        m.strip() for m in os.getenv(
-            "GROQ_VISION_MODELS",
-            "meta-llama/llama-4-scout-17b-16e-instruct,meta-llama/llama-4-maverick-17b-128e-instruct",
-        ).split(",") if m.strip()
+        m.strip() for m in os.getenv("GROQ_VISION_MODELS", "").split(",")
+        if m.strip()
     ]
+    if not vision_models:
+        logger.debug("[VISION] No Groq vision models configured; using Gemini")
 
     for api_key in keys[:2]:
         for model_name in vision_models:
@@ -4402,7 +4573,8 @@ def _vision_text_from_image(image_url: str, user_prompt: str, language: str = ""
 
     # Try Gemini vision fallback
     logger.info("[VISION] All Groq vision models failed; trying Gemini Vision fallback...")
-    gemini_out = _call_gemini_vision(effective_image, user_prompt)
+    gemini_out = _call_gemini_vision(effective_image, user_prompt,
+                                          structured=structured)
     extracted_gemini = _extract_transcription(gemini_out)
     if extracted_gemini:
         return extracted_gemini
@@ -4418,6 +4590,13 @@ def _describe_image_with_vision(image_url: str, language: str = "") -> str:
 def _transcribe_exam_answer_with_vision(image_url: str, language: str = "") -> str:
     """Mock test / grading: answer text only, no photo narration."""
     return _vision_text_from_image(image_url, _GRADING_VISION_PROMPT, language)
+
+
+def _extract_index_structure_with_vision(image_url: str, language: str = "") -> str:
+    """Curriculum import: read a book's table-of-contents page into chapter/topic JSON.
+    `structured=True` gives the Gemini fallback room to answer in full (see
+    _structured_vision_config) instead of the short budget a plain transcription needs."""
+    return _vision_text_from_image(image_url, _INDEX_PAGE_VISION_PROMPT, language, structured=True)
 
 
 
@@ -4522,6 +4701,83 @@ def ocr_doubt_image(request):
     except Exception:
         pass
     return JsonResponse({"text": text or ""})
+
+
+def _parse_index_structure_json(raw: str) -> list:
+    """Pull `chapters` out of the vision model's reply, tolerating a stray
+    markdown fence or a sentence of commentary around the JSON object.
+    Returns [] (never raises) on anything that doesn't parse into the shape."""
+    if not raw:
+        return []
+    candidate = _strip_think_blocks(raw)
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    chapters = parsed.get("chapters") if isinstance(parsed, dict) else None
+    if not isinstance(chapters, list):
+        return []
+    out = []
+    for entry in chapters:
+        if not isinstance(entry, dict):
+            continue
+        chapter = str(entry.get("chapter") or "").strip()
+        if not chapter:
+            continue
+        topics_raw = entry.get("topics")
+        topics = [str(t).strip() for t in topics_raw if str(t).strip()] if isinstance(topics_raw, list) else []
+        out.append({"chapter": chapter, "topics": topics})
+    return out
+
+
+@api_view(["POST"])
+@metered("curriculum_index_import")
+def parse_curriculum_index_image(request):
+    """Read a photographed/scanned textbook table-of-contents page into a
+    chapter → topics structure, for the teacher's bulk curriculum import.
+
+    Prefers Gemini Vision (structured JSON budget), falling back through the
+    same Groq vision chain as ocr_doubt_image. Never raises on a bad read —
+    an empty `chapters` list just means the teacher reviews/fills manually.
+
+    Request JSON:
+      - imageUrl (required)
+      - language: optional, same codes as the OCR/doubt vision flows.
+    """
+    _start_time = time.time()
+    image_url = (request.data.get("imageUrl") or "").strip()
+    if not image_url:
+        return Response({"error": "Missing imageUrl"}, status=400)
+    institute_id = _resolve_institute_id(request)
+    user_id = request.data.get('userId') or request.data.get('user_id') or ''
+    language = (request.data.get("language") or "").strip().lower()
+
+    raw = _extract_index_structure_with_vision(image_url, language)
+    chapters = _parse_index_structure_json(raw)
+
+    try:
+        log_usage(
+            institute_id=institute_id,
+            institute_type='school',
+            feature_id='curriculum_index_import',
+            feature_category='shared',
+            model_used='gemini-vision' if raw else 'none',
+            tokens_input=int(len(image_url) / 4),
+            tokens_output=int(len(raw or '') / 4),
+            latency_ms=int((time.time() - _start_time) * 1000),
+            success=bool(chapters),
+            user_id=user_id,
+        )
+    except Exception:
+        pass
+
+    if not chapters:
+        return JsonResponse({
+            "chapters": [],
+            "warning": "Could not reliably read a chapter/topic structure from this image. "
+                       "Try a clearer, flatter photo of the index page, or enter it manually.",
+        })
+    return JsonResponse({"chapters": chapters})
 
 
 

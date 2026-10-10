@@ -40,3 +40,8 @@ pdfplumber==0.11.4
 pypdfium2==5.5.0
 opencv-python-headless==4.8.1.78
 Pillow==10.4.0
+
+# A fake Redis with Lua, so the tests can drive the shared image gate (a Lua
+# script), the deck cache and the deck worker queue without a Redis server.
+# Without it those tests skip themselves - silently untested in CI.
+fakeredis[lua]==2.39.0

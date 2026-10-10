@@ -90,7 +90,13 @@ def _run(code: str) -> dict:
         for number in plt.get_fignums()[:_MAX_FIGURES]:
             figure = plt.figure(number)
             buf = io.BytesIO()
-            figure.savefig(buf, format="png", bbox_inches="tight", dpi=150)
+            # bbox_inches="tight" crops the canvas to the ink, which makes
+            # the saved aspect ratio depend on how sparse the drawing is. A
+            # caller that has sized the figure to the slide region it will
+            # occupy needs the geometry kept exactly, so it sets _SAVE_BBOX
+            # to None in its preamble. Legacy callers keep the tight crop.
+            bbox = ns.get("_SAVE_BBOX", "tight")
+            figure.savefig(buf, format="png", bbox_inches=bbox, dpi=150)
             raw = buf.getvalue()
             buf.close()
             if not raw or len(raw) > _MAX_PNG_BYTES:

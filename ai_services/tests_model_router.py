@@ -273,12 +273,57 @@ class FallbackTests(SimpleTestCase):
         self.assertIs(cm.exception, err)
         self.assertEqual(a["groq"].calls, [])
 
-    def test_5b_configuration_error_never_falls_back(self):
-        err = ProviderConfigError("Together 401", provider="together", kind="auth")
-        r, a = make_router(FALLBACK_ENV, together=FakeAdapter("together", script=[err]))
-        with self.assertRaises(ProviderConfigError):
+    def test_5b_provider_account_failure_is_served_by_another_provider(self):
+        # A rejected key, no credit, or a model id this account lacks is a
+        # failure of Together's account, not of the request: Groq has its own.
+        for status, kind in ((401, "auth"), (402, "billing"), (403, "auth"), (404, "config")):
+            err = ProviderConfigError(f"Together {status}", provider="together", status_code=status, kind=kind)
+            r, a = make_router(
+                FALLBACK_ENV,
+                together=FakeAdapter("together", script=[err]),
+                groq=FakeAdapter("groq", script=[ok("openai/gpt-oss-120b")]),
+            )
+            with self.assertLogs("ai_services.routing", level="ERROR") as logs:
+                out = r.execute(req())
+            self.assertTrue(out["fallback_used"], kind)
+            self.assertEqual(out["provider"], "groq")
+            self.assertIn("account failure", "\n".join(logs.output))   # the broken key still surfaces
+
+    def test_5b2_account_failure_without_fallback_raises_unchanged(self):
+        err = ProviderConfigError("Together 401", provider="together", status_code=401, kind="auth")
+        env = {"TOGETHER_MODEL_GPT_OSS_120B": TOGETHER_ID, "TOGETHER_MODEL_GPT_OSS_120B_STRUCTURED_OUTPUT": "prompted"}
+        r, a = make_router(env, together=FakeAdapter("together", script=[err]))
+        with self.assertRaises(ProviderConfigError) as cm:
             r.execute(req())
+        self.assertIs(cm.exception, err)
         self.assertEqual(a["groq"].calls, [])
+
+    def test_5b3_account_failure_is_never_retried_on_the_same_provider(self):
+        from ai_services.core.routing.router import Candidate, RoutePlan
+
+        err = ProviderConfigError("Together 401", provider="together", status_code=401, kind="auth")
+        r, a = make_router(
+            FALLBACK_ENV,
+            together=FakeAdapter("together", script=[err, ok(TOGETHER_ID)]),
+            groq=FakeAdapter("groq", script=[ok("openai/gpt-oss-120b")]),
+        )
+        real = r.plan(req())
+        same = Candidate(real.candidates[0].spec, real.candidates[0].model_id, "fallback", "policy")
+        with patch.object(r, "plan", return_value=RoutePlan(
+                capability=real.capability, policy=real.policy, skipped=real.skipped,
+                candidates=(real.candidates[0], same, *real.candidates[1:]))):
+            out = r.execute(req())
+        self.assertEqual(out["provider"], "groq")
+        self.assertEqual(len(a["together"].calls), 1)
+
+    def test_5b4_account_failure_with_only_the_same_provider_left_raises(self):
+        err = ProviderConfigError("Together 401", provider="together", status_code=401, kind="auth")
+        r, a = make_router(FALLBACK_ENV, together=FakeAdapter("together", script=[err]),
+                           groq=FakeAdapter("groq", script=[retryable()]))
+        a["groq"].configured = False      # no other provider to go to
+        with self.assertRaises(ProviderConfigError) as cm:
+            r.execute(req())
+        self.assertIs(cm.exception, err)
 
     def test_5c_unclassified_exception_never_falls_back(self):
         r, a = make_router(FALLBACK_ENV, together=FakeAdapter("together", script=[ValueError("bug")]))
@@ -303,7 +348,8 @@ class FallbackTests(SimpleTestCase):
             429: (True, "rate_limited"), 500: (True, "server_error"), 503: (True, "server_error"),
             408: (True, "timeout"), None: (True, "network"),
             400: (False, "bad_request"), 422: (False, "bad_request"), 401: (False, "auth"),
-            403: (False, "auth"), 404: (False, "config"), 413: (False, "request_too_large"),
+            403: (False, "auth"), 402: (False, "billing"), 404: (False, "config"),
+            413: (False, "request_too_large"),
         }
         for status, expected in cases.items():
             self.assertEqual(classify_status(status), expected, status)

@@ -12,8 +12,15 @@ allowed to fall back.
                    structured-output failure, empty response
 
 Falling back on a non-retryable error does not help and hides the real
-problem: the same malformed prompt is malformed on every provider, and a bad
-credential is not fixed by spending on a second vendor.
+problem: the same malformed prompt is malformed on every provider.
+
+One exception: a failure of *this provider's account* (rejected or revoked
+key 401/403, out of credit 402, model id unknown to this account 404). The
+request itself is fine, and another provider has its own account, so the
+router may serve it there - a teacher's deck must not fail because one
+vendor's key or balance did. The router logs that at ERROR level every time,
+so the broken account still surfaces; it is never retried on the same
+provider. See ``ACCOUNT_KINDS`` and ``ModelRouter.execute``.
 
 Every class subclasses RuntimeError on purpose. All existing call sites wrap
 LLMClient.complete() in ``except RuntimeError``; a new exception hierarchy that
@@ -95,9 +102,17 @@ class FallbackExhaustedError(RetryableProviderError):
 
 RETRYABLE_KINDS = frozenset({"rate_limited", "server_error", "timeout", "network", "exhausted", "transient"})
 NON_RETRYABLE_KINDS = frozenset({
-    "bad_request", "request_too_large", "structured_output", "auth", "config",
+    "bad_request", "request_too_large", "structured_output", "auth", "billing", "config",
     "validation", "empty_response", "deterministic",
 })
+# Non-retryable on the same provider, but a different provider (its own
+# account) may serve the request. See the module docstring.
+ACCOUNT_KINDS = frozenset({"auth", "billing", "config"})
+
+
+def is_account_failure(exc: BaseException) -> bool:
+    """True when ``exc`` is a provider-account failure (see ``ACCOUNT_KINDS``)."""
+    return isinstance(exc, ProviderError) and not exc.retryable and exc.kind in ACCOUNT_KINDS
 
 
 def classify_status(status_code: Optional[int]) -> tuple[bool, str]:
@@ -116,6 +131,8 @@ def classify_status(status_code: Optional[int]) -> tuple[bool, str]:
         return True, "server_error"
     if status_code in (401, 403):
         return False, "auth"
+    if status_code == 402:
+        return False, "billing"   # out of credit / payment required
     if status_code == 404:
         return False, "config"
     if status_code == 413:
@@ -130,7 +147,7 @@ def error_for_status(
     retryable, kind = classify_status(status_code)
     if retryable:
         cls = RetryableProviderError
-    elif kind in ("auth", "config"):
+    elif kind in ACCOUNT_KINDS:
         cls = ProviderConfigError
     else:
         cls = NonRetryableProviderError

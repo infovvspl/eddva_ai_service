@@ -27,8 +27,10 @@ Compatibility guarantees (pinned by tests):
   * Cross-provider fallback is OFF unless AI_ROUTER_FALLBACK_ENABLED=true AND
     the fallback's provider credentials AND provider model id are configured.
   * Fallback happens only on retryable errors (429 / 5xx / timeout / network /
-    exhausted rotation). Deterministic, validation, structured-output and
-    configuration errors raise immediately.
+    exhausted rotation), and on a provider-account failure (401/402/403/404 -
+    key, credit, model id) when a *different* provider is next; that one is
+    logged at ERROR. Deterministic, validation and structured-output errors
+    raise immediately.
   * When only one attempt ran, the original exception object is re-raised.
   * One logical request stays one usage row. The router annotates the result
     and never logs usage itself; attempts are observable as provider events and
@@ -48,6 +50,7 @@ from ai_services.core.routing.errors import (
     NoRouteError,
     ProviderConfigError,
     ProviderError,
+    is_account_failure,
 )
 from ai_services.core.routing.providers import ProviderCall, default_adapters, scrub
 from ai_services.core.routing.registry import (
@@ -124,6 +127,10 @@ class AIRequest:
     json_mode_suffix: Optional[str] = None
     institute_id: Optional[str] = None
     legacy_prompt_shaping: bool = True
+    # A per-call cap on the policy's timeout, for callers that know their call
+    # is short and would rather retry than wait (the PPT planner). None keeps
+    # the policy's timeout, exactly as before.
+    timeout_s: Optional[float] = None
 
     @property
     def effective_structured_output(self) -> bool:
@@ -398,13 +405,21 @@ class ModelRouter:
         except Exception:
             pass
 
+    @staticmethod
+    def _other_provider_left(plan: RoutePlan, idx: int) -> bool:
+        provider = plan.candidates[idx].spec.provider
+        return any(c.spec.provider != provider for c in plan.candidates[idx + 1:])
+
     def execute(self, req: AIRequest) -> dict:
         plan = self.plan(req)
         started = time.monotonic()
         attempts: list[Attempt] = []
         last_exc: Optional[BaseException] = None
+        failed_accounts: set[str] = set()   # providers whose account failed this request
 
         for idx, cand in enumerate(plan.candidates):
+            if cand.spec.provider in failed_accounts:
+                continue   # same key, same balance: it would fail the same way
             if idx > 0:
                 elapsed = time.monotonic() - started
                 if elapsed > plan.policy.fallback_deadline_s:
@@ -427,7 +442,9 @@ class ModelRouter:
                 json_mode=req.json_mode,
                 json_mode_suffix=req.json_mode_suffix,
                 institute_id=req.institute_id,
-                timeout_s=plan.policy.timeout_s,
+                timeout_s=(min(plan.policy.timeout_s, req.timeout_s)
+                           if req.timeout_s and plan.policy.timeout_s
+                           else (req.timeout_s or plan.policy.timeout_s)),
                 legacy_prompt_shaping=req.legacy_prompt_shaping,
             )
             t0 = time.perf_counter()
@@ -442,9 +459,21 @@ class ModelRouter:
                 attempts.append(a)
                 self._log_attempt(req, plan, a)
                 last_exc = exc
-                if not exc.retryable:
-                    raise
-                continue
+                if exc.retryable:
+                    continue
+                if is_account_failure(exc) and self._other_provider_left(plan, idx):
+                    # This provider's account is broken (key, credit, model id);
+                    # another provider may serve the request. Loud, every time.
+                    logger.error(
+                        "AI provider account failure; serving from another provider | request_id=%s "
+                        "feature=%s provider=%s model=%s kind=%s status=%s - fix this provider's "
+                        "credentials, credit or model id",
+                        _ctx("request_id") or "-", req.feature or "-", a.provider, a.model, a.kind,
+                        a.status_code if a.status_code is not None else "-",
+                    )
+                    failed_accounts.add(cand.spec.provider)
+                    continue
+                raise
             except Exception as exc:
                 # Unclassified (import error, programming error): never mask it
                 # behind another provider.

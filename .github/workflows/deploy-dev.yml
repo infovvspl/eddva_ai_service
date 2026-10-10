@@ -212,6 +212,16 @@ jobs:
             # effort: 42 reasoning tokens, more content, half the time.
             printf 'TOGETHER_MODEL_GLM53_FLASH_REASONING_EFFORT=low\n' >> .env
 
+            # ── PPT Studio (school demos, 2026-10-09) ─────────────────────
+            # Designed (V2) and image-slide decks, chosen in the studio. Without
+            # these every deck silently falls back to the plain V1 generator.
+            printf 'PPT_V2_ENABLED=true\n' >> .env
+            printf 'PPT_V2_ALLOW_OVERRIDE=true\n' >> .env
+            # Browsers cannot reach this service (dev-ai.eddva.in has no DNS),
+            # so generated images are linked through the public backend, which
+            # serves them from here by file name (school/ppt/generated-note-images).
+            printf 'NOTES_IMAGE_PUBLIC_BASE_URL=https://dev-api.eddva.in/api/v1/school/ppt\n' >> .env
+
             # Kill switch and capability overrides, per environment. Defaults to
             # false so a deploy never silently moves traffic to a new provider.
             printf 'AI_ROUTER_ENABLED=%s\n' "${AI_ROUTER_ENABLED:-false}" >> .env
@@ -285,6 +295,24 @@ jobs:
                  --bind 0.0.0.0:8001 \
                  --workers 3 \
                  --timeout 300
+
+            # Deck worker: runs PPT jobs from the Redis queue, apart from gunicorn,
+            # so a deploy or a gunicorn restart no longer kills a deck half-way
+            # (see ai_services/core/ppt_v2/job_queue.py). While it is down, decks
+            # run inside gunicorn as before. Stopping it lets the decks in hand
+            # finish: pm2 sends SIGINT and waits --kill-timeout (5 min) before
+            # SIGKILL, and a deck that is killed anyway is requeued by the next
+            # worker. Delete + start, like gunicorn above, so the fresh .env is read.
+            if pm2 list | grep -q ai-ppt-worker-dev; then
+              pm2 delete ai-ppt-worker-dev
+            fi
+            pm2 start $AI_DIR/venv/bin/python \
+              --name ai-ppt-worker-dev \
+              --interpreter none \
+              --cwd $AI_DIR \
+              --kill-timeout 300000 \
+              --log $HOME/logs/ai-ppt-worker-dev.log \
+              -- manage.py run_ppt_worker
             pm2 save
 
             echo "AI Service deployed on port 8001 at $(date)"
