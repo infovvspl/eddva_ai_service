@@ -7,6 +7,7 @@ so, which made "exactly 2 slides" untestable.
 """
 import io
 import os
+from unittest import mock
 
 from django.test import SimpleTestCase
 
@@ -28,12 +29,16 @@ class SlideCountClampTests(SimpleTestCase):
         self.assertEqual(clamp(0), 5)      # 0 is falsy -> the default of 5
         self.assertEqual(clamp(None), 5)
 
-    def test_the_ceiling_is_unchanged(self):
-        self.assertEqual(clamp(25), 25)
+    def test_decks_are_capped_at_10_slides(self):
+        self.assertEqual(clamp(10), 10)
+        self.assertEqual(clamp(11), 10)
         self.assertEqual(clamp(99), ppt._MAX_SLIDES)
+        self.assertEqual(ppt._MAX_SLIDES, 10)          # decks are capped at 10 (2026-10-09)
+        from ai_services.core.ppt_v2 import planner
+        self.assertLessEqual(planner.AUTO_MAX_SLIDES, ppt._MAX_SLIDES)
 
     def test_ordinary_requests_pass_through(self):
-        for n in (3, 5, 8, 12, 20):
+        for n in (3, 5, 8, 10):
             self.assertEqual(clamp(n), n)
 
 
@@ -60,3 +65,41 @@ class CoveragePlanMayOnlyShortenTests(SimpleTestCase):
         self.assertIn("slide_count = min(slide_count, len(sub_areas) + 2)", src)
         self.assertNotIn("slide_count = len(sub_areas) + 2", src)
         self.assertIn("slide_count = max(_MIN_SLIDES, min(_MAX_SLIDES,", src)
+
+
+class ImageDeckLengthTests(SimpleTestCase):
+    """Image decks are always 10 slides; the studio offers no count for them."""
+
+    def run_view(self, version, data):
+        from rest_framework.response import Response
+        seen = {}
+
+        def fake(**kw):
+            seen.update(kw)
+            return Response({"success": True, "data": {}})
+        request = mock.Mock(data=dict({"topic": "Respiration"}, **data), headers={},
+                            institute_id="i", vertical="school", board="CBSE")
+        target = "_try_generate_image_deck" if version == "image" else "_try_generate_v2"
+        with mock.patch.object(ppt, "ppt_version",
+                               return_value=ppt.IMAGE if version == "image" else ppt.V2),              mock.patch.object(ppt, target, side_effect=fake):
+            ppt._generate_presentation(request)
+        return seen
+
+    def test_an_image_deck_is_always_ten_slides_whatever_is_asked(self):
+        for asked in (3, 8, 15, "auto", None):
+            seen = self.run_view("image", {"pptVersion": "image", "slideCount": asked})
+            self.assertEqual(seen["slide_count"], 10, asked)
+            self.assertIsNone(seen["auto_range"], asked)    # no "the content decides" range
+
+    def test_a_designed_deck_keeps_its_own_count_and_auto(self):
+        self.assertEqual(self.run_view("v2", {"pptVersion": "v2", "slideCount": 6})["slide_count"], 6)
+        auto = self.run_view("v2", {"pptVersion": "v2", "slideCount": "auto"})
+        self.assertIsNotNone(auto["auto_range"])
+        self.assertLessEqual(auto["auto_range"][1], 10)
+
+    def test_the_image_length_is_a_setting_but_never_above_the_cap(self):
+        with mock.patch.dict("os.environ", {"PPT_IMAGE_DECK_SLIDES": "8"}):
+            self.assertEqual(ppt.image_deck_slides(), 8)
+        with mock.patch.dict("os.environ", {"PPT_IMAGE_DECK_SLIDES": "40"}):
+            self.assertEqual(ppt.image_deck_slides(), 10)
+

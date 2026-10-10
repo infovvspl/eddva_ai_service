@@ -563,7 +563,7 @@ def ingest_pdf(
     source: "str | bytes",
     allow_ocr: bool = True,
     progress_key: "str | None" = None,
-    want_figures: bool = True,
+    want_figures: bool = False,
 ) -> dict:
     """Extract + chunk a chapter PDF. Returns passages plus a quality report.
 
@@ -572,9 +572,9 @@ def ingest_pdf(
     identical to a book with no relevant content.
 
     `want_figures` also crops the chapter's diagrams (see textbook_figures).
-    They ride along on this call because the PDF is already downloaded and
-    already open here; fetching it a second time later would cost the whole
-    download again for the same bytes.
+    Off by default, and book training (views.textbook.ingest_textbook) never
+    turns it on: extracting figures while a book is trained was removed on
+    2026-10-10. The extractor itself is kept for a caller that asks for it.
     """
     # Downloaded through the same guarded path as everything else. This used to
     # fetch the body directly and hand raw bytes to extract_pdf_pages, which

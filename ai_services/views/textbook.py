@@ -24,8 +24,12 @@ def ingest_textbook(request):
     """
     POST /textbook/ingest
 
-    Body: { fileUrl, allowOcr?, progressKey?, wantFigures? }
-    Returns: { success, data: { pages, chunks[], figures[], quality, method, ... } }
+    Body: { fileUrl, allowOcr?, progressKey? }
+    Returns: { success, data: { pages, chunks[], quality, method, ... } }
+
+    Passages only. Book training used to crop the chapter's figures as well
+    (a `wantFigures` flag, on by default); that was removed on 2026-10-10 and
+    the flag is now ignored, so `figures` in the reply is always empty.
 
     A scanned chapter (no text layer) is transcribed automatically unless
     allowOcr is false — that path costs an LLM call, so callers doing a bulk
@@ -44,19 +48,14 @@ def ingest_textbook(request):
     allow_ocr = request.data.get("allowOcr")
     allow_ocr = True if allow_ocr is None else bool(allow_ocr)
     progress_key = (request.data.get("progressKey") or "").strip() or None
-    # Cropped chapter figures ride along with the passages (the PDF is already
-    # downloaded and open at that point). Opt-out rather than opt-in, so a
-    # caller doing a text-only dry run can skip the rasterisation cost.
-    want_figures = request.data.get("wantFigures")
-    want_figures = True if want_figures is None else bool(want_figures)
-
     institute_id = getattr(request, "institute_id", None)
     vertical = getattr(request, "vertical", None) or "school"
 
     try:
+        # Never figures, whatever the body says: see the docstring.
         result = ingest_pdf(
             file_url, allow_ocr=allow_ocr, progress_key=progress_key,
-            want_figures=want_figures,
+            want_figures=False,
         )
     except ValueError as exc:
         # Size ceiling (or an obviously malformed download) — report specifically

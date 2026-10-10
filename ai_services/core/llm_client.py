@@ -288,8 +288,12 @@ class LLMClient:
         legacy_prompt_shaping: bool = True,
         requires_grounding: bool = False,
         min_context_tokens: Optional[int] = None,
+        timeout_s: Optional[float] = None,
     ) -> dict:
         """Run one completion through the EDVA model router.
+
+        ``timeout_s`` caps this call's provider timeout below the capability
+        policy's (see routing.AIRequest.timeout_s); None keeps the policy's.
 
         The router is Together-first: each capability's Together model serves the
         request when it is configured and meets the request's requirements.
@@ -329,6 +333,7 @@ class LLMClient:
             legacy_prompt_shaping=legacy_prompt_shaping,
             requires_grounding=requires_grounding,
             min_context_tokens=min_context_tokens,
+            timeout_s=timeout_s,
         ))
 
     def _complete_legacy(

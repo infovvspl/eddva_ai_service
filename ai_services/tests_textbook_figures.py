@@ -23,6 +23,7 @@ import base64
 import io
 import sys
 import unittest
+from unittest.mock import patch
 
 import matplotlib
 
@@ -572,8 +573,18 @@ class CollectFiguresTests(unittest.TestCase):
         self.assertEqual(figures, [])
         self.assertEqual(report["skipped"], "failed")
 
-    def test_ingest_pdf_carries_figures_and_a_report(self):
-        result = self.tb.ingest_pdf(self.pdf, allow_ocr=False)
+    def test_ingest_pdf_extracts_no_figures_unless_asked(self):
+        # Book training calls ingest_pdf without asking: no rasterising, no
+        # vision calls to describe figures, nothing to store.
+        with patch.object(self.tb, "_collect_figures") as collect:
+            result = self.tb.ingest_pdf(self.pdf, allow_ocr=False)
+        collect.assert_not_called()
+        self.assertEqual(result["figures"], [])
+        self.assertEqual(result["figure_report"]["skipped"], "not_requested")
+        self.assertTrue(result["chunks"])
+
+    def test_ingest_pdf_carries_figures_and_a_report_when_asked(self):
+        result = self.tb.ingest_pdf(self.pdf, allow_ocr=False, want_figures=True)
         self.assertIn("figures", result)
         self.assertIn("figure_report", result)
         self.assertTrue(result["chunks"])
@@ -620,6 +631,36 @@ class DescribeFiguresTests(unittest.TestCase):
             self.tb.describe_figures([{"caption": "", "image_base64": "data:image/png;base64,aGk="}]),
             0,
         )
+
+
+
+class BookTrainingEndpointTests(unittest.TestCase):
+    """POST /textbook/ingest is what "train this book" calls.
+
+    Extracting figures while a book is trained was removed (2026-10-10): the
+    endpoint returns passages only, whatever the caller asks for.
+    """
+
+    def _ingest(self, body):
+        from rest_framework.test import APIRequestFactory
+
+        from ai_services.views import textbook as view
+
+        reply = {"pages": 2, "chunks": [{"content": "x"}], "method": "text_layer",
+                 "quality": "ok", "figures": [], "figure_report": {"skipped": "not_requested"}}
+        with patch.object(view, "ingest_pdf", return_value=reply) as ingest,              patch.object(view, "log_usage"):
+            response = view.ingest_textbook(APIRequestFactory().post("/textbook/ingest", body, format="json"))
+        return response, ingest
+
+    def test_training_never_asks_for_figures(self):
+        response, ingest = self._ingest({"fileUrl": "https://cdn.example/ch1.pdf"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(ingest.call_args.kwargs["want_figures"], False)
+        self.assertEqual(response.data["data"]["figures"], [])
+
+    def test_an_old_caller_asking_for_figures_is_ignored(self):
+        _response, ingest = self._ingest({"fileUrl": "https://cdn.example/ch1.pdf", "wantFigures": True})
+        self.assertIs(ingest.call_args.kwargs["want_figures"], False)
 
 
 if __name__ == "__main__":

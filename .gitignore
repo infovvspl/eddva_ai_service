@@ -16,3 +16,7 @@ db.sqlite3
 /data/generated_note_images/
 *.pyc
 venv/
+
+# Literal '~' directory: created when a tool expands HF_HOME (or similar)
+# to the string '~' instead of the home directory. Cache, never ours.
+/~/

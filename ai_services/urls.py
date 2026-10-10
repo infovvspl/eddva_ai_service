@@ -14,6 +14,9 @@ urlpatterns = [
     path("doubt/resolve", bridge.resolve_doubt),
     path("doubt/ocr-image", bridge.ocr_doubt_image),
 
+    # Curriculum bulk import — scan a textbook's table-of-contents page
+    path("topics/parse-index-image", bridge.parse_curriculum_index_image),
+
     # AI #2 — AI Tutor
     path("tutor/session", bridge.start_tutor_session),
     path("tutor/continue", bridge.continue_tutor_session),
@@ -84,6 +87,8 @@ urlpatterns = [
 
     # PPT Generator (Groq slide content + Serper images; .pptx assembly is client-side)
     path("ppt/generate", ppt.generate_presentation),
+    path("ppt/generate/start", ppt.generate_presentation_start),
+    path("ppt/generate/status", ppt.generate_presentation_status),
     path("ppt/regenerate-slide", ppt.regenerate_slide),
     path("ppt/search-image", ppt.search_image),
 
