@@ -1,0 +1,45 @@
+# AI service stack: Django/gunicorn + Redis.
+# Reads secrets from ./.env (never baked into the image) and overrides the
+# host-specific values (localhost URLs, Windows poppler path) for the container.
+services:
+  ai_service:
+    build: .
+    image: eddva/ai-service:latest
+    container_name: eddva-ai-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      ALLOWED_HOSTS: localhost,127.0.0.1,0.0.0.0,ai_service,eddva-ai-service,host.docker.internal
+      # Backend reachable on the host until it joins this network; override
+      # with the backend service name once both are in one compose project.
+      NESTJS_INTERNAL_URL: ${NESTJS_INTERNAL_URL_DOCKER:-http://host.docker.internal:3000}
+      POPPLER_PATH: ""
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${AI_PORT:-8000}:8000"
+    volumes:
+      - ai_models:/models
+      - ai_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: eddva-ai-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - ai_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  ai_models:
+  ai_data:
+  ai_redis:

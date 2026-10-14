@@ -8,6 +8,7 @@ httpx
 # ── Django + DRF (production framework — served via gunicorn) ─────────────────
 django>=4.2
 djangorestframework>=3.14
+django-cors-headers>=4.0      # settings.py: corsheaders in INSTALLED_APPS + MIDDLEWARE
 gunicorn>=21.2
 
 # ── LLM / Transcription ───────────────────────────────────────────────────────
