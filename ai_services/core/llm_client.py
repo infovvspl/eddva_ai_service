@@ -289,6 +289,7 @@ class LLMClient:
         requires_grounding: bool = False,
         min_context_tokens: Optional[int] = None,
         timeout_s: Optional[float] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> dict:
         """Run one completion through the EDVA model router.
 
@@ -300,6 +301,10 @@ class LLMClient:
         Otherwise ``provider``/``model`` — the call site's existing choice — is
         used unchanged (a plan-time decision, not a failover), so an environment
         without Together configuration behaves exactly as before.
+
+        ``reasoning_effort`` (none | low | medium | high) overrides the model's
+        configured effort for this call only, on models that accept it; the
+        legacy (router-off) path ignores it.
 
         ``legacy_prompt_shaping=False`` sends ``system_prompt`` exactly as given
         (grounded prompts were never shaped for Gemini and must not be now).
@@ -334,6 +339,7 @@ class LLMClient:
             requires_grounding=requires_grounding,
             min_context_tokens=min_context_tokens,
             timeout_s=timeout_s,
+            reasoning_effort=reasoning_effort,
         ))
 
     def _complete_legacy(
@@ -415,6 +421,7 @@ class LLMClient:
         institute_id: Optional[str] = None,
         json_mode_suffix: Optional[str] = None,
         legacy_prompt_shaping: bool = True,
+        reasoning_effort: Optional[str] = None,
     ) -> dict:
         """Groq execution with multi-key rotation: the pre-router body of
         complete(), unchanged except that failures raise typed routing errors
@@ -453,6 +460,12 @@ class LLMClient:
         )
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        # Groq's gpt-oss accepts low | medium | high (not "none"). Sent so a
+        # call that falls back here from Together keeps the effort it asked
+        # for: on 2026-10-13 Together 503s sent most of a deck's calls here,
+        # where they reasoned at full effort and doubled the output tokens.
+        if reasoning_effort in ("low", "medium", "high") and "gpt-oss" in (effective_model or "").lower():
+            kwargs["reasoning_effort"] = reasoning_effort
 
         last_error: Optional[str] = None
 

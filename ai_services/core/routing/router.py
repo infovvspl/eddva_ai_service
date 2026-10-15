@@ -131,6 +131,8 @@ class AIRequest:
     # is short and would rather retry than wait (the PPT planner). None keeps
     # the policy's timeout, exactly as before.
     timeout_s: Optional[float] = None
+    # Per-call reasoning effort for a reasoning model (see ProviderCall).
+    reasoning_effort: Optional[str] = None
 
     @property
     def effective_structured_output(self) -> bool:
@@ -446,6 +448,7 @@ class ModelRouter:
                            if req.timeout_s and plan.policy.timeout_s
                            else (req.timeout_s or plan.policy.timeout_s)),
                 legacy_prompt_shaping=req.legacy_prompt_shaping,
+                reasoning_effort=req.reasoning_effort,
             )
             t0 = time.perf_counter()
             try:

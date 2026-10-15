@@ -126,16 +126,49 @@ def approx_tokens(text: str) -> int:
     return max(1, len(text or "") // _CHARS_PER_TOKEN)
 
 
+# Faux-bold text: a PDF that fakes bold by drawing every glyph several times
+# at a tiny offset extracts as each character repeated ("55555.....33333
+# RRRRREEEEESSSSS..." for "5.3 RES..."). In NCERT chapters every section
+# heading, figure caption and activity title reads this way, so neither the
+# model nor any search could find "5.3 Respiration" in a real chapter.
+_MIN_FAUX_BOLD_REPEAT = 3
+
+
+def _undouble_token(token: str) -> str:
+    """``token`` with faux-bold repetition removed; unchanged when it is a real word.
+
+    A token qualifies only when it splits entirely into blocks of n identical
+    characters (n >= 3, the same n throughout) and has at least two blocks, so
+    ordinary words ("book", "11", "...") are never touched.
+    """
+    size = len(token)
+    for n in range(5, _MIN_FAUX_BOLD_REPEAT - 1, -1):
+        if size < 2 * n or size % n:
+            continue
+        blocks = [token[i:i + n] for i in range(0, size, n)]
+        if all(b == b[0] * n for b in blocks):
+            return "".join(b[0] for b in blocks)
+    return token
+
+
+def undo_faux_bold(text: str) -> str:
+    """Collapse faux-bold runs word by word; everything else is left as it was."""
+    if not text:
+        return text
+    return re.sub(r"\S+", lambda m: _undouble_token(m.group(0)), text)
+
+
 def clean_page_text(text: str) -> str:
     """Normalise extracted page text without altering wording.
 
-    Only layout noise is removed — hyphenation introduced by line wrapping,
-    repeated whitespace, and stray form feeds. Nothing is paraphrased, because
-    the whole point of grounding is that the words stay the book's own.
+    Only layout noise is removed: hyphenation introduced by line wrapping,
+    repeated whitespace, stray form feeds, and faux-bold glyph repetition.
+    Nothing is paraphrased, because the whole point of grounding is that the
+    words stay the book's own.
     """
     if not text:
         return ""
-    t = text.replace("\x0c", "\n")
+    t = undo_faux_bold(text).replace("\x0c", "\n")
     # Join words split across a line break: "algo-\nrithm" -> "algorithm".
     t = re.sub(r"(\w)-\n(\w)", r"\1\2", t)
     # Collapse single newlines inside a paragraph into spaces, keep blank lines.

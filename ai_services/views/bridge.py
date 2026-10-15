@@ -7229,11 +7229,9 @@ def generate_topic_content(request):
     # than an in-line "silently list your coverage" instruction). Other content
     # types skip this — it's an extra LLM round-trip, only worth the latency/cost
     # for exam papers where under-coverage was the observed, confirmed problem.
+    # Decided after grounding below: a paper written from the school's book
+    # takes its coverage from the book's digest, with no extra model call.
     coverage_sub_areas: list[str] | None = None
-    if content_type == "assessment_paper":
-        coverage_sub_areas = _decompose_topic_coverage(
-            topic_name, subject_name, chapter_name, exam_target, _resolve_institute_id(request),
-        )
 
     active_prompts = _get_content_prompts(vertical)
     exam_upper = exam_target.upper() if exam_target else "JEE"
@@ -7363,6 +7361,7 @@ def generate_topic_content(request):
     # and threw it away, so a DPP built from 15 of 22 passages looked identical
     # to one built from all 22.
     grounded_truncated = False
+    assessment_src = None
     grounded_used = 0
     grounded_available = len(source_passages)
     has_ebook_source = any(p.get("source", "ebook") == "ebook" for p in source_passages)
@@ -7371,12 +7370,32 @@ def generate_topic_content(request):
         try:
             from ai_services.core import grounding as _gr
 
+            # An assessment paper reads its topic's section, or the chapter
+            # digest plus an even share of every section's pages, instead of
+            # the whole chapter (see core.assessment_source). Anything unclear
+            # keeps every passage.
+            grounding_passages = source_passages
+            if content_type == "assessment_paper":
+                from ai_services.core import assessment_source as _as
+                assessment_src = _as.select(
+                    source_passages, topic=topic_name, chapter=chapter_name,
+                    class_name=course_name, subject=subject_name,
+                    institute_id=_resolve_institute_id(request),
+                )
+                grounding_passages = assessment_src["passages"]
+                logger.info(
+                    "assessment source: mode=%s (%s) tokens %d -> %d | chapter=%r topic=%r",
+                    assessment_src["mode"], assessment_src["reason"],
+                    assessment_src["tokens_before"], assessment_src["tokens_after"],
+                    chapter_name, topic_name,
+                )
+
             # No explicit budget: the shared default is sized for the model that
             # actually serves this call. The 9,000 hard-coded here was below even
             # that default and was the reason the content path truncated earlier
             # than the slide path on the same chapter.
             selection = _gr.select_source(
-                source_passages, topic_name, chapter_name,
+                grounding_passages, topic_name, chapter_name,
             )
             grounded_truncated = selection["truncated"]
             grounded_used = len(selection["passages"])
@@ -7446,6 +7465,7 @@ def generate_topic_content(request):
                 system_prompt = source_rules + system_prompt
                 grounded_block = (
                     f"\n═══ SOURCE TEXT — {source_label}, your only permitted facts ═══\n"
+                    + (_as.digest_block(assessment_src["digest_text"]) if assessment_src else "")
                     + _gr.format_source_block(selection["passages"])
                     + "\n═══ END OF SOURCE TEXT ═══\n"
                     "Write the requested content from the passages above and nothing else. "
@@ -7457,15 +7477,13 @@ def generate_topic_content(request):
             logger.warning("Topic-content grounding failed (%s) — using general knowledge", exc)
             grounded = False
 
-    if coverage_sub_areas:
-        user_prompt += (
-            "\nMANDATORY COVERAGE — these sub-areas of this exact topic were identified in advance as core "
-            "to a real school textbook treatment of it. Your question set MUST include AT LEAST ONE question "
-            "addressing EACH sub-area below, spread across the available sections. Do not skip any of "
-            "them, and do not let 2-3 of them dominate while the rest are ignored:\n"
-            + "\n".join(f"{i}. {s}" for i, s in enumerate(coverage_sub_areas, 1))
-            + "\n"
+    if content_type == "assessment_paper":
+        coverage_sub_areas = (assessment_src or {}).get("coverage") or _decompose_topic_coverage(
+            topic_name, subject_name, chapter_name, exam_target, _resolve_institute_id(request),
         )
+    if coverage_sub_areas:
+        from ai_services.core import paper_sections as _ps
+        user_prompt += _ps.coverage_block(coverage_sub_areas)
     if extra_context:
         user_prompt += f"Additional instructions: {extra_context}\n"
     user_prompt += (
@@ -7672,15 +7690,31 @@ def generate_topic_content(request):
                 min_context_tokens=(len(system_prompt) + len(user_prompt)) // 3 + 8000,
             )
             if _grounded_llm.can_route(**_grounded_route):
-                _g = _grounded_llm.complete(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    temperature=0.3,
-                    max_tokens=8000,
-                    institute_id=institute_id,
-                    legacy_prompt_shaping=False,
-                    **_grounded_route,
-                )
+                def _grounded_call(prompt):
+                    return _grounded_llm.complete(
+                        system_prompt=system_prompt,
+                        user_prompt=prompt,
+                        temperature=0.3,
+                        max_tokens=8000,
+                        institute_id=institute_id,
+                        legacy_prompt_shaping=False,
+                        **_grounded_route,
+                    )
+                # An assessment paper's objective and written sections are
+                # written at once and joined (core.paper_sections); anything
+                # that does not line up makes the single call as before.
+                _g = None
+                if content_type == "assessment_paper":
+                    from ai_services.core import paper_sections as _ps
+                    _g = _ps.run(_grounded_call, user_prompt=user_prompt,
+                                 extra=extra_context, plan=data.get("paperPlan"),
+                                 coverage=coverage_sub_areas,
+                                 pages=(sorted({int(p.get("page_no")) for p in grounding_passages
+                                                if str(p.get("page_no") or "").isdigit()})
+                                        if assessment_src and assessment_src["mode"] == "topic_section"
+                                        else None))
+                if _g is None:
+                    _g = _grounded_call(user_prompt)
                 _c = _normalize_generated_math_markdown(_g["content"])
                 if content_type == "pyq":
                     _c = _normalize_pyq_exam_tags(_c)
@@ -7695,6 +7729,11 @@ def generate_topic_content(request):
                         "passagesUsed": grounded_used,
                         "passagesAvailable": grounded_available,
                         "truncated": grounded_truncated,
+                        **({"assessmentSource": {
+                            "mode": assessment_src["mode"],
+                            "tokensBefore": assessment_src["tokens_before"],
+                            "tokensAfter": assessment_src["tokens_after"],
+                        }} if assessment_src else {}),
                     },
                     "_meta": {"model": _g["model"], "latency_ms": _g["latency_ms"]},
                 })
@@ -7712,20 +7751,31 @@ def generate_topic_content(request):
             system_prompt = ungrounded_system_prompt
             user_prompt = ungrounded_user_prompt
 
-    try:
-        llm_result = get_llm().complete(
+    def _content_call(prompt):
+        return get_llm().complete(
             system_prompt=system_prompt,
-            user_prompt=user_prompt,
+            user_prompt=prompt,
             model="openai/gpt-oss-120b",
             temperature=0.7,
-            # PYQ/DPP put complete worked solutions at the end. A 4096-token cap
-            # routinely truncated that section and left math delimiters open.
-            max_tokens=8192 if content_type in {"dpp", "pyq"} else 4096,
+            # PYQ/DPP put complete worked solutions at the end, and an
+            # assessment paper its whole answer key. A 4096-token cap routinely
+            # truncated that part and left math delimiters open.
+            max_tokens=8192 if content_type in {"dpp", "pyq", "assessment_paper"} else 4096,
             json_mode=False,
             institute_id=institute_id,
             feature="content_generate",
             capability="content",
         )
+
+    try:
+        llm_result = None
+        if content_type == "assessment_paper":
+            from ai_services.core import paper_sections as _ps
+            llm_result = _ps.run(_content_call, user_prompt=user_prompt,
+                                 extra=extra_context, plan=data.get("paperPlan"),
+                                 coverage=coverage_sub_areas)
+        if llm_result is None:
+            llm_result = _content_call(user_prompt)
     except RuntimeError as e:
         try:
             log_usage(

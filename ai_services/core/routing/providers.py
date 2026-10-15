@@ -53,6 +53,17 @@ TOGETHER_API_KEY_ENV = "TOGETHER_API_KEY"
 _DISCOVERY_FIELDS = ("id", "type", "display_name", "organization", "context_length")
 
 
+REASONING_EFFORTS = frozenset({"none", "low", "medium", "high"})
+# Model families that accept a reasoning_effort field. Another model may reject
+# an unknown field with a 400, so a per-call effort is sent to these only.
+_REASONING_MODEL_MARKERS = ("gpt-oss", "glm-")
+
+
+def accepts_reasoning_effort(model_id: Optional[str]) -> bool:
+    m = (model_id or "").lower()
+    return any(marker in m for marker in _REASONING_MODEL_MARKERS)
+
+
 @dataclass(frozen=True)
 class ProviderCall:
     system_prompt: str
@@ -70,6 +81,10 @@ class ProviderCall:
     # the instructions the primary did. Grounded call sites turn it off: their
     # prompts reached Gemini unshaped and must reach any provider unshaped.
     legacy_prompt_shaping: bool = True
+    # A per-call reasoning effort (none | low | medium | high) for a reasoning
+    # model. None keeps the model's configured <model env>_REASONING_EFFORT, or
+    # the provider's own default. Only sent to models known to accept it.
+    reasoning_effort: Optional[str] = None
 
 
 _BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-~+/=]+")
@@ -121,6 +136,7 @@ class GroqAdapter:
             institute_id=call.institute_id,
             json_mode_suffix=call.json_mode_suffix,
             legacy_prompt_shaping=call.legacy_prompt_shaping,
+            reasoning_effort=call.reasoning_effort,
         )
 
 
@@ -484,6 +500,10 @@ class TogetherAdapter:
         # effort can spend the WHOLE output budget thinking and return empty
         # content (see the budget check below). setdefault, so a recorded
         # parameter can never overwrite what this adapter sets itself.
+        # A caller's own reasoning effort wins over the recorded one: the PPT
+        # planner asks for "low" without changing the model for every feature.
+        if call.reasoning_effort in REASONING_EFFORTS and accepts_reasoning_effort(model):
+            body["reasoning_effort"] = call.reasoning_effort
         for _pname, _pvalue in ((spec.extra or {}).get("request_params") or {}).items():
             body.setdefault(_pname, _pvalue)
 
