@@ -839,6 +839,13 @@ def _transcribe_audio(audio_url: str, language: str = "hi") -> str:
                             logger.error("Whisper chunk %d/%d raised unexpectedly (%s)", idx + 1, len(chunks), exc)
                             text = ""
                         transcript_parts[idx] = text
+                        # A chunk returning "successfully" with suspiciously little text (vs. its
+                        # ~10-minute duration) doesn't raise and so wouldn't be caught by the
+                        # failed_chunk_nums check below — Whisper can stop early on a long segment
+                        # (silence/noise/hallucinated end-of-audio) without erroring. This line lets
+                        # that be diagnosed from the logs the next time a transcript looks cut off,
+                        # instead of only being able to tell when a chunk fails outright.
+                        logger.info("Whisper chunk %d/%d produced %d chars", idx + 1, len(chunks), len(text))
 
                 failed_chunk_nums = [i + 1 for i, t in enumerate(transcript_parts) if not t]
                 if failed_chunk_nums:
@@ -1723,19 +1730,36 @@ def _chunk_transcript(text: str, chunk_size: int = NOTES_CHUNK_CHAR_LIMIT, overl
 
 
 def _generate_chunk_notes(chunk_text: str, topic_id: str, language: str, institute_id: str, chunk_index: int, total_chunks: int, max_tokens: int = NOTES_SECTION_MAX_TOKENS) -> str:
-    is_hindi = str(language or "").lower() in ("hi", "hinglish", "hi-in")
-    lang_instruction = (
-        "The transcript is in Hindi or Hinglish (Hindi+English mix). "
-        "READ the Hindi/Hinglish content, understand it fully, and write the notes in clear English. "
-        "Translate technical terms accurately (e.g. रासायनिक बंध = chemical bond, "
-        "आयनिक यौगिक = ionic compound, कक्षक = orbital). "
-        "Do NOT transliterate — write proper English notes from the Hindi content.\n"
-    ) if is_hindi else ""
+    lang_norm = str(language or "").lower()
+    is_hindi_source = lang_norm in ("hi", "hinglish", "hi-in")
+    # language == "hi" means the recording's SUBJECT is Hindi (see
+    # resolveContentLanguage on the Nest side) — those notes must stay in Hindi.
+    # "hinglish" is a per-recording transcription tag for a non-language-subject
+    # lecture spoken in Hindi+English mix, which keeps translating to English.
+    write_hindi_notes = lang_norm in ("hi", "hi-in")
+    if write_hindi_notes:
+        lang_instruction = (
+            "The transcript is in Hindi or Hinglish (Hindi+English mix). Read and understand it fully, then "
+            "write the notes ENTIRELY in Hindi using Devanagari script (हिन्दी) — headings, explanations, "
+            "definitions, and examples all in Hindi. Keep formulas, chemical/mathematical symbols, and any "
+            "proper nouns conventionally written in Roman script as-is; everything else must be in Hindi, "
+            "not transliterated Hinglish and not English.\n"
+        )
+    elif is_hindi_source:
+        lang_instruction = (
+            "The transcript is in Hindi or Hinglish (Hindi+English mix). "
+            "READ the Hindi/Hinglish content, understand it fully, and write the notes in clear English. "
+            "Translate technical terms accurately (e.g. रासायनिक बंध = chemical bond, "
+            "आयनिक यौगिक = ionic compound, कक्षक = orbital). "
+            "Do NOT transliterate — write proper English notes from the Hindi content.\n"
+        )
+    else:
+        lang_instruction = ""
 
 
 
     system_prompt = (
-        "You are an expert academic note-taker creating textbook-like lecture notes in English. "
+        f"You are an expert academic note-taker creating textbook-like lecture notes in {'Hindi' if write_hindi_notes else 'English'}. "
         "Convert this section of a lecture transcript into rich, detailed, classroom-quality Markdown notes. "
         + lang_instruction +
         "SKIP any teacher introductions, greetings, self-introductions, roll calls, or administrative "
@@ -1837,20 +1861,35 @@ def _merge_chunk_notes(chunk_notes: list[str], topic_id: str, language: str, ins
         )
         combined_sections = combined_sections[:_MERGE_MAX_INPUT_CHARS]
 
+    # language == "hi" means the recording's subject is Hindi, so the chunk notes
+    # being merged are already Hindi text (see _generate_chunk_notes) and must stay
+    # Hindi through the merge too.
+    write_hindi_notes = str(language or "").lower() in ("hi", "hi-in")
+
     # Scale the output budget with how much is being merged. A fixed 2500-token
     # cap truncated the merge mid-document for any lecture with more than a
     # couple of chunks (the merge model has to reproduce ~all of the chunk
     # content, not summarize it) — the same "fixed cap truncates rich content"
     # bug already fixed once for per-chunk generation (see NOTES_SECTION_MAX_TOKENS
-    # above) and for the whole-notes polish pass (NOTES_POLISH_MAX_TOKENS).
-    desired_merge_tokens = min(8192, max(NOTES_MERGE_MAX_TOKENS, len(combined_sections) // 3))
+    # above) and for the whole-notes polish pass (NOTES_POLISH_MAX_TOKENS). Hindi
+    # output tokenizes less efficiently than English (fewer chars per token), so
+    # the chars-per-token divisor used to estimate the needed budget must be
+    # smaller for Hindi or the merge truncates mid-document again.
+    chars_per_token = _CONSERVATIVE_CHARS_PER_TOKEN if write_hindi_notes else 3
+    merge_floor = int(NOTES_MERGE_MAX_TOKENS * 1.5) if write_hindi_notes else NOTES_MERGE_MAX_TOKENS
+    desired_merge_tokens = min(8192, max(merge_floor, int(len(combined_sections) / chars_per_token)))
 
     system_prompt = (
-        "You are an expert academic editor creating final textbook-like lecture notes in English. "
+        f"You are an expert academic editor creating final textbook-like lecture notes in {'Hindi' if write_hindi_notes else 'English'}. "
         "Merge multiple chunk-level note sections into one comprehensive, coherent Markdown document. "
         "Remove any remaining teacher greetings, introductions, or non-academic content if present. "
         "Preserve coverage, remove duplication, improve structure, and keep the final notes rich and detailed. "
         "Do not shorten aggressively or flatten explanations into overly brief bullets."
+        + (
+            " Keep the entire merged document in Hindi using Devanagari script — do not translate any part of "
+            "it into English."
+            if write_hindi_notes else ""
+        )
     )
     user_prompt = (
         f"Lecture topic: {topic_id or 'General'}\n"
@@ -2615,6 +2654,16 @@ def _generate_comprehensive_notes(transcript: str, topic_id: str, language: str,
     non_empty = [p for p in partial_notes if p.strip()]
     if not non_empty:
         return "", {"chunk_count": n, "failed_chunks": failed_chunks, "error": "all_chunks_failed"}
+    if failed_chunks:
+        # A failed chunk used to be silently skipped here — the stitched notes
+        # just moved on to the next successful chunk, so whichever section of the
+        # lecture that chunk covered (often the last one, since chunks are in
+        # order) simply vanished from the final notes while notes_status still
+        # reported 'done'. That read as the notes "ending abruptly" mid-topic.
+        # The Gemini/Odia path below already fails loudly on a partial failure
+        # (see the Gemini Odia branch above) — match that here instead of
+        # shipping an incomplete document.
+        raise RuntimeError(f"Notes incomplete: {failed_chunks}/{n} transcript chunks failed")
 
     # Merge the independently-generated chunk notes into one coherent document
     # instead of raw string concatenation. Each chunk is written by its own LLM
@@ -5563,7 +5612,75 @@ def _parse_quiz_json(raw: str) -> dict:
             return parsed
         if isinstance(parsed.get("data"), list):
             return {"questions": parsed["data"]}
+
+    # Full parse failed — most often the response was cut off mid-string because it
+    # hit max_tokens (Devanagari/Odia script runs out of budget sooner than English
+    # does for the same content). Salvage whatever earlier question objects are
+    # still complete instead of dropping the whole chunk to zero questions.
+    salvaged = _salvage_quiz_questions(stripped)
+    if salvaged:
+        return {"questions": salvaged}
     return {"questions": []}
+
+
+def _salvage_quiz_questions(text: str) -> list:
+    """Recover complete question objects from a truncated/malformed quiz response.
+
+    Scans for balanced-brace {...} objects inside the questions array (respecting
+    quoted strings and escapes) and keeps only the ones that parse as valid JSON on
+    their own, so a cut-off tail question is dropped instead of losing every
+    question the chunk produced.
+    """
+    start = text.find("[")
+    if start == -1:
+        return []
+    questions: list = []
+    i = start + 1
+    n = len(text)
+    while i < n:
+        while i < n and text[i] != "{":
+            if text[i] == "]":
+                return questions
+            i += 1
+        if i >= n:
+            break
+        depth = 0
+        in_string = False
+        escape = False
+        j = i
+        closed = False
+        while j < n:
+            ch = text[j]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        closed = True
+                        break
+            j += 1
+        if not closed:
+            # Ran off the end mid-object (truncated) — nothing more to salvage.
+            break
+        try:
+            obj = json.loads(text[i:j])
+            if isinstance(obj, dict):
+                questions.append(obj)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        i = j
+    return questions
 
 
 
@@ -5614,6 +5731,20 @@ def _quiz_language_instruction(language: str) -> str:
             "LANGUAGE REQUIREMENT: Write every question, every option text, every segmentTitle, and every "
             "explanation in natural Odia (ଓଡ଼ିଆ) script. Keep only JSON field names, IDs, and option labels "
             "A/B/C/D in English. Do not translate technical symbols or formulas. Do not output Hindi or English prose."
+        )
+    if normalized in ("hi", "hi-in"):
+        return (
+            "LANGUAGE REQUIREMENT: Write every question, every option text, every segmentTitle, and every "
+            "explanation in natural Hindi using Devanagari script (हिन्दी). Keep only JSON field names, IDs, and "
+            "option labels A/B/C/D in English. Do not translate technical symbols or formulas. Do not output Odia "
+            "or English prose."
+        )
+    if normalized == "hinglish":
+        return (
+            "LANGUAGE REQUIREMENT: Write every question, every option text, every segmentTitle, and every "
+            "explanation in Hinglish — Hindi content written using the Latin/Roman script, the way Indian "
+            "students commonly type (e.g. 'Newton ka pehla niyam kehta hai...'). Keep only JSON field names, IDs, "
+            "and option labels A/B/C/D in English. Do not switch to Devanagari script or full English prose."
         )
     return "LANGUAGE REQUIREMENT: Write the quiz content in English."
 
@@ -5830,10 +5961,16 @@ def generate_quiz_questions(request):
             course_level=course_level,
         )
         user_prompt = f"{language_instruction}\n\n{user_prompt}\n\n{language_instruction}"
+        # Devanagari/Odia script tokenizes far less efficiently than English (BPE
+        # splits each glyph into more sub-tokens), so the English-sized budget below
+        # truncates Hindi/Hinglish/Odia output mid-JSON — _parse_quiz_json then can't
+        # parse it and the whole chunk comes back with 0 questions.
+        per_question_tokens = 350 if language == "en" else 900
+        min_tokens = 800 if language == "en" else 1600
         tasks.append({
             "system_prompt": f"{template.system}\n\n{language_instruction}",
             "user_prompt": user_prompt,
-            "max_tokens": max(800, q_count * 350),
+            "max_tokens": max(min_tokens, q_count * per_question_tokens),
         })
         chunk_meta.append((i + 1, q_count, start_pct, end_pct))
 
