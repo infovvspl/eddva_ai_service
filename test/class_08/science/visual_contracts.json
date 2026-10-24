@@ -1,0 +1,128 @@
+{
+  "_comment": [
+    "Reusable visual contracts for Class 8 Science regression testing.",
+    "",
+    "Each one states what a slide's picture must SHOW, not merely be about.",
+    "That distinction is the whole point: 'a mirror' is on topic, 'an incident",
+    "ray striking a mirror and a reflected ray leaving it' is the lesson. Both",
+    "the deterministic scorer and the vision validator are driven from these",
+    "same fields, so a fixture here exercises the full teaching-relevance path.",
+    "",
+    "Captured as data rather than written into tests so the same fixtures can",
+    "drive the benchmark harness and the unit tests without drifting apart."
+  ],
+  "contracts": {
+    "photosynthesis": {
+      "purpose": "State what a plant needs in order to make its own food",
+      "required_objects": ["green leaf", "sunlight", "carbon dioxide", "water"],
+      "required_relationships": [
+        "sunlight falls on the leaf",
+        "carbon dioxide and water enter the leaf"
+      ],
+      "avoid": ["respiration", "mitochondria"],
+      "visual_kind": "illustration",
+      "accept_example": {
+        "caption": "Photosynthesis in a green leaf showing sunlight, water and carbon dioxide entering",
+        "url": "https://ncert.nic.in/figures/photosynthesis.png",
+        "vision": {
+          "visible_objects": ["green leaf", "sunlight", "carbon dioxide", "water"],
+          "shown_relationships": ["sunlight falls on the leaf"],
+          "conflicts": []
+        }
+      },
+      "reject_example": {
+        "caption": "Photosynthesis and Respiration in Plants compared",
+        "url": "https://example.edu/photosynthesis-respiration.png",
+        "vision": {
+          "visible_objects": ["mitochondrion", "glucose"],
+          "shown_relationships": ["glucose is broken down"],
+          "conflicts": ["respiration", "mitochondria"]
+        }
+      }
+    },
+    "reflection": {
+      "purpose": "Explain how a light ray reflects from a plane mirror",
+      "required_objects": ["incident ray", "plane mirror", "reflected ray", "normal"],
+      "required_relationships": [
+        "the incident ray strikes the mirror",
+        "the reflected ray leaves at the same angle"
+      ],
+      "avoid": ["refraction", "lens"],
+      "visual_kind": "diagram",
+      "accept_example": {
+        "caption": "Reflection of light at a plane mirror showing the incident ray, normal and reflected ray",
+        "url": "https://hyperphysics.phy-astr.gsu.edu/reflection.gif",
+        "vision": {
+          "visible_objects": ["incident ray", "plane mirror", "reflected ray", "normal"],
+          "shown_relationships": ["the incident ray strikes the mirror"],
+          "conflicts": []
+        }
+      },
+      "reject_example": {
+        "caption": "Fluorescent lamp starter schematic",
+        "url": "https://edisontechcenter.org/lighting/SchematicStarter.jpg",
+        "vision": {
+          "visible_objects": ["circuit", "starter", "fluorescent tube"],
+          "shown_relationships": [],
+          "conflicts": []
+        }
+      }
+    },
+    "sound_production": {
+      "purpose": "Explain that sound is produced by a vibrating object",
+      "required_objects": ["tuning fork", "vibration", "air particles"],
+      "required_relationships": [
+        "the vibrating fork disturbs the air around it",
+        "the disturbance travels outward as a wave"
+      ],
+      "avoid": ["light wave", "electromagnetic"],
+      "visual_kind": "diagram",
+      "accept_example": {
+        "caption": "A vibrating tuning fork producing compressions and rarefactions in the surrounding air",
+        "url": "https://cdn1.byjus.com/class-8-science/vibration.png",
+        "vision": {
+          "visible_objects": ["tuning fork", "vibration", "air particles"],
+          "shown_relationships": ["the vibrating fork disturbs the air around it"],
+          "conflicts": []
+        }
+      },
+      "reject_example": {
+        "caption": "Sound engineer at a mixing desk in a studio",
+        "url": "https://media.sciencephoto.com/image/studio.jpg",
+        "vision": {
+          "visible_objects": ["mixing desk", "person"],
+          "shown_relationships": [],
+          "conflicts": []
+        }
+      }
+    },
+    "force_and_pressure": {
+      "purpose": "Explain that the same force gives more pressure over a smaller area",
+      "required_objects": ["applied force", "surface area", "object"],
+      "required_relationships": [
+        "the same force acts over a smaller area",
+        "the pressure on the surface increases"
+      ],
+      "avoid": ["atmospheric pressure at altitude", "hydraulic brake circuit"],
+      "visual_kind": "diagram",
+      "accept_example": {
+        "caption": "The same force applied over a small and a large area, showing the difference in pressure",
+        "url": "https://ncert.nic.in/figures/force-pressure-area.png",
+        "vision": {
+          "visible_objects": ["applied force", "surface area", "object"],
+          "shown_relationships": ["the same force acts over a smaller area"],
+          "conflicts": []
+        }
+      },
+      "reject_example": {
+        "caption": "Force and pressure classroom poster bundle",
+        "url": "https://images.twinkl.co.uk/image_repo/force-pressure.png",
+        "vision": {
+          "visible_objects": ["poster", "text"],
+          "shown_relationships": [],
+          "conflicts": []
+        }
+      }
+    }
+  }
+}

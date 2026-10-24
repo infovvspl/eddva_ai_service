@@ -1,0 +1,109 @@
+{
+  "_comment": [
+    "Planner output for the two-slide Photosynthesis reference case, captured",
+    "as a fixture so composition can be tested without calling an LLM.",
+    "",
+    "This is the CONTENT PLANNER / SLIDE STORYBOARD stage only: it says what",
+    "each slide teaches and what the learner should SEE, and deliberately says",
+    "nothing about layout, colour, image source or geometry. Everything from",
+    "'which layout' onwards is the composer's job, which is what makes it",
+    "testable."
+  ],
+  "topic": "Photosynthesis",
+  "subject": "Science",
+  "chapter": "Conservation of Plants and Animals",
+  "className": "Class 8",
+  "board": "CBSE",
+  "slides": [
+    {
+      "slideNumber": 1,
+      "slideType": "concept",
+      "title": "How Green Plants Make Their Own Food",
+      "emphasisText": "Make Their Own Food",
+      "subtitle": "Photosynthesis turns light into stored chemical energy",
+      "learningObjective": "Identify the four things a leaf needs in order to make food, and the two things it produces",
+      "blocks": [
+        {
+          "kind": "bullet",
+          "label": "Sunlight",
+          "text": "Chlorophyll in the leaf traps energy from sunlight.",
+          "icon": "sun"
+        },
+        {
+          "kind": "bullet",
+          "label": "Water",
+          "text": "Roots absorb water from the soil and carry it up to the leaves.",
+          "icon": "water"
+        },
+        {
+          "kind": "bullet",
+          "label": "Carbon dioxide",
+          "text": "Tiny pores called stomata let carbon dioxide into the leaf.",
+          "icon": "air"
+        },
+        {
+          "kind": "bullet",
+          "label": "Food and oxygen",
+          "text": "The leaf makes glucose and releases oxygen back into the air.",
+          "icon": "leaf"
+        }
+      ],
+      "highlightedTerms": ["chlorophyll", "stomata", "glucose"],
+      "visual": {
+        "description": "a single broad green leaf on a stem, with sunlight falling on its upper surface, water rising through the stem, and gas moving at the leaf surface",
+        "objects": ["green leaf", "stem", "sunlight", "water", "gas exchange"],
+        "mustShow": ["chlorophyll", "stomata"],
+        "annotations": [
+          { "text": "Sunlight absorbed by chlorophyll", "anchor": [0.52, 0.18], "side": "top" },
+          { "text": "Carbon dioxide enters through stomata", "anchor": [0.30, 0.62], "side": "left" },
+          { "text": "Water arrives from the roots", "anchor": [0.48, 0.88], "side": "bottom" },
+          { "text": "Oxygen released", "anchor": [0.74, 0.34], "side": "right" }
+        ],
+        "altText": "A green leaf showing sunlight, water and carbon dioxide entering and oxygen leaving"
+      },
+      "speakerNotes": "Ask the class what a plant eats before revealing that it makes its own food. Point at each input on the diagram in turn."
+    },
+    {
+      "slideNumber": 2,
+      "slideType": "process",
+      "title": "Photosynthesis Step by Step",
+      "emphasisText": "Step by Step",
+      "subtitle": "The same reaction, as a sequence",
+      "learningObjective": "Put the stages of photosynthesis in the correct order",
+      "blocks": [
+        {
+          "kind": "step",
+          "label": "1. Absorb",
+          "text": "Chlorophyll absorbs sunlight.",
+          "icon": "sun"
+        },
+        {
+          "kind": "step",
+          "label": "2. Split",
+          "text": "Light energy splits water into hydrogen and oxygen.",
+          "icon": "droplet"
+        },
+        {
+          "kind": "step",
+          "label": "3. Combine",
+          "text": "Hydrogen joins carbon dioxide to form glucose.",
+          "icon": "molecule"
+        },
+        {
+          "kind": "step",
+          "label": "4. Release",
+          "text": "Oxygen leaves the leaf through the stomata.",
+          "icon": "air"
+        }
+      ],
+      "highlightedTerms": ["glucose", "oxygen"],
+      "visual": {
+        "description": "energy conversion inside a chloroplast during photosynthesis",
+        "objects": ["chloroplast"],
+        "mustShow": ["chloroplast"],
+        "altText": "A chloroplast converting light energy into chemical energy"
+      },
+      "speakerNotes": "Emphasise that the oxygen comes from the water, not from the carbon dioxide. This is the step students most often get wrong."
+    }
+  ]
+}
