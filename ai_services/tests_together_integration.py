@@ -655,7 +655,8 @@ class TogetherTelemetryTests(_EventsPatched):
         bridge = io.open(os.path.join(root, "views", "bridge.py"), encoding="utf-8").read()
         ppt = io.open(os.path.join(root, "views", "ppt.py"), encoding="utf-8").read()
         self.assertEqual(re.findall(r"model_used\s*=\s*['\"](?:openai/gpt-oss|qwen/|llama)", bridge), [])
-        self.assertEqual(bridge.count("telemetry_model_from_error("), 6)
+        # 7: the six content paths plus the chapter lesson-plan route's failure row.
+        self.assertEqual(bridge.count("telemetry_model_from_error("), 7)
         self.assertEqual(bridge.count("telemetry_model_from_results("), 1)
         self.assertEqual(ppt.count("telemetry_model_from_error(exc, _MODEL)"), 2)
 

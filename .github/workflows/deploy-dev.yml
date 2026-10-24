@@ -211,6 +211,10 @@ jobs:
             # tokens reasoning and returned an EMPTY body after ~60s. At low
             # effort: 42 reasoning tokens, more content, half the time.
             printf 'TOGETHER_MODEL_GLM53_FLASH_REASONING_EFFORT=low\n' >> .env
+            # Chapter lesson plans (2026-10-24) call exactly this model: no router,
+            # no fallback, never Gemini (ai_services/core/lesson_plan_route.py).
+            # Without it every lesson-plan request is refused with a 503.
+            printf 'LESSON_PLAN_AI_MODEL=together/glm-5.3-flash\n' >> .env
 
             # ── PPT Studio (school demos, 2026-10-09) ─────────────────────
             # Designed (V2) and image-slide decks, chosen in the studio. Without
