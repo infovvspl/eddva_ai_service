@@ -37,6 +37,31 @@ def _clean_text(text: str) -> str:
     return text
 
 
+_MAX_CONCEPTS = 12
+_MAX_CONCEPT_CHARS = 80
+
+
+def _clean_concepts(raw) -> list:
+    """
+    Concept labels a caller wants every question tagged with (the learning
+    path sends a topic's key concepts). Single-line, quote-free, deduplicated
+    case-insensitively and capped, so a label can neither break nor extend
+    the prompt it is listed in.
+    """
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for item in raw:
+        label = _clean_text(str(item or "")).replace('"', "").replace("'", "")[:_MAX_CONCEPT_CHARS].strip()
+        if not label or label.lower() in seen:
+            continue
+        seen.add(label.lower())
+        out.append(label)
+        if len(out) >= _MAX_CONCEPTS:
+            break
+    return out
+
+
 def _question_has_embedded_options(question: str) -> bool:
     """Return True if the question text contains options leaked into it."""
     return bool(_EMBEDDED_OPTIONS.search(question))
@@ -131,6 +156,12 @@ def parse_ai_result(result, topic, difficulty, qtype, style=""):
                 "question": qtext,
                 "explanation": _clean_text(q.get("explanation") or q.get("solution") or q.get("solutionText") or ""),
             }
+            subtopic = _clean_text(str(q.get("subtopic") or ""))[:_MAX_CONCEPT_CHARS]
+            if subtopic:
+                parsed_q["subtopic"] = subtopic
+            concept = _clean_text(str(q.get("concept") or ""))[:_MAX_CONCEPT_CHARS]
+            if concept:
+                parsed_q["concept"] = concept
 
             model_answer = q.get("answer") or q.get("correctAnswer") or q.get("modelAnswer") or ""
             if isinstance(model_answer, dict):
@@ -151,6 +182,10 @@ def parse_ai_result(result, topic, difficulty, qtype, style=""):
 
                 ans = str(q.get("answer") or q.get("correctOption") or q.get("correct_option") or "").strip().upper()
                 parsed_q["answer"] = ans if ans in ("A", "B", "C", "D") else "A"
+                if ans not in ("A", "B", "C", "D"):
+                    # Kept as "A" for existing callers; flagged so a caller that grades
+                    # answers can drop a question whose key was guessed, not given.
+                    parsed_q["answerDefaulted"] = True
 
                 if parse_as == "mcq_multi" or qtype == "mcq_multi":
                     m_ans = q.get("correctOptions") or q.get("answers") or []
@@ -954,10 +989,24 @@ def generate_practice_test(request):
             "MUST be written entirely in Odia (using Odia script)."
         )
 
+    concepts = _clean_concepts(data.get("concepts"))
+    concept_rule = ""
+    concept_field = ""
+    if concepts:
+        listed = "\n".join(f"  - {c}" for c in concepts)
+        concept_rule = (
+            "CONCEPT TAGGING (MANDATORY):\n"
+            f"  Every question tests exactly ONE of these concepts:\n{listed}\n"
+            "  • Spread the questions across these concepts as evenly as the number of questions allows.\n"
+            "  • In each question's JSON include 'concept' = the concept it tests, copied EXACTLY from the list above.\n\n"
+        )
+        concept_field = "'concept' (copied exactly from the CONCEPT TAGGING list), "
+
     user_prompt = (
         f"{scope_constraint}"             # SCOPE LOCK comes FIRST so it dominates the model's attention
         f"{exam_banner}"
         f"{variety_rule}"                 # VARIETY enforcement to prevent sub-topic clustering
+        f"{concept_rule}"
         f"{formatting_rule}"
         f"Generate {num_questions} distinct {qtype} questions.\n"
         f"Curriculum scope: {curriculum_context}\n"
@@ -972,6 +1021,7 @@ def generate_practice_test(request):
         "Each question object MUST have: 'question', 'answer', 'explanation', "
         f"'scope_check' (echo back '{(chapter or topic or subject or '').strip()[:60]}' to confirm scope), "
         "'subtopic' (2-4 word label of the specific sub-topic this question tests), "
+        f"{concept_field}"
         + (
             f"AND 'chapter' = '{chapter}' (fixed — every question in this batch is from this chapter). "
             if chapter else

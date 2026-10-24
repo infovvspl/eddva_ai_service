@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     feedback, notes, content, test, career,
     personalization, admin_api, bridge, evaluate, ppt, textbook, diagram, ai_tutor,
-    competitive,
+    competitive, learning,
 )
 
 urlpatterns = [
@@ -25,6 +25,12 @@ urlpatterns = [
     # AI Tutor (school student chatbot) — course-first answers with web fallback
     path("ai-tutor/chat", ai_tutor.ai_tutor_chat),
     path("ai-tutor/media", ai_tutor.ai_tutor_media),
+
+    # School learning path — AI roadmaps: weak chapter -> topics -> subtopics; weak topic -> subtopics
+    path("learning/chapter-roadmap", learning.chapter_roadmap),
+    path("learning/topic-roadmap", learning.topic_roadmap),
+    path("learning/topic-video", learning.topic_video),
+    path("learning/topic-scope", learning.topic_scope),
 
     # AI #6 — Content Recommendation
     path("recommend/content", bridge.recommend_content),
