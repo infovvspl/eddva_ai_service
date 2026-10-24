@@ -4870,6 +4870,10 @@ def start_tutor_session(request):
 
 
 
+    reasoning_effort = data.get("reasoning_effort")
+    if reasoning_effort not in ("low", "medium", "high"):
+        reasoning_effort = None
+
     try:
         result = get_llm().complete(
             system_prompt=system_prompt,
@@ -4882,6 +4886,7 @@ def start_tutor_session(request):
             max_tokens=_safe_max_tokens(system_prompt + user_prompt, 8192),
             json_mode=False,
             institute_id=institute_id,
+            reasoning_effort=reasoning_effort,
         )
     except RuntimeError as e:
         try:

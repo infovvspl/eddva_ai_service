@@ -345,6 +345,10 @@ def generate_practice_test(request):
     except (TypeError, ValueError):
         num_questions = 2
 
+    reasoning_effort = data.get("reasoning_effort")
+    if reasoning_effort not in ("low", "medium", "high"):
+        reasoning_effort = None
+
     difficulty = (data.get("difficulty") or "medium").strip().lower()
     if difficulty not in _VALID_DIFFICULTIES:
         difficulty = "medium"
@@ -1095,6 +1099,7 @@ def generate_practice_test(request):
                 max_tokens=max_output_tokens,
                 json_mode=True,
                 institute_id=institute_id,
+                reasoning_effort=reasoning_effort,
             )
         except RuntimeError as e:
             logger.error("LLM complete failed: %s", e)
